@@ -150,7 +150,7 @@ index 42ddaa3..f25b7a2 100644
  #else
  #define REX_PHYS_HOST_OFFSET(addr) 0u
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
-index 68d694b..49071da 100644
+index 68d694b..efe7e1a 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
 @@ -1,4 +1,7 @@
@@ -161,6 +161,33 @@ index 68d694b..49071da 100644
  #include "gta4_hack_registry.h"
  #include "gta4_present_mode_policy.h"
  #include "gta4_streaming_hooks.h"
+@@ -116,7 +119,7 @@ REXCVAR_DEFINE_STRING(gta4_present_mode, "vsync", "GTA IV/Graphics/Display",
+                       "Vertical sync: vsync is On; immediate is Off; auto/mailbox are legacy modes")
+     .allowed({"auto", "vsync", "fifo", "mailbox", "immediate"});
+ // Android: 30 FPS with VSync divides the 60 Hz panel evenly.
+-REXCVAR_DEFINE_UINT32(gta4_frame_limit, REX_PLATFORM_ANDROID ? 30 : 60, "GTA IV/Graphics/Display",
++REXCVAR_DEFINE_UINT32(gta4_frame_limit, REX_PLATFORM_ANDROID || REX_PLATFORM_PS5 ? 30 : 60, "GTA IV/Graphics/Display",
+                       "Maximum game and host presentation rate: 0 is unlocked; caps are 30, 40, 60, and "
+                       "120 FPS")
+     .allowed({"0", "30", "40", "60", "120"});
+@@ -188,7 +191,7 @@ REXCVAR_DEFINE_STRING(gta4_reflection_capture_distance, "original",
+                       "Exterior environment capture distance: near (20), original (40), extended (60), or "
+                       "far (80)")
+     .allowed({"near", "original", "extended", "far"});
+-REXCVAR_DEFINE_STRING(gta4_native_anti_aliasing, REX_PLATFORM_ANDROID ? "fxaa" : "smaa",
++REXCVAR_DEFINE_STRING(gta4_native_anti_aliasing, REX_PLATFORM_ANDROID || REX_PLATFORM_PS5 ? "fxaa" : "smaa",
+                       "GTA IV/Graphics/Anti-Aliasing",
+                       "Anti-aliasing: off, fxaa, smaa, deferred MSAA, or even-factor SSAA")
+     // `spatial` remains loadable as a deprecated compatibility alias. It is
+@@ -238,7 +241,7 @@ REXCVAR_DEFINE_DOUBLE(gta4_dynamic_draw_distance_min, 0.7, "GTA IV/Graphics/LOD"
+ REXCVAR_DEFINE_DOUBLE(gta4_draw_distance_dynamic_factor, 1.0, "GTA IV/Graphics/LOD",
+                       "Current dynamic draw-distance factor (managed automatically)")
+     .range(0.25, 1.0);
+-REXCVAR_DEFINE_DOUBLE(gta4_draw_distance_scale, REX_PLATFORM_ANDROID ? 1.0 : 3.0,
++REXCVAR_DEFINE_DOUBLE(gta4_draw_distance_scale, REX_PLATFORM_ANDROID || REX_PLATFORM_PS5 ? 1.0 : 3.0,
+                       "GTA IV/Graphics/LOD",
+                       "Multiplier applied through GTA IV's built-in world-distance input")
+     .range(0.25, 4.0);
 @@ -629,6 +632,20 @@ struct GTA4App::TitleProfileSyncState {
  
  std::optional<rex::PathConfig> GTA4App::OnFinalizePaths(
@@ -1490,10 +1517,10 @@ index 9854392..55fc045 100644
      for (auto& child : nested) {
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.cpp
 new file mode 100644
-index 0000000..e5acf1c
+index 0000000..dd53f53
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.cpp
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,178 @@
 +// GTA IV PS5 - the frame rate counter, the watermark and the frame time
 +// capture (see ps5_overlay.h).
 +#include "ps5_overlay.h"
@@ -1503,6 +1530,7 @@ index 0000000..e5acf1c
 +#include <ctime>
 +#include <filesystem>
 +#include <string>
++#include <vector>
 +
 +#include <imgui.h>
 +#include <rex/cvar.h>
@@ -1558,6 +1586,23 @@ index 0000000..e5acf1c
 +  ms_ = n ? float(double(span) / 1e6 / double(n)) : 0.0f;
 +  window_start_ns_ = now;
 +  window_frames_ = frames;
++  // the slowest frames of the last few seconds: 1% low and the worst one
++  const uint32_t count = uint32_t(std::min<uint64_t>(frames > 1 ? frames - 1 : 0, rex::frame_stats::kHistory));
++  std::vector<uint32_t> times;
++  times.reserve(count);
++  for (uint32_t i = 0; i < count; ++i) {
++    const uint32_t us = rex::frame_stats::g_history_us[(frames - 1 - i) % rex::frame_stats::kHistory].load(
++        std::memory_order_relaxed);
++    if (us) times.push_back(us);
++  }
++  if (times.empty()) {
++    low_fps_ = worst_ms_ = 0;
++    return;
++  }
++  std::sort(times.begin(), times.end());
++  const uint32_t p99 = times[size_t(double(times.size() - 1) * 0.99)];
++  low_fps_ = p99 ? float(1e6 / double(p99)) : 0.0f;
++  worst_ms_ = float(times.back()) / 1000.0f;
 +}
 +
 +void GameOverlay::Capture() {
@@ -1575,6 +1620,16 @@ index 0000000..e5acf1c
 +  if ((frames & 255) == 0) std::fflush(csv_);
 +}
 +
++namespace {
++// green at 60 or better, white at 30, then yellow, then red
++ImU32 RateColor(float ms) {
++  return ms <= 17.5f ? IM_COL32(120, 230, 140, 255)
++         : ms <= 34.5f ? IM_COL32(244, 245, 247, 255)
++         : ms <= 50.5f ? IM_COL32(245, 200, 80, 255)
++                       : IM_COL32(240, 90, 80, 255);
++}
++}  // namespace
++
 +void GameOverlay::OnDraw(ImGuiIO& io) {
 +  Sample();
 +  Capture();
@@ -1584,44 +1639,75 @@ index 0000000..e5acf1c
 +  const auto& fonts = hub::Fonts();
 +  ImFont* bold = fonts.body_bold ? fonts.body_bold : ImGui::GetFont();
 +  ImFont* body = fonts.body ? fonts.body : ImGui::GetFont();
++  auto P = [&](float x, float y) { return ImVec2(x * s, y * s); };
 +
-+  // the counter, top left
-+  char text[64];
-+  if (fps_ > 0)
-+    std::snprintf(text, sizeof(text), "%.0f FPS  \xC2\xB7  %.1f ms", fps_, ms_);
-+  else
-+    std::snprintf(text, sizeof(text), "-- FPS");
-+  const float fs = 22 * s;
-+  const ImVec2 ts = bold->CalcTextSizeA(fs, 1e9f, 0, text);
-+  const ImVec2 p(28 * s, 24 * s);
-+  const float pad_x = 14 * s, pad_y = 7 * s;
-+  dl->AddRectFilled(ImVec2(p.x, p.y), ImVec2(p.x + ts.x + pad_x * 2, p.y + ts.y + pad_y * 2),
-+                    IM_COL32(0, 0, 0, 150), 8 * s);
-+  // green at the frame limit or above, then yellow, then red
-+  const ImU32 col = fps_ >= 57 || fps_ == 0 ? IM_COL32(120, 230, 140, 255)
-+                    : fps_ >= 28            ? IM_COL32(244, 245, 247, 255)
-+                    : fps_ >= 20            ? IM_COL32(245, 200, 80, 255)
-+                                            : IM_COL32(240, 90, 80, 255);
-+  dl->AddText(bold, fs, ImVec2(p.x + pad_x, p.y + pad_y), col, text);
++  // ---- the counter, top left: frames a second, frame time, the slow frames and a graph
++  const float x = 28, y = 24, w = 330, pad = 16;
++  const float graph_h = 64, h = pad + 44 + 26 + 12 + graph_h + pad;
++  dl->AddRectFilled(P(x, y), P(x + w, y + h), IM_COL32(0, 0, 0, 180), 10 * s);
++  char big[16], unit[] = "FPS", ms[32], small[96];
++  if (fps_ > 0) {
++    std::snprintf(big, sizeof(big), "%.0f", fps_);
++    std::snprintf(ms, sizeof(ms), "%.1f ms", ms_);
++    std::snprintf(small, sizeof(small), "1%% low %.0f  \xC2\xB7  worst frame %.0f ms", low_fps_, worst_ms_);
++  } else {
++    std::snprintf(big, sizeof(big), "--");
++    ms[0] = small[0] = 0;
++  }
++  const ImU32 col = fps_ > 0 ? RateColor(ms_) : IM_COL32(244, 245, 247, 255);
++  const float big_size = 44 * s;
++  const ImVec2 bsz = bold->CalcTextSizeA(big_size, 1e9f, 0, big);
++  dl->AddText(bold, big_size, P(x + pad, y + pad - 6), col, big);
++  dl->AddText(bold, 18 * s, ImVec2((x + pad) * s + bsz.x + 8 * s, (y + pad + 17) * s), IM_COL32(255, 255, 255, 170), unit);
++  const ImVec2 msz = bold->CalcTextSizeA(24 * s, 1e9f, 0, ms);
++  dl->AddText(bold, 24 * s, ImVec2((x + w - pad) * s - msz.x, (y + pad + 10) * s), IM_COL32(244, 245, 247, 255), ms);
++  dl->AddText(body, 17 * s, P(x + pad, y + pad + 46), IM_COL32(255, 255, 255, 175), small);
 +
-+  // the watermark, along the bottom
++  // the graph: one bar a frame, newest on the right, 0 to 66 ms (15 FPS) tall
++  const float gx = x + pad, gy = y + pad + 44 + 26 + 12, gw = w - pad * 2;
++  dl->AddRectFilled(P(gx, gy), P(gx + gw, gy + graph_h), IM_COL32(255, 255, 255, 18), 4 * s);
++  constexpr float kTopMs = 66.7f;
++  const uint64_t frames = rex::frame_stats::g_presents.load(std::memory_order_acquire);
++  constexpr int kBars = 149;
++  const float bar = gw / float(kBars);
++  for (int i = 0; i < kBars && uint64_t(i) + 1 < frames; ++i) {
++    const uint32_t us =
++        rex::frame_stats::g_history_us[(frames - 1 - uint64_t(i)) % rex::frame_stats::kHistory].load(
++            std::memory_order_relaxed);
++    if (!us) continue;
++    const float f_ms = float(us) / 1000.0f;
++    const float bh = graph_h * std::min(f_ms, kTopMs) / kTopMs;
++    const float bx = gx + gw - bar * float(i + 1);
++    dl->AddRectFilled(P(bx, gy + graph_h - bh), P(bx + bar * 0.8f, gy + graph_h), RateColor(f_ms));
++  }
++  for (float line_ms : {16.7f, 33.3f}) {  // the 60 and 30 FPS marks, over the bars
++    const float ly = gy + graph_h - graph_h * line_ms / kTopMs;
++    dl->AddLine(P(gx, ly), P(gx + gw, ly), IM_COL32(0, 0, 0, 140), 2 * s);
++    dl->AddLine(P(gx, ly), P(gx + gw, ly), IM_COL32(255, 255, 255, 90), 1 * s);
++    const char* label = line_ms < 20 ? "60" : "30";
++    dl->AddText(bold, 13 * s, P(gx + 4 + 1, ly - 16 + 1), IM_COL32(0, 0, 0, 200), label);
++    dl->AddText(bold, 13 * s, P(gx + 4, ly - 16), IM_COL32(255, 255, 255, 200), label);
++  }
++
++  // ---- the watermark, along the bottom
 +  const char* mark = Watermark();
-+  const float ws = 13 * s;
++  const float ws = 17 * s;
 +  const ImVec2 wsz = body->CalcTextSizeA(ws, 1e9f, 0, mark);
-+  const ImVec2 wp((size.x - wsz.x) * 0.5f, size.y - wsz.y - 10 * s);
-+  dl->AddText(body, ws, ImVec2(wp.x + 1 * s, wp.y + 1 * s), IM_COL32(0, 0, 0, 120), mark);
-+  dl->AddText(body, ws, wp, IM_COL32(255, 255, 255, 120), mark);
++  const ImVec2 wp((size.x - wsz.x) * 0.5f, size.y - wsz.y - 34 * s);
++  dl->AddText(body, ws, ImVec2(wp.x + 1.5f * s, wp.y + 1.5f * s), IM_COL32(0, 0, 0, 150), mark);
++  dl->AddText(body, ws, wp, IM_COL32(255, 255, 255, 165), mark);
 +}
 +
 +}  // namespace gta4ps5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.h
 new file mode 100644
-index 0000000..ab2ad8a
+index 0000000..b9be5b5
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.h
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,42 @@
 +// GTA IV PS5 - what the PS5 build draws over the game: the frame rate counter
-+// (always on, top left: frames a second and the frame time), the beta build's
++// (always on, top left: frames a second, the frame time, the slowest frames
++// and a graph of the last frames), the beta build's
 +// watermark along the bottom, and, when it's on in the hub's Debug settings,
 +// a frame time capture to /app0/logs.
 +#pragma once
@@ -1649,6 +1735,7 @@ index 0000000..ab2ad8a
 +  uint64_t window_frames_ = 0;
 +  int64_t window_start_ns_ = 0;
 +  float fps_ = 0, ms_ = 0;
++  float low_fps_ = 0, worst_ms_ = 0;  // (the 1% slowest frames, and the slowest)
 +  // the capture
 +  std::FILE* csv_ = nullptr;
 +  uint64_t captured_ = 0;
@@ -23319,10 +23406,10 @@ index 0000000..7d075b4
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 0000000..6aa98e3
+index 0000000..18570a4
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1150 @@
+@@ -0,0 +1,1166 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -23440,7 +23527,12 @@ index 0000000..6aa98e3
 +      {"DISPLAY", "resolution", "Resolution", "RESOLUTION",
 +       "How sharp the game is drawn. 720p is the Xbox 360's. Higher looks cleaner but costs frame rate: "
 +       "this is a beta, so start low and work up.",
-+       true, {"720p", "1080p", "1440p", "4k"}, {"720p (Original)", "1080p", "1440p", "4K"}, "720p"},
++       true, {"720p", "1080p", "1440p", "4k"}, {"720p (Original)", "1080p", "1440p", "4K"}, "1080p"},
++      {"DISPLAY", "gta4_draw_distance_scale", "Draw Distance", nullptr,
++       "How far out buildings and the city are drawn in detail. Original is the Xbox 360's. Farther costs "
++       "frame rate, and past 1.5x the game can run short of memory: fewer cars and people, and textures "
++       "that come and go.",
++       false, {"1.0", "1.5", "2.0", "3.0"}, {"Original", "1.5x", "2x", "3x"}, "1.0"},
 +      {"DISPLAY", "gta4_frame_limit", "Frame Limit", nullptr,
 +       "The most frames a second the game draws. 30 is what the Xbox 360 aimed for; 60 needs a lot more "
 +       "from the PS5 in the city.",
@@ -23460,6 +23552,9 @@ index 0000000..6aa98e3
 +       "How loud the music is here in the hub. It changes right away.", false,
 +       {"0", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100"},
 +       {"Off", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%"}, "50"},
++      {"DEBUG", "gta4_native_guest_texture_swizzle", "Light Color Fix", nullptr,
++       "Keeps yellow and orange lights from coming out blue. Turn it off only to compare.", false,
++       {"false", "true"}, {"On", "Off"}, "false"},
 +      {"DEBUG", "ps5_save_logs", "Save Logs", nullptr,
 +       "Writes what the game does to /app0/logs while it runs. Send these with a bug report. Takes effect "
 +       "the next time the app starts.",
@@ -24109,6 +24204,14 @@ index 0000000..6aa98e3
 +  const std::string v = Value(r.key, r.fallback);
 +  for (size_t k = 0; k < r.values.size(); ++k)
 +    if (v == r.values[k]) return int(k);
++  // (a number the game wrote itself: "1.000000" for "1.0")
++  if (char* end = nullptr; !r.quoted && !v.empty()) {
++    const double n = std::strtod(v.c_str(), &end);
++    if (end && *end == '\0')
++      for (size_t k = 0; k < r.values.size(); ++k)
++        if (std::fabs(std::strtod(r.values[k], nullptr) - n) < 1e-6 && std::isdigit((unsigned char)r.values[k][0]))
++          return int(k);
++  }
 +  for (size_t k = 0; k < r.values.size(); ++k)
 +    if (std::string(r.fallback) == r.values[k]) return int(k);
 +  return 0;
@@ -31131,10 +31234,10 @@ index 0000000..87e2fd2
 +#endif  // !_WIN32
 diff --git a/glue/rexglue-sdk-main/include/rex/frame_stats.h b/glue/rexglue-sdk-main/include/rex/frame_stats.h
 new file mode 100644
-index 0000000..96410f8
+index 0000000..c7555ba
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/frame_stats.h
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,35 @@
 +// [ps5 port] The guest's presented frames, for the PS5 build's frame rate
 +// counter and frame time capture: the renderer notes each present.
 +#pragma once
@@ -31148,6 +31251,9 @@ index 0000000..96410f8
 +inline std::atomic<uint64_t> g_presents{0};
 +inline std::atomic<int64_t> g_last_present_ns{0};
 +inline std::atomic<uint32_t> g_last_frame_us{0};
++// The last kHistory frames' times (frame n at n % kHistory), for the graph.
++inline constexpr uint32_t kHistory = 256;
++inline std::atomic<uint32_t> g_history_us[kHistory];
 +
 +inline int64_t NowNs() {
 +  return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -31159,8 +31265,11 @@ index 0000000..96410f8
 +inline void NotePresent() {
 +  const int64_t now = NowNs();
 +  const int64_t last = g_last_present_ns.exchange(now, std::memory_order_acq_rel);
-+  if (last) g_last_frame_us.store(uint32_t((now - last) / 1000), std::memory_order_relaxed);
-+  g_presents.fetch_add(1, std::memory_order_release);
++  const uint32_t us = last ? uint32_t((now - last) / 1000) : 0;
++  if (last) g_last_frame_us.store(us, std::memory_order_relaxed);
++  const uint64_t n = g_presents.load(std::memory_order_relaxed);
++  g_history_us[n % kHistory].store(us, std::memory_order_relaxed);
++  g_presents.store(n + 1, std::memory_order_release);
 +}
 +
 +}  // namespace rex::frame_stats
@@ -36631,7 +36740,7 @@ index 1d5402e..1adeb3c 100644
    if (command_processor_) {
      command_processor_->increment_counter();
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
-index 581a9d2..c47978f 100644
+index 581a9d2..d0d5ea6 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 @@ -1,3 +1,4 @@
@@ -36639,7 +36748,20 @@ index 581a9d2..c47978f 100644
  #include <rex/graphics/gta4_native/fusion_tone_lut.h>
  #include <rex/graphics/gta4_native/modern_effect_constants.h>
  #include "core/font_atlas.h"
-@@ -4743,6 +4744,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
+@@ -404,6 +405,12 @@ REXCVAR_DEFINE_BOOL(gta4_native_pipelined_recording, true, "GTA IV/Graphics/Nati
+                     "Record and submit each frame on a second thread while the worker assembles the next");
+ REXCVAR_DEFINE_BOOL(gta4_native_async_command_retire, true, "GTA IV/Graphics/Native Renderer",
+                     "Destroy recorded frame commands on a background thread");
++// [ps5 port] Android's choice on the PS5 too: with the guest swizzle applied
++// the lights' ARGB textures come out with red and blue swapped (yellow light
++// drawn blue).
++REXCVAR_DEFINE_BOOL(gta4_native_guest_texture_swizzle, !(REX_PLATFORM_ANDROID || REX_PLATFORM_PS5),
++                    "GTA IV/Graphics/Native Renderer",
++                    "Apply the guest's texture swizzle in image views where the GPU allows it");
+ REXCVAR_DEFINE_BOOL(gta4_vertex_color_as_rgba, false, "GTA IV/Diagnostics",
+                     "Bind D3DCOLOR vertex elements as R8G8B8A8 instead of B8G8R8A8");
+ REXCVAR_DEFINE_BOOL(gta4_trace_startup_content, false, "GTA IV/Diagnostics",
+@@ -4743,6 +4750,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
    if (header.type == CommandType::kPresent) {
      const auto& present = *static_cast<const PresentCommand*>(command);
      MarkFrameTimeline(present.submitted_frame, kTimelineGuestPresent);
@@ -36647,7 +36769,7 @@ index 581a9d2..c47978f 100644
      const auto frontbuffer_fetch =
          std::bit_cast<xenos::xe_gpu_texture_fetch_t>(present.frontbuffer_fetch);
      auto fetch_matches = [&frontbuffer_fetch](const NativeTextureResource& resource) {
-@@ -6479,7 +6481,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -6479,7 +6487,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
            bound.read_epoch = read_epoch;
            const auto mark_read = [read_epoch](const NativeTextureResource* resource) {
              if (resource)
@@ -36656,7 +36778,26 @@ index 581a9d2..c47978f 100644
            };
            for (const auto& texture : assembled.textures) {
              if (!texture) continue;
-@@ -31231,7 +31233,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -18714,12 +18722,14 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
+     view_info.components.b = VK_COMPONENT_SWIZZLE_ONE;
+     view_info.components.a = VK_COMPONENT_SWIZZLE_R;
+   } else if (vulkan_device->properties().portabilitySubset ||
+-             !vulkan_device->properties().imageViewFormatSwizzle || REX_PLATFORM_ANDROID) {
++             !vulkan_device->properties().imageViewFormatSwizzle ||
++             !REXCVAR_GET(gta4_native_guest_texture_swizzle)) {
+     // Ordinary native portability views deliberately retain the established
+     // identity policy even when font-only swizzle support is enabled.
+-    // Android follows the same policy: the native renderer and its shader
+-    // overrides are tuned against these identity views, and applying the guest
+-    // swizzle instead swaps red and blue in GTA IV's ARGB light textures.
++    // Android and the PS5 follow the same policy (gta4_native_guest_texture_swizzle):
++    // the native renderer and its shader overrides are tuned against these
++    // identity views, and applying the guest swizzle instead swaps red and blue
++    // in GTA IV's ARGB light textures.
+     host_swizzle = xenos::XE_GPU_TEXTURE_SWIZZLE_RGBA;
+     view_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                             VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
+@@ -31231,7 +31241,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
        if (pipelined_recording_ && frame_constant_bound_.valid && frame_constant_bound_.read_epoch &&
            REXCVAR_GET(gta4_native_assembled_frame_scans)) {
          // A later frame's stamp only makes this conservative (an extra resolve).
@@ -38912,6 +39053,20 @@ index 541be7e..6b8b894 100644
  #endif
        default:
          assert_unhandled_case(surface_type);
+diff --git a/glue/rexglue-sdk-main/src/ui/window.cpp b/glue/rexglue-sdk-main/src/ui/window.cpp
+index 3516238..5fcfe7c 100644
+--- a/glue/rexglue-sdk-main/src/ui/window.cpp
++++ b/glue/rexglue-sdk-main/src/ui/window.cpp
+@@ -51,7 +51,8 @@ REXCVAR_DEFINE_INT32(video_mode_height, 720, "Display", "Guest video mode height
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
+ // Android: native 720p (the console's resolution); the presenter scales it to the panel.
+-REXCVAR_DEFINE_STRING(resolution, REX_PLATFORM_ANDROID ? "720p" : "", "Display",
++// [ps5 port] PS5: 1080p, scaled to the 4K output (the hub sets it).
++REXCVAR_DEFINE_STRING(resolution, REX_PLATFORM_ANDROID ? "720p" : REX_PLATFORM_PS5 ? "1080p" : "", "Display",
+                       "Common resolution preset for both guest video mode and startup window (for "
+                       "example: 720p, 1080p, 1440p, 4k, 1280x720)")
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 diff --git a/glue/rexglue-sdk-main/src/ui/window_sdl.cpp b/glue/rexglue-sdk-main/src/ui/window_sdl.cpp
 index 87f9774..5acee30 100644
 --- a/glue/rexglue-sdk-main/src/ui/window_sdl.cpp
