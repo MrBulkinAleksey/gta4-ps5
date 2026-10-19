@@ -149,7 +149,7 @@ index 42ddaa3..f25b7a2 100644
  #else
  #define REX_PHYS_HOST_OFFSET(addr) 0u
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
-index 68d694b..63d0cb2 100644
+index 68d694b..36dfde1 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
 @@ -1,4 +1,7 @@
@@ -166,7 +166,7 @@ index 68d694b..63d0cb2 100644
      const rex::PathConfig& defaults, std::function<void(rex::PathConfig)> resume) {
 +#if REX_PLATFORM_PS5
 +  // [ps5 port] The hub first; START GAME carries on with the start.
-+  gta4ps5::ShowHub(this, defaults, liberty_root_, native_config_path_,
++  gta4ps5::ShowHub(imgui_drawer(), immediate_drawer(), defaults, liberty_root_, native_config_path_,
 +                   [this, defaults, resume](void) {
 +                     if (auto paths = ContinueStartup(defaults, resume)) resume(std::move(*paths));
 +                   });
@@ -223,7 +223,7 @@ index 68d694b..63d0cb2 100644
  
  void GTA4App::OnPostSetup() {
 +#if REX_PLATFORM_PS5
-+  gta4ps5::OnGameSetUp(this);
++  gta4ps5::OnGameSetUp(imgui_drawer(), runtime(), user_data_root());
 +#endif
  #if REX_PLATFORM_ANDROID
    StartLiveCvarWatcher(rex::filesystem::GetUserFolder() / "live_cvars.txt");
@@ -1424,11 +1424,12 @@ index 0000000..18a0d8a
 +}  // namespace gta4ps5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp
 new file mode 100644
-index 0000000..6db962c
+index 0000000..ac8e355
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,74 @@
 +// GTA IV PS5 - the app's PS5 parts (see gta4_ps5_app.h).
++#include <rex/platform.h>
 +#if REX_PLATFORM_PS5
 +
 +#include "gta4_ps5_app.h"
@@ -1456,8 +1457,8 @@ index 0000000..6db962c
 +std::unique_ptr<GameOverlay> g_overlay;
 +}  // namespace
 +
-+void ShowHub(rex::ReXApp* app, const rex::PathConfig& paths, const fs::path& liberty_root, const fs::path& config,
-+             std::function<void()> launch) {
++void ShowHub(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate, const rex::PathConfig& paths,
++             const fs::path& liberty_root, const fs::path& config, std::function<void()> launch) {
 +  g_saves_root = paths.saved_game_root.empty() ? liberty_root / "saves" : paths.saved_game_root;
 +  std::error_code ec;
 +  fs::create_directories(config.parent_path(), ec);
@@ -1479,7 +1480,7 @@ index 0000000..6db962c
 +                        if (r.errors.size() > 4) message += "\n...the log lists the rest.";
 +                        return message;
 +                      }});
-+  hub::Show(app->imgui_drawer(), app->immediate_drawer(), hub_paths, [config, launch = std::move(launch)] {
++  hub::Show(drawer, immediate, hub_paths, [config, launch = std::move(launch)] {
 +    // the hub's settings, for this start
 +    rex::cvar::LoadConfig(config);
 +    REXLOG_INFO("PS5 hub: START GAME (GTA IV PS5 {})", BuildVersion());
@@ -1487,9 +1488,9 @@ index 0000000..6db962c
 +  });
 +}
 +
-+void OnGameSetUp(rex::ReXApp* app) {
-+  WriteTrophyCatalog(app->runtime(), app->user_data_root());
-+  g_overlay = std::make_unique<GameOverlay>(app->imgui_drawer());
++void OnGameSetUp(rex::ui::ImGuiDrawer* drawer, rex::Runtime* runtime, const fs::path& user_data) {
++  WriteTrophyCatalog(runtime, user_data);
++  g_overlay = std::make_unique<GameOverlay>(drawer);
 +}
 +
 +}  // namespace gta4ps5
@@ -1503,13 +1504,15 @@ index 0000000..6db962c
 +#endif  // REX_PLATFORM_PS5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.h
 new file mode 100644
-index 0000000..7d2acfc
+index 0000000..f357bee
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.h
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,23 @@
 +// GTA IV PS5 - the app's PS5 parts: the hub before the game, the trophy
 +// popup, the frame rate counter and watermark, Xbox 360 save import.
 +#pragma once
++
++#include <rex/platform.h>
 +
 +#if REX_PLATFORM_PS5
 +#include <filesystem>
@@ -1520,10 +1523,11 @@ index 0000000..7d2acfc
 +namespace gta4ps5 {
 +
 +// Shows the hub (on the UI thread); `launch` runs on START GAME.
-+void ShowHub(rex::ReXApp* app, const rex::PathConfig& paths, const std::filesystem::path& liberty_root,
-+             const std::filesystem::path& config, std::function<void()> launch);
++void ShowHub(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate, const rex::PathConfig& paths,
++             const std::filesystem::path& liberty_root, const std::filesystem::path& config,
++             std::function<void()> launch);
 +// The runtime is set up: the trophy list for the hub, the in-game overlay.
-+void OnGameSetUp(rex::ReXApp* app);
++void OnGameSetUp(rex::ui::ImGuiDrawer* drawer, rex::Runtime* runtime, const std::filesystem::path& user_data);
 +
 +}  // namespace gta4ps5
 +#endif

@@ -35,6 +35,7 @@ ln -sfn "$tri/vendor" "$stage/vendor"
 link_cmd=$(ninja -C "$build" -t commands gta4 | tail -1)
 mapfile -t inputs < <(cd "$build" && for w in $link_cmd; do
     case $w in
+        */libz.a) ;;  # (RADV's archive has zlib in it)
         *.o|*.a) [[ $w = /* ]] && echo "$w" || echo "$build/$w" ;;
     esac
 done)
