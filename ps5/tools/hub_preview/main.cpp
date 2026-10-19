@@ -22,11 +22,6 @@
 #include "imgui.h"
 #include "hub_ui.h"
 
-// The PLAY button's face in the fonts folder (as the PS5 build's).
-#ifndef PS5_HUB_PLAY_FONT
-#define PS5_HUB_PLAY_FONT "russo-one-latin-400-normal.ttf"
-#endif
-
 namespace {
 struct Tex {
   int w = 0, h = 0;
@@ -125,10 +120,6 @@ int main(int argc, char** argv) {
     const auto* bold = read(fonts + "/texgyreheroscn-bold.otf");
     const auto* regular = read(fonts + "/texgyreheroscn-regular.otf");
     AddMenuFonts(io.Fonts, bold->data(), int(bold->size()), regular->data(), int(regular->size()), a);
-    // the PLAY button's face (HUB_PLAY_FONT: another file, to try one)
-    const char* play_font = std::getenv("HUB_PLAY_FONT");
-    const auto* play = read(play_font ? std::string(play_font) : fonts + "/" PS5_HUB_PLAY_FONT);
-    if (!play->empty()) AddPlayFont(io.Fonts, play->data(), int(play->size()), a);
   }
   unsigned char* px;
   int fw, fh;
