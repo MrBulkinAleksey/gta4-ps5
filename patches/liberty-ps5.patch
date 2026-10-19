@@ -24279,10 +24279,10 @@ index 00000000..7d075b44
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..ee92b0be
+index 00000000..556c35e5
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1210 @@
+@@ -0,0 +1,1208 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -24436,7 +24436,7 @@ index 00000000..ee92b0be
 +      {"DISPLAY", "ps5_environment_reflection_every", "Car Reflections", nullptr,
 +       "How often the reflections on cars and glass are redrawn. Every other frame looks the same "
 +       "in motion and leaves more time for the rest of the frame.",
-+       false, {"1", "2"}, {"Every Frame", "Every Other Frame"}, "2"},
++       false, {"1", "2"}, {"Every Frame", "Every Other Frame"}, "1"},
 +      {"GAME", "gta4_skip_intro", "Skip Intro", nullptr,
 +       "Goes straight to the game's start screen, past the logos and the legal screens.", false,
 +       {"false", "true"}, {"Off", "On"}, "false"},
@@ -24460,11 +24460,9 @@ index 00000000..ee92b0be
 +       true, {"info", "debug", "trace"}, {"Normal", "Detailed", "Everything"}, "info"},
 +      {"DEBUG", "ps5_renderer_cpus", "Renderer Threads", nullptr,
 +       "Own Cores gives the game's render thread and the two renderer threads a CPU core each and "
-+       "moves everything else off them. Together keeps the three on the same half of the CPU. "
-+       "Compare switches between Anywhere and Own Cores every 10 seconds and notes each in the log, "
-+       "to measure which is faster.",
-+       true, {"any", "together", "cores", "compare"}, {"Anywhere", "Together", "Own Cores", "Compare"},
-+       "any"},
++       "moves everything else off them (about 10% faster than Anywhere). Compare switches between "
++       "two versions of Own Cores every 10 seconds and notes each in the log.",
++       true, {"cores", "any", "compare"}, {"Own Cores", "Anywhere", "Compare"}, "cores"},
 +      {"DEBUG", "ps5_frametime_capture", "Frame Time Capture", nullptr,
 +       "Records every frame's time to a CSV file in /app0/logs, for checking stutter and slowdowns.", false,
 +       {"false", "true"}, {"Off", "On"}, "false"},
@@ -32151,10 +32149,10 @@ index 00000000..87e2fd2e
 +#endif  // !_WIN32
 diff --git a/glue/rexglue-sdk-main/include/rex/frame_stats.h b/glue/rexglue-sdk-main/include/rex/frame_stats.h
 new file mode 100644
-index 00000000..de33c3c3
+index 00000000..726efb5f
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/frame_stats.h
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,189 @@
 +// [ps5 port] The guest's presented frames, for the PS5 build's frame rate
 +// counter and frame time capture: the renderer notes each present.
 +#pragma once
@@ -32242,35 +32240,46 @@ index 00000000..de33c3c3
 +inline constexpr uint64_t kGameCpus = 0x1FFF, kFirstClusterCpus = 0xFF;
 +// Renderer Threads on Own Cores (a layout, not a mask): the game's render
 +// thread, the recorder and the worker each get a core of their own (CPUs 0,
-+// 2 and 4; a core's two hardware threads are numbered side by side), CPUs 1
-+// and 3 are left empty so those two never share theirs, and every other
-+// thread runs on CPUs 5-12.
++// 2 and 4; a core's two hardware threads are numbered side by side), and
++// every other thread runs on CPUs 5-12. The thread that recycles finished
++// commands shares the render thread's core (CPU 1): the commands and the
++// reference counts it writes are the ones the render thread fills next, and
++// on its own core they stay in that core's cache. Apart, it runs with the
++// rest and CPUs 1 and 3 are left empty.
 +inline constexpr uint64_t kOwnCoresLayout = uint64_t(1) << 63;
-+inline constexpr uint64_t kTitleCpu = 1u << 0, kRecorderCpu = 1u << 2, kWorkerCpu = 1u << 4;
++inline constexpr uint64_t kOwnCoresApartLayout = uint64_t(1) << 62;
++inline constexpr uint64_t kTitleCpu = 1u << 0, kRetirerCpu = 1u << 1, kRecorderCpu = 1u << 2,
++                          kWorkerCpu = 1u << 4;
 +inline constexpr uint64_t kOtherThreadCpus = kGameCpus & ~uint64_t(0x1F);
-+enum class RendererRole { kTitle, kWorker, kRecorder, kOther };
++inline bool IsOwnCoresLayout(uint64_t layout) {
++  return layout == kOwnCoresLayout || layout == kOwnCoresApartLayout;
++}
++enum class RendererRole { kTitle, kWorker, kRecorder, kRetirer, kOther };
 +// The CPUs one thread is kept on under a layout (0: anywhere).
 +inline uint64_t RendererRoleMask(uint64_t layout, RendererRole role) {
-+  if (layout == kOwnCoresLayout) {
++  if (IsOwnCoresLayout(layout)) {
 +    switch (role) {
 +      case RendererRole::kTitle: return kTitleCpu;
 +      case RendererRole::kRecorder: return kRecorderCpu;
 +      case RendererRole::kWorker: return kWorkerCpu;
++      case RendererRole::kRetirer:
++        return layout == kOwnCoresLayout ? kRetirerCpu : kOtherThreadCpus;
 +      default: return kOtherThreadCpus;
 +    }
 +  }
 +  if (role == RendererRole::kOther && layout != kFirstClusterCpus) return kGameCpus;
 +  return layout ? layout : kGameCpus;
 +}
-+// Renderer Threads on Compare: the timing report switches between anywhere
-+// and own cores every 10 s, so one session measures both.
++// Renderer Threads on Compare: the timing report switches between own cores
++// with the recycling thread beside the render thread and apart from it every
++// 10 s, so one session measures both.
 +inline std::atomic<bool> g_renderer_cpu_compare{false};
 +// The layout the Renderer Threads setting asks for at start.
 +inline uint64_t RendererCpuMaskFor(std::string_view setting) {
++  if (setting == "any") return 0;
 +  if (setting == "together") return kFirstClusterCpus;
-+  if (setting == "cores") return kOwnCoresLayout;
-+  if (setting == "compare") return kGameCpus;
-+  return 0;
++  if (setting == "apart") return kOwnCoresApartLayout;
++  return kOwnCoresLayout;  // "cores" and "compare"
 +}
 +#if defined(__PROSPERO__)
 +extern "C" int32_t sceKernelGetCurrentCpu(void);
@@ -32283,7 +32292,7 @@ index 00000000..de33c3c3
 +// every draw; kept on one of the CPU's two clusters, they share its cache.
 +inline void KeepRendererThreadOnItsCpus() {
 +  scePthreadSetaffinity(pthread_self(), RendererRoleMask(g_renderer_cpu_mask.load(std::memory_order_relaxed),
-+                                                         RendererRole::kOther));
++                                                         RendererRole::kRetirer));
 +}
 +// Once a frame on each renderer thread: applies its CPUs when the layout changed.
 +inline void FollowRendererCpuMask(uint64_t& applied, RendererRole role) {
@@ -38391,7 +38400,7 @@ index 64bedd7b..49263b67 100644
    const uint32_t bits_per_word = std::numeric_limits<uint64_t>::digits;
    result.words.assign(
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
-index 581a9d20..dbfaa9c5 100644
+index 581a9d20..6cfafc53 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 @@ -1,3 +1,7 @@
@@ -38446,15 +38455,15 @@ index 581a9d20..dbfaa9c5 100644
 +// 15 fps). Decoupled, the recorder hands the frame over and carries on, and
 +// the game is held to the frame limit on its own (gta4_native_hooks.cpp), so
 +// a heavy scene runs at its real 25 fps instead of 15.
-+REXCVAR_DEFINE_STRING(ps5_renderer_cpus, "any", "PS5",
++REXCVAR_DEFINE_STRING(ps5_renderer_cpus, "cores", "PS5",
 +                      "Where the game's render thread, the render worker and the recorder run: any "
 +                      "CPU, together on the first cluster (CPUs 0-7, one shared cache), or compare "
 +                      "(the two in turn, 10 s each, for the timing report)")
-+    .allowed({"any", "together", "cores", "compare"});
++    .allowed({"any", "together", "cores", "apart", "compare"});
 +// [ps5 port] Read by the draw, clear and resolve hooks (gta4_native_hooks.cpp):
 +// on the frames in between, the environment reflection map (car paint, glass)
 +// is not redrawn and keeps the last one; its commands never reach the renderer.
-+REXCVAR_DEFINE_UINT32(ps5_environment_reflection_every, 2, "PS5",
++REXCVAR_DEFINE_UINT32(ps5_environment_reflection_every, 1, "PS5",
 +                      "Redraw the environment reflection map (cars, glass) every Nth frame")
 +    .range(1, 4);
 +REXCVAR_DEFINE_BOOL(ps5_decoupled_presentation, true, "PS5",
@@ -44308,7 +44317,7 @@ index 87f97744..5acee304 100644
    if (allowed_types & Surface::kTypeFlag_AndroidNativeWindow) {
      auto* native_window = static_cast<ANativeWindow*>(GetNativeWindowHandle());
 diff --git a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
-index ac2d8dc4..5860d4f2 100644
+index ac2d8dc4..a045ee96 100644
 --- a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 @@ -11,6 +11,7 @@
@@ -44404,7 +44413,7 @@ index ac2d8dc4..5860d4f2 100644
  
      app->InvokeOnDestroy();
    }
-@@ -161,8 +203,330 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
+@@ -161,8 +203,331 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
  #include <SDL3/SDL_main.h>
  #endif
  
@@ -44590,23 +44599,24 @@ index ac2d8dc4..5860d4f2 100644
 +                    per_frame(pacer_us),
 +                    per_frame(wait_us));
 +        const uint64_t kept = g_renderer_cpu_mask.load();
-+        const char* layout = kept == kOwnCoresLayout     ? "own cores"
-+                             : kept == kFirstClusterCpus ? "together"
-+                                                         : "anywhere";
++        const char* layout = kept == kOwnCoresLayout        ? "own cores"
++                             : kept == kOwnCoresApartLayout ? "own cores, recycling apart"
++                             : kept == kFirstClusterCpus    ? "together"
++                                                            : "anywhere";
 +        REXLOG_INFO("ps5 cpus: game {:#x}, worker {:#x}, recorder {:#x} ({}{})",
 +                    g_cpus_title.exchange(0), g_cpus_worker.exchange(0), g_cpus_recorder.exchange(0),
 +                    layout, g_renderer_cpu_compare.load() ? ", comparing" : "");
 +        // Renderer Threads on Compare: the other layout for the next 10 s.
 +        uint64_t next = kept;
 +        if (g_renderer_cpu_compare.load()) {
-+          next = kept == kOwnCoresLayout ? kGameCpus : kOwnCoresLayout;
++          next = kept == kOwnCoresLayout ? kOwnCoresApartLayout : kOwnCoresLayout;
 +          g_renderer_cpu_mask.store(next);
 +        }
 +        // The game's other threads leave the renderer's cores (or get them
 +        // back), every 10 s so threads started since are moved too.
 +        static bool others_moved = false;
-+        if (next == kOwnCoresLayout || others_moved) {
-+          others_moved = next == kOwnCoresLayout;
++        if (IsOwnCoresLayout(next) || others_moved) {
++          others_moved = IsOwnCoresLayout(next);
 +          rex::ps5diag::KeepOtherThreadsOn(RendererRoleMask(next, RendererRole::kOther),
 +                                           g_title_thread.load());
 +        }
