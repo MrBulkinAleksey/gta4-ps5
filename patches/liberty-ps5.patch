@@ -475,7 +475,7 @@ index bb44175b..1b222e35 100644
  struct PlayerInfoBatchProjectionContext {
    bool active = false;
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp
-index 2a4966bd..3a843ada 100644
+index 2a4966bd..2c9b5e96 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp
 @@ -25,7 +25,10 @@
@@ -503,7 +503,7 @@ index 2a4966bd..3a843ada 100644
    if (!frames) {
      g_shadow_trace_value = 0;
      return false;
-@@ -7555,6 +7560,49 @@ extern "C" void sub_826273A0(PPCContext& ctx, uint8_t* base) {
+@@ -7555,6 +7560,52 @@ extern "C" void sub_826273A0(PPCContext& ctx, uint8_t* base) {
    }
  }
  
@@ -517,6 +517,9 @@ index 2a4966bd..3a843ada 100644
 +// the schedule when it is a whole frame late), so a 40 ms frame is shown at
 +// 40 ms, not at the next 33 ms slot after it.
 +static void Ps5LimitFrameRate() {
++  if (!rex::frame_stats::g_title_thread.load(std::memory_order_relaxed))
++    rex::frame_stats::g_title_thread.store(reinterpret_cast<uintptr_t>(pthread_self()),
++                                           std::memory_order_relaxed);
 +  if (!REXCVAR_GET(ps5_decoupled_presentation) ||
 +      rex::frame_stats::g_frame_generation_active.load(std::memory_order_relaxed))
 +    return;
@@ -553,7 +556,7 @@ index 2a4966bd..3a843ada 100644
  extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
    if (!IsNativeMode()) {
      __imp__sub_82A467D8(ctx, base);
-@@ -7648,9 +7696,13 @@ extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
+@@ -7648,9 +7699,13 @@ extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
    }
    g_last_present_frontbuffer.store(command.frontbuffer_texture, std::memory_order_relaxed);
    SubmitNativeCommand(command);
@@ -23708,7 +23711,7 @@ index 00000000..7d075b44
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..0b3bd49a
+index 00000000..a075012b
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 @@ -0,0 +1,1195 @@
@@ -23831,10 +23834,10 @@ index 00000000..0b3bd49a
 +       "this is a beta, so start low and work up.",
 +       true, {"720p", "1080p", "1440p", "4k"}, {"720p (Original)", "1080p", "1440p", "4K"}, "1080p"},
 +      {"DISPLAY", "gta4_draw_distance_scale", "Draw Distance", nullptr,
-+       "How far out buildings and the city are drawn in detail. Original is the Xbox 360's. Farther costs "
-+       "frame rate, and past 1.5x the game can run short of memory: fewer cars and people, and textures "
-+       "that come and go.",
-+       false, {"1.0", "1.5", "2.0", "3.0"}, {"Original", "1.5x", "2x", "3x"}, "1.0"},
++       "How far out buildings and the city are drawn in detail. Original is the Xbox 360's. Shorter draws "
++       "less of the city and runs faster in busy streets, with more pop-in. Farther costs frame rate, and "
++       "past 1.5x the game can run short of memory.",
++       false, {"0.75", "1.0", "1.5", "2.0", "3.0"}, {"Shorter", "Original", "1.5x", "2x", "3x"}, "1.0"},
 +      {"DISPLAY", "gta4_frame_limit", "Frame Limit", nullptr,
 +       "The most frames a second the game draws. 30 is what the Xbox 360 aimed for; 60 needs a lot more "
 +       "from the PS5 in the city.",
@@ -31565,10 +31568,10 @@ index 00000000..87e2fd2e
 +#endif  // !_WIN32
 diff --git a/glue/rexglue-sdk-main/include/rex/frame_stats.h b/glue/rexglue-sdk-main/include/rex/frame_stats.h
 new file mode 100644
-index 00000000..40af237f
+index 00000000..aef99b13
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/frame_stats.h
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,101 @@
 +// [ps5 port] The guest's presented frames, for the PS5 build's frame rate
 +// counter and frame time capture: the renderer notes each present.
 +#pragma once
@@ -31576,6 +31579,10 @@ index 00000000..40af237f
 +#include <atomic>
 +#include <chrono>
 +#include <cstdint>
++
++#include <pthread.h>
++
++#include <rex/chrono/clock.h>
 +
 +namespace rex::frame_stats {
 +
@@ -31619,6 +31626,30 @@ index 00000000..40af237f
 +// it), summed for the timing line and for its current frame.
 +inline std::atomic<uint64_t> g_title_slot_wait_us{0}, g_title_frame_slot_wait_us{0};
 +inline std::atomic<uint32_t> g_title_last_slot_wait_us{0};
++// The game's render thread (set at its first present) and the time it spent
++// blocked on the game's own other threads: guest waits, sleeps and lock
++// spins. Its frame less these and the renderer waits is its work.
++inline std::atomic<uintptr_t> g_title_thread{0};
++inline std::atomic<uint64_t> g_title_guest_wait_ticks{0};
++inline bool IsTitleThread() {
++  const uintptr_t title = g_title_thread.load(std::memory_order_relaxed);
++  return title && title == reinterpret_cast<uintptr_t>(pthread_self());
++}
++class TitleWaitScope {
++ public:
++  TitleWaitScope() : begin_(IsTitleThread() ? rex::chrono::Clock::QueryHostTickCount() : 0) {}
++  ~TitleWaitScope() {
++    if (begin_)
++      g_title_guest_wait_ticks.fetch_add(rex::chrono::Clock::QueryHostTickCount() - begin_,
++                                         std::memory_order_relaxed);
++  }
++  TitleWaitScope(const TitleWaitScope&) = delete;
++  TitleWaitScope& operator=(const TitleWaitScope&) = delete;
++
++ private:
++  uint64_t begin_;
++};
++
 +inline void NoteTitleSlotWait(uint64_t us) {
 +  g_title_slot_wait_us.fetch_add(us, std::memory_order_relaxed);
 +  g_title_frame_slot_wait_us.fetch_add(us, std::memory_order_relaxed);
@@ -32440,15 +32471,17 @@ index 00000000..61d85885
 +}  // namespace ui
 +}  // namespace rex
 diff --git a/glue/rexglue-sdk-main/include/rex/ui/vulkan/device.h b/glue/rexglue-sdk-main/include/rex/ui/vulkan/device.h
-index 984e5e23..38102400 100644
+index 984e5e23..81b3132a 100644
 --- a/glue/rexglue-sdk-main/include/rex/ui/vulkan/device.h
 +++ b/glue/rexglue-sdk-main/include/rex/ui/vulkan/device.h
-@@ -24,6 +24,8 @@ namespace vulkan {
+@@ -24,6 +24,10 @@ namespace vulkan {
  // TEMP (Android perf investigation): per-frame averages of counted Vulkan commands
  // since the previous call.
  std::string ConsumeCommandCounters(uint32_t frames);
 +// [ps5 port] Reuse counts of the device-memory recycler (PS5 only).
 +std::string MemoryRecyclerSummary();
++// Gives back everything the recycler holds (PS5 only; no-op elsewhere).
++void MemoryRecyclerReleaseAll();
  
  class VulkanDevice {
   public:
@@ -36758,10 +36791,10 @@ index 00000000..95c028d7
 +}
 +#endif
 diff --git a/glue/rexglue-sdk-main/src/core/threading_posix.cpp b/glue/rexglue-sdk-main/src/core/threading_posix.cpp
-index 8c31d93a..d0920b4d 100644
+index 8c31d93a..ccc697bc 100644
 --- a/glue/rexglue-sdk-main/src/core/threading_posix.cpp
 +++ b/glue/rexglue-sdk-main/src/core/threading_posix.cpp
-@@ -27,15 +27,22 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+@@ -27,15 +27,23 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
  #if REX_PLATFORM_ANDROID
  #include <android/log.h>
  #endif
@@ -36781,10 +36814,11 @@ index 8c31d93a..d0920b4d 100644
 +#include <rex/cvar.h>
  #include <rex/chrono/chrono_steady_cast.h>
 +#include <rex/chrono/clock.h>
++#include <rex/frame_stats.h>
  #include <rex/logging.h>
  #include <rex/thread/timer_queue.h>
  
-@@ -49,7 +56,79 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+@@ -49,7 +57,79 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
  #include <rex/string.h>
  #endif
  
@@ -36865,7 +36899,7 @@ index 8c31d93a..d0920b4d 100644
  // SIGEV_THREAD_ID in timer_create(...) is a Linux extension
  #define REX_HAS_SIGEV_THREAD_ID 1
  #ifdef __GLIBC__
-@@ -62,6 +141,11 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+@@ -62,6 +142,11 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
  #define REX_HAS_SIGEV_THREAD_ID 0
  #endif
  
@@ -36877,7 +36911,7 @@ index 8c31d93a..d0920b4d 100644
  namespace rex::thread {
  
  #if REX_PLATFORM_ANDROID
-@@ -115,12 +199,24 @@ enum class SignalType {
+@@ -115,12 +200,24 @@ enum class SignalType {
  };
  
  int GetSystemSignal(SignalType num) {
@@ -36902,7 +36936,7 @@ index 8c31d93a..d0920b4d 100644
    return static_cast<SignalType>(num - SIGRTMIN);
  }
  
-@@ -150,7 +246,7 @@ void EnableAffinityConfiguration() {}
+@@ -150,7 +247,7 @@ void EnableAffinityConfiguration() {}
  // uint64_t ticks() { return mach_absolute_time(); }
  
  uint32_t current_thread_system_id() {
@@ -36911,7 +36945,17 @@ index 8c31d93a..d0920b4d 100644
  }
  
  void MaybeYield() {
-@@ -221,7 +317,7 @@ bool SetTlsValue(TlsHandle handle, uintptr_t value) {
+@@ -163,6 +260,9 @@ void SyncMemory() {
+ }
+ 
+ void Sleep(std::chrono::microseconds duration) {
++#if REX_PLATFORM_PS5
++  const rex::frame_stats::TitleWaitScope title_wait;
++#endif
+   timespec rqtp = DurationToTimeSpec(duration);
+   timespec rmtp = {};
+   auto p_rqtp = &rqtp;
+@@ -221,7 +321,7 @@ bool SetTlsValue(TlsHandle handle, uintptr_t value) {
  class PosixConditionBase {
   public:
    PosixConditionBase() {
@@ -36920,7 +36964,7 @@ index 8c31d93a..d0920b4d 100644
      // Use robust mutexes so waits can recover if owner thread terminates.
      pthread_mutexattr_t attr;
      if (pthread_mutexattr_init(&attr) == 0) {
-@@ -241,7 +337,7 @@ class PosixConditionBase {
+@@ -241,7 +341,7 @@ class PosixConditionBase {
    WaitResult Wait(std::chrono::milliseconds timeout) {
      bool executed;
      auto predicate = [this] { return this->signaled(); };
@@ -36929,7 +36973,7 @@ index 8c31d93a..d0920b4d 100644
      auto native_mutex = static_cast<pthread_mutex_t*>(mutex_.native_handle());
      int lock_result = pthread_mutex_lock(native_mutex);
      if (lock_result == EOWNERDEAD) {
-@@ -252,6 +348,11 @@ class PosixConditionBase {
+@@ -252,6 +352,11 @@ class PosixConditionBase {
      std::unique_lock<std::mutex> lock(mutex_, std::adopt_lock);
  #else
      std::unique_lock<std::mutex> lock(mutex_);
@@ -36941,7 +36985,7 @@ index 8c31d93a..d0920b4d 100644
  #endif
      if (predicate()) {
        executed = true;
-@@ -378,6 +479,9 @@ class PosixConditionBase {
+@@ -378,6 +483,9 @@ class PosixConditionBase {
    // Callers hold mutex_. Wakes every WaitMultiple currently including this
    // handle; lock order is always handle mutex_ then waiter mutex.
    void NotifyExternalWaiters() {
@@ -36951,7 +36995,7 @@ index 8c31d93a..d0920b4d 100644
      for (ExternalWaiter* waiter : external_waiters_) {
        std::lock_guard<std::mutex> lock(waiter->mutex);
        ++waiter->generation;
-@@ -395,6 +499,41 @@ class PosixConditionBase {
+@@ -395,6 +503,41 @@ class PosixConditionBase {
    std::condition_variable cond_;
    std::mutex mutex_;
    std::vector<ExternalWaiter*> external_waiters_;  // guarded by mutex_
@@ -36993,7 +37037,7 @@ index 8c31d93a..d0920b4d 100644
  };
  
  // There really is no native POSIX handle for a single wait/signal construct
-@@ -617,10 +756,24 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -617,10 +760,24 @@ class PosixCondition<Thread> : public PosixConditionBase {
      pthread_attr_t attr;
      if (pthread_attr_init(&attr) != 0)
        return false;
@@ -37018,7 +37062,7 @@ index 8c31d93a..d0920b4d 100644
      if (params.initial_priority != 0) {
        sched_param sched{};
        sched.sched_priority = params.initial_priority + 1;
-@@ -633,7 +786,13 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -633,7 +790,13 @@ class PosixCondition<Thread> : public PosixConditionBase {
          return false;
        }
      }
@@ -37033,7 +37077,7 @@ index 8c31d93a..d0920b4d 100644
        pthread_attr_destroy(&attr);
        return false;
      }
-@@ -680,6 +839,8 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -680,6 +843,8 @@ class PosixCondition<Thread> : public PosixConditionBase {
          std::lock_guard<std::mutex> lock(android_pre_api_26_name_mutex_);
          rex::string::copy_truncating(result.data(), android_pre_api_26_name_, result.size());
        }
@@ -37042,7 +37086,7 @@ index 8c31d93a..d0920b4d 100644
  #else
        if (pthread_getname_np(thread_, result.data(), result.size() - 1) != 0) {
          assert_always();
-@@ -693,7 +854,11 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -693,7 +858,11 @@ class PosixCondition<Thread> : public PosixConditionBase {
      WaitStarted();
      std::unique_lock<std::mutex> lock(state_mutex_);
      if (state_ != State::kUninitialized && state_ != State::kFinished) {
@@ -37054,7 +37098,7 @@ index 8c31d93a..d0920b4d 100644
  #if REX_PLATFORM_ANDROID
        SetAndroidPreApi26Name(name);
  #endif
-@@ -711,12 +876,26 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -711,12 +880,26 @@ class PosixCondition<Thread> : public PosixConditionBase {
    }
  #endif
  
@@ -37081,7 +37125,7 @@ index 8c31d93a..d0920b4d 100644
      WaitStarted();
      cpu_set_t cpu_set;
  #if REX_PLATFORM_ANDROID
-@@ -735,9 +914,13 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -735,9 +918,13 @@ class PosixCondition<Thread> : public PosixConditionBase {
        result |= set << i;
      }
      return result;
@@ -37095,7 +37139,7 @@ index 8c31d93a..d0920b4d 100644
      WaitStarted();
      cpu_set_t cpu_set;
      CPU_ZERO(&cpu_set);
-@@ -754,6 +937,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -754,6 +941,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
      if (pthread_setaffinity_np(thread_, sizeof(cpu_set_t), &cpu_set) != 0) {
        assert_always();
      }
@@ -37103,7 +37147,7 @@ index 8c31d93a..d0920b4d 100644
  #endif
    }
  
-@@ -771,6 +955,14 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -771,6 +959,14 @@ class PosixCondition<Thread> : public PosixConditionBase {
  
    void set_priority(int new_priority) {
      WaitStarted();
@@ -37118,7 +37162,7 @@ index 8c31d93a..d0920b4d 100644
  #if REX_PLATFORM_ANDROID
      // Apps may not use SCHED_FIFO; only creation-flag requests land here.
      __android_log_print(ANDROID_LOG_WARN, "LibertyRecomp", "thread-priority-flag tid=%d value=%d",
-@@ -817,6 +1009,9 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -817,6 +1013,9 @@ class PosixCondition<Thread> : public PosixConditionBase {
  #if REX_PLATFORM_ANDROID
      int result = sigqueue(pthread_gettid_np(thread_),
                            GetSystemSignal(SignalType::kThreadUserCallback), value);
@@ -37128,7 +37172,7 @@ index 8c31d93a..d0920b4d 100644
  #else
      int result = pthread_sigqueue(thread_, GetSystemSignal(SignalType::kThreadUserCallback), value);
  #endif
-@@ -949,16 +1144,29 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -949,16 +1148,29 @@ class PosixCondition<Thread> : public PosixConditionBase {
  
    void* native_handle() const override { return reinterpret_cast<void*>(thread_); }
  
@@ -37158,7 +37202,37 @@ index 8c31d93a..d0920b4d 100644
    bool signaled_;
    int exit_code_;
    State state_;             // Protected by state_mutex_
-@@ -1346,6 +1554,10 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+@@ -1081,6 +1293,9 @@ template <>
+ PosixConditionHandle<Thread>::PosixConditionHandle(pthread_t thread) : handle_(thread) {}
+ 
+ WaitResult Wait(WaitHandle* wait_handle, bool is_alertable, std::chrono::milliseconds timeout) {
++#if REX_PLATFORM_PS5
++  const rex::frame_stats::TitleWaitScope title_wait;
++#endif
+   auto posix_wait_handle = dynamic_cast<PosixWaitHandle*>(wait_handle);
+   if (posix_wait_handle == nullptr) {
+     return WaitResult::kFailed;
+@@ -1108,6 +1323,9 @@ WaitResult Wait(WaitHandle* wait_handle, bool is_alertable, std::chrono::millise
+ 
+ WaitResult SignalAndWait(WaitHandle* wait_handle_to_signal, WaitHandle* wait_handle_to_wait_on,
+                          bool is_alertable, std::chrono::milliseconds timeout) {
++#if REX_PLATFORM_PS5
++  const rex::frame_stats::TitleWaitScope title_wait;
++#endif
+   auto result = WaitResult::kFailed;
+   auto posix_wait_handle_to_signal = dynamic_cast<PosixWaitHandle*>(wait_handle_to_signal);
+   auto posix_wait_handle_to_wait_on = dynamic_cast<PosixWaitHandle*>(wait_handle_to_wait_on);
+@@ -1141,6 +1359,9 @@ WaitResult SignalAndWait(WaitHandle* wait_handle_to_signal, WaitHandle* wait_han
+ std::pair<WaitResult, size_t> WaitMultiple(WaitHandle* wait_handles[], size_t wait_handle_count,
+                                            bool wait_all, bool is_alertable,
+                                            std::chrono::milliseconds timeout) {
++#if REX_PLATFORM_PS5
++  const rex::frame_stats::TitleWaitScope title_wait;
++#endif
+   std::vector<PosixConditionBase*> conditions;
+   conditions.reserve(wait_handle_count);
+   for (size_t i = 0u; i < wait_handle_count; ++i) {
+@@ -1346,6 +1567,10 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
  
    current_thread_ = thread;
    current_thread_condition_ = &thread->handle_;
@@ -37169,7 +37243,7 @@ index 8c31d93a..d0920b4d 100644
    {
      std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
      thread->handle_.suspend_count_ = create_suspended ? 1 : 0;
-@@ -1430,7 +1642,11 @@ void Thread::Exit(int exit_code) {
+@@ -1430,7 +1655,11 @@ void Thread::Exit(int exit_code) {
  }
  
  void set_current_thread_name(const std::string_view name) {
@@ -37499,7 +37573,7 @@ index 1d5402e9..1adeb3c1 100644
    if (command_processor_) {
      command_processor_->increment_counter();
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
-index 581a9d20..3af59f84 100644
+index 581a9d20..2f4a68e5 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 @@ -1,3 +1,7 @@
@@ -37952,7 +38026,30 @@ index 581a9d20..3af59f84 100644
              }
              pipeline_report_frames_ = 0;
              pipelined_sync_waits_ = 0;
-@@ -7444,6 +7561,9 @@ void Gta4NativeGraphicsSystem::SignalGuestFrameComplete(uint32_t device, uint32_
+@@ -7309,6 +7426,22 @@ void Gta4NativeGraphicsSystem::FinishPresent(NativeCommand& command,
+   UpdateDynamicDrawDistance();
+ }
+ 
++#if REX_PLATFORM_PS5
++// [ps5 port] An allocation failed for want of memory: evict unused textures
++// under pressure for a while and hand back what the memory recycler holds.
++void Gta4NativeGraphicsSystem::NotePs5MemoryShort(const char* what) {
++  ps5_memory_short_frames_ = 600;
++  texture_budget_pressure_active_ = true;
++  texture_eviction_remaining_ = std::max(texture_eviction_remaining_, texture_eviction_scan_.size());
++  ui::vulkan::MemoryRecyclerReleaseAll();
++  static uint32_t logged = 0;
++  if (logged++ < 16) {
++    REXLOG_WARN("ps5 memory: a {} allocation failed with {} texture images; evicting unused textures",
++                what, native_texture_images_.size());
++  }
++}
++#endif
++
+ void Gta4NativeGraphicsSystem::UpdateDynamicDrawDistance() {
+   // Steers gta4_draw_distance_dynamic_factor from the presented frame rate,
+   // measured over one-second windows. Short streaming hitches and single
+@@ -7444,6 +7577,9 @@ void Gta4NativeGraphicsSystem::SignalGuestFrameComplete(uint32_t device, uint32_
  void Gta4NativeGraphicsSystem::FrameRecorderMain() {
  #if REX_PLATFORM_ANDROID
    pthread_setname_np(pthread_self(), "GtaRecorder");
@@ -37962,7 +38059,7 @@ index 581a9d20..3af59f84 100644
  #endif
    while (true) {
      std::optional<NativeRecorderJob> job;
-@@ -7458,9 +7578,19 @@ void Gta4NativeGraphicsSystem::FrameRecorderMain() {
+@@ -7458,9 +7594,19 @@ void Gta4NativeGraphicsSystem::FrameRecorderMain() {
      const uint32_t timeline_frame = job->present.submitted_frame;
      recording_ring_serial_ = job->ring_serial;
      MarkFrameTimeline(timeline_frame, kTimelineRecorderStart);
@@ -37982,7 +38079,31 @@ index 581a9d20..3af59f84 100644
      MarkFrameTimeline(timeline_frame, kTimelinePublishEnd);
      LogFrameTimeline(timeline_frame);
      job.reset();
-@@ -9911,7 +10041,10 @@ bool Gta4NativeGraphicsSystem::CompleteNativeFrameSlot(uint32_t slot, uint64_t s
+@@ -9321,9 +9467,23 @@ bool Gta4NativeGraphicsSystem::GetOrCreatePersistentBuffer(
+     return false;
+   }
+   const NativeBufferArenaAllocation& reserved = reservation.allocation;
++#if REX_PLATFORM_PS5
++  // [ps5 port] Out of memory, a new block was attempted for every draw, each
++  // a failing kernel allocation: frames took seconds. Wait a while instead,
++  // with texture eviction under pressure meanwhile; draws use the upload ring.
++  if (reserved.new_block && ps5_persistent_block_retry_frame_ &&
++      active_texture_frame_ < ps5_persistent_block_retry_frame_) {
++    persistent_buffer_arena_->Cancel(reserved.id);
++    return false;
++  }
++#endif
+   if (reserved.new_block && !CreateNativePersistentBufferBlock(
+                                 reserved.block_id, VkDeviceSize(reserved.block_capacity))) {
+     persistent_buffer_arena_->Cancel(reserved.id);
++#if REX_PLATFORM_PS5
++    ps5_persistent_block_retry_frame_ = active_texture_frame_ + 120;
++    NotePs5MemoryShort("persistent buffer block");
++#endif
+     return false;
+   }
+   const auto block_entry = persistent_buffer_blocks_.find(reserved.block_id);
+@@ -9911,7 +10071,10 @@ bool Gta4NativeGraphicsSystem::CompleteNativeFrameSlot(uint32_t slot, uint64_t s
  
    gpu_flight::Record("native.slot-wait-begin", slot, submission, active_texture_frame_);
    const uint64_t wait_begin = actual_wait_ticks ? rex::chrono::Clock::QueryHostTickCount() : 0;
@@ -37993,7 +38114,17 @@ index 581a9d20..3af59f84 100644
    if (actual_wait_ticks) {
      *actual_wait_ticks += rex::chrono::Clock::QueryHostTickCount() - wait_begin;
    }
-@@ -18714,12 +18847,14 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
+@@ -18451,6 +18614,9 @@ bool Gta4NativeGraphicsSystem::AllocateNativeTextureImage(const VkImageCreateInf
+       return false;
+     }
+     ++texture_allocation_retry_count_;
++#if REX_PLATFORM_PS5
++    NotePs5MemoryShort("texture");
++#endif
+     TrimTextureAllocationPool(true);
+     // Allocation recovery is exceptional backpressure. Complete the other
+     // slot so retired generations can release real device memory rather than
+@@ -18714,12 +18880,14 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
      view_info.components.b = VK_COMPONENT_SWIZZLE_ONE;
      view_info.components.a = VK_COMPONENT_SWIZZLE_R;
    } else if (vulkan_device->properties().portabilitySubset ||
@@ -38012,15 +38143,36 @@ index 581a9d20..3af59f84 100644
      host_swizzle = xenos::XE_GPU_TEXTURE_SWIZZLE_RGBA;
      view_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
                              VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
-@@ -20419,13 +20554,19 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+@@ -20409,8 +20577,20 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+     }
+   }
+ 
++#if REX_PLATFORM_PS5
++  // [ps5 port] Every texture is its own allocation in the kernel. Past about
++  // ten thousand of them the console stopped handing out memory at all (even
++  // 16 KB) while the driver's budget still showed half free, and the game
++  // fell to one frame every few seconds. Too many images counts as pressure.
++  constexpr size_t kPs5TextureImageSoftLimit = 6000;
++  const bool count_pressure =
++      native_texture_images_.size() > kPs5TextureImageSoftLimit || ps5_memory_short_frames_ > 0;
++  if (ps5_memory_short_frames_ > 0) --ps5_memory_short_frames_;
++#else
++  constexpr bool count_pressure = false;
++#endif
+   if (!allocation_recovery) {
+-    bool pressure_after_poll = false;
++    bool pressure_after_poll = count_pressure;
+     for (uint32_t heap = 0; heap < budgets.heap_count; ++heap) {
+       pressure_after_poll |=
+           UpdateNativeTexturePressure(texture_budget_pressure_active_, budgets.available,
+@@ -20419,13 +20599,18 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
      texture_budget_pressure_active_ = pressure_after_poll;
    }
  
-+  // [ps5 port] The PS5 has room to spare (a 2.5 GB cache in a 5.5 GB budget
-+  // in play): an unused texture stays 90 s instead of 20 s unless memory runs
-+  // short, so looking around or driving back doesn't upload it again.
++  // [ps5 port] An unused texture stays 40 s (it was 90 s, and the images
++  // piled up until the console ran out of memory), 20 s under pressure.
 +  auto retention = [](bool pressure) -> uint32_t {
-+    return REX_PLATFORM_PS5 && !pressure ? 2700 : kNativeTextureCacheRetentionFrames;
++    return REX_PLATFORM_PS5 && !pressure ? 1200 : kNativeTextureCacheRetentionFrames;
 +  };
    std::vector<Candidate> candidates;
    auto consider = [&](uint64_t generation, const NativeTextureImage* image) {
@@ -38033,7 +38185,16 @@ index 581a9d20..3af59f84 100644
      candidates.push_back({{image->last_use_serial, generation}, image->memory_heap, image->allocation_size});
    };
    if (allocation_recovery) {
-@@ -20489,7 +20630,7 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+@@ -20481,7 +20666,7 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+         continue;
+       }
+       const bool budget_pressure =
+-          allocation_recovery ||
++          allocation_recovery || count_pressure ||
+           (candidate.memory_heap < budgets.heap_count &&
+            UpdateNativeTexturePressure(texture_budget_pressure_active_, budgets.available,
+                                        budgets.usage[candidate.memory_heap],
+@@ -20489,7 +20674,7 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
        if (!allocation_recovery &&
            !ShouldEvictNativeTextureCandidate(false, budget_pressure, submitted_frame,
                                               image->second->last_used_frame,
@@ -38042,7 +38203,7 @@ index 581a9d20..3af59f84 100644
          continue;
        }
  
-@@ -20509,6 +20650,7 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+@@ -20509,6 +20694,7 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
                  configured_limit_bytes, candidates.size(), render_queue_.size()));
        }
        evicted_images.push_back(std::move(image->second));
@@ -38050,7 +38211,7 @@ index 581a9d20..3af59f84 100644
        const NativeTextureImage* evicted = evicted_images.back().get();
        RecordNativeMemoryLifecycle(
            memory::ResourceKind::kTextureImage, memory::LifecycleAction::kEvict,
-@@ -20552,9 +20694,11 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+@@ -20552,9 +20738,11 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
                                    handle, generation, 0, resource->second->payload.size(),
                                    resource->second->payload.capacity(), 0, submitted_frame,
                                    uint32_t(resource->second->info.format));
@@ -38063,13 +38224,26 @@ index 581a9d20..3af59f84 100644
      }
    }
  }
-@@ -20622,6 +20766,46 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedTextureImages(
+@@ -20622,6 +20810,59 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedTextureImages(
      CollectProtectedTextureGenerations(present_source, protected_texture_generations_);
      EvictNativeTextureImages(submitted_frame, false);
    }
 +#if REX_PLATFORM_PS5
 +  // [ps5 port] Texture memory every ~20 s: textures come and go on the PS5.
 +  if (submitted_frame % 600 == 0) {  // one line every ~20 s
++    static bool settings_logged = false;
++    if (!settings_logged) {
++      settings_logged = true;
++      REXLOG_INFO("ps5 settings: resolution {}, draw distance {}, frame limit {}, shadow distance {}, "
++                  "reflections {}, anti-aliasing {}, motion blur {}, frame generation {}",
++                  rex::cvar::GetFlagByName("resolution"), rex::cvar::GetFlagByName("gta4_draw_distance_scale"),
++                  rex::cvar::GetFlagByName("gta4_frame_limit"),
++                  rex::cvar::GetFlagByName("gta4_shadow_distance_scale"),
++                  rex::cvar::GetFlagByName("gta4_reflection_resolution"),
++                  rex::cvar::GetFlagByName("gta4_native_anti_aliasing"),
++                  rex::cvar::GetFlagByName("gta4_motion_blur"),
++                  rex::cvar::GetFlagByName("gta4_native_frame_generation"));
++    }
 +    REXLOG_INFO("ps5 textures: frame={} images={} heap-usage={} MB heap-budget={} MB pressure={} "
 +                "alloc-retries={} alloc-failures={} pool-reuses={} evictions={}; {}",
 +                submitted_frame, native_texture_images_.size(), texture_heap_usage_ >> 20,
@@ -38110,7 +38284,7 @@ index 581a9d20..3af59f84 100644
  }
  
  void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_frame) {
-@@ -20633,12 +20817,7 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+@@ -20633,12 +20874,7 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
    if (!poll_due && !buffer_cache_reclamation_pending_) return;
    buffer_cache_reclamation_pending_ = false;
  
@@ -38124,7 +38298,7 @@ index 581a9d20..3af59f84 100644
    auto retained_bytes = [](const NativeBufferResource& resource) {
      uint64_t bytes = resource.payload.capacity();
      bytes += resource.host_index16_payload.capacity();
-@@ -20652,9 +20831,19 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+@@ -20652,9 +20888,19 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
  
    constexpr uint64_t kBytesPerMiB = 1048576ull;
    const uint64_t cache_limit = uint64_t(kNativeBufferCacheLimitMiB) * kBytesPerMiB;
@@ -38147,7 +38321,7 @@ index 581a9d20..3af59f84 100644
      std::lock_guard lock(buffer_resource_mutex_);
      candidates.reserve(buffer_resources_.size());
      for (const auto& [handle, resource] : buffer_resources_) {
-@@ -20672,7 +20861,7 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+@@ -20672,7 +20918,7 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
    // Under budget every eligible aged entry is reclaimed regardless of order.
    // Only pressure eviction needs oldest-first ordering to choose which younger
    // entries to discard before the byte budget is satisfied.
@@ -38156,7 +38330,7 @@ index 581a9d20..3af59f84 100644
      std::sort(candidates.begin(), candidates.end(),
                [](const Candidate& left, const Candidate& right) {
                  return left.last_used_frame < right.last_used_frame ||
-@@ -20684,14 +20873,20 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+@@ -20684,14 +20930,20 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
    size_t reclaimed_resources = 0;
    NativeWorkBudget buffer_reclamation(64, 16777216);
    std::lock_guard lock(buffer_resource_mutex_);
@@ -38179,7 +38353,7 @@ index 581a9d20..3af59f84 100644
                                     kNativeBufferCacheRetentionFrames)) {
        continue;
      }
-@@ -20737,8 +20932,16 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+@@ -20737,8 +20989,16 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
          cache_bytes > candidate.retained_bytes ? cache_bytes - candidate.retained_bytes : 0;
      reclaimed_bytes += candidate.retained_bytes;
      ++reclaimed_resources;
@@ -38197,7 +38371,7 @@ index 581a9d20..3af59f84 100644
    }
  
    if (reclaimed_resources &&
-@@ -31231,7 +31434,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -31231,7 +31491,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
        if (pipelined_recording_ && frame_constant_bound_.valid && frame_constant_bound_.read_epoch &&
            REXCVAR_GET(gta4_native_assembled_frame_scans)) {
          // A later frame's stamp only makes this conservative (an extra resolve).
@@ -38206,7 +38380,7 @@ index 581a9d20..3af59f84 100644
                 frame_constant_bound_.read_epoch;
        } else for (const NativeCommand& scan : current_frame_) {
          for (const auto& texture : scan.textures) {
-@@ -31542,6 +31745,35 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -31542,6 +31802,35 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
      }
  
      const NativeCommand& command = *command_pointer;
@@ -38242,7 +38416,7 @@ index 581a9d20..3af59f84 100644
      const bool descriptor_draw = command.type == CommandType::kDrawPrimitive ||
                                   command.type == CommandType::kDrawPrimitiveUp ||
                                   command.type == CommandType::kDrawIndexedPrimitive;
-@@ -33478,6 +33710,119 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -33478,6 +33767,119 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
        }
        std::fflush(stderr);
      }
@@ -38362,7 +38536,7 @@ index 581a9d20..3af59f84 100644
      if (legacy_diagnostics && is_draw && command.render_phase == RenderPhase::kRadarMap) {
        static std::atomic<uint64_t> radar_draw_count{0};
        const uint64_t radar_draw_index = ++radar_draw_count;
-@@ -38033,8 +38378,19 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
+@@ -38033,8 +38435,19 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
          return presenter_written;
        },
        ui::GuestOutputProvenance{
@@ -38385,7 +38559,7 @@ index 581a9d20..3af59f84 100644
            .title_present_id = present.diagnostic_present_id,
            .selected_generation = present_source ? present_source->generation : 0,
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h
-index 0b9e1311..70418a44 100644
+index 0b9e1311..cbeefe64 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h
 +++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h
 @@ -329,6 +329,8 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
@@ -38425,7 +38599,7 @@ index 0b9e1311..70418a44 100644
    std::atomic<uint64_t> texture_resources_epoch_{1};
    TextureCaptureCacheSlot& TextureCaptureSlot(uint32_t handle) {
      return CaptureCacheWay(texture_capture_cache_, handle);
-@@ -2811,8 +2816,34 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
+@@ -2811,8 +2816,40 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
    std::atomic<uint64_t> buffer_fast_path_disable_count_{0};
    std::atomic<uint64_t> buffer_fast_path_request_count_{0};
    std::atomic<bool> buffer_fast_path_disabled_{false};
@@ -38447,6 +38621,12 @@ index 0b9e1311..70418a44 100644
 +  std::atomic<uint32_t> buffer_full_validation_count_{0};
    NativePeriodicWorkSchedule buffer_cache_poll_schedule_{kNativeBufferCachePollPhaseFrames};
    bool buffer_cache_reclamation_pending_ = false;
++#if REX_PLATFORM_PS5
++  // [ps5 port] Out-of-memory handling (NotePs5MemoryShort).
++  uint32_t ps5_persistent_block_retry_frame_ = 0;
++  uint32_t ps5_memory_short_frames_ = 0;
++  void NotePs5MemoryShort(const char* what);
++#endif
 +  // A sweep continued over several frames (ReleaseUnusedBufferResources).
 +  struct BufferReclamationCandidate {
 +    uint32_t handle = 0;
@@ -38540,24 +38720,6 @@ index cd5a375d..20ebfaaa 100644
  };
  template <typename Fn>
  decltype(auto) CpuCall(CpuOp op, Fn&& fn) {
-diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/native_frame_scheduling.h b/glue/rexglue-sdk-main/src/graphics/gta4_native/native_frame_scheduling.h
-index 1bab34b3..9c5daeee 100644
---- a/glue/rexglue-sdk-main/src/graphics/gta4_native/native_frame_scheduling.h
-+++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/native_frame_scheduling.h
-@@ -25,7 +25,13 @@ inline constexpr size_t kNativeBufferShadowValidationMaxBytes = 256;
- inline constexpr uint32_t kNativeBufferCacheRetentionFrames = 600;
- inline constexpr uint32_t kNativeBufferCachePollFrames = 120;
- inline constexpr uint32_t kNativeBufferCachePollPhaseFrames = 80;
-+#if defined(__PROSPERO__)
-+// [ps5 port] Over the limit, every frame reclaimed buffers the title then
-+// captured again; the PS5 has the memory to keep twice as many.
-+inline constexpr uint32_t kNativeBufferCacheLimitMiB = 512;
-+#else
- inline constexpr uint32_t kNativeBufferCacheLimitMiB = 256;
-+#endif
- inline constexpr size_t kNativeMaximumVertexConversionsPerBuffer = 2;
- inline constexpr uint32_t kNativeUploadShrinkObservationFrames = 120;
- 
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/native_snapshot_resource.h b/glue/rexglue-sdk-main/src/graphics/gta4_native/native_snapshot_resource.h
 index 1294764a..f0c5411f 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/native_snapshot_resource.h
@@ -40198,15 +40360,16 @@ index a3984881..b61eee97 100644
 +}  // namespace rex::ui
 +#endif
 diff --git a/glue/rexglue-sdk-main/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp b/glue/rexglue-sdk-main/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp
-index 8b862fc7..44ebd69d 100644
+index 8b862fc7..61b513fe 100644
 --- a/glue/rexglue-sdk-main/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp
 +++ b/glue/rexglue-sdk-main/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp
-@@ -12,6 +12,13 @@
+@@ -12,6 +12,14 @@
  // Disable warnings about unused parameters for kernel functions
  #pragma GCC diagnostic ignored "-Wunused-parameter"
  
 +#include <chrono>
 +#include <rex/chrono/clock.h>
++#include <rex/frame_stats.h>
 +#include <rex/cvar.h>
 +#include <rex/platform.h>
 +#if REX_PLATFORM_PS5
@@ -40215,7 +40378,7 @@ index 8b862fc7..44ebd69d 100644
  #include <algorithm>
  #include <string>
  
-@@ -31,6 +38,12 @@
+@@ -31,6 +39,12 @@
  #include <rex/thread.h>
  #include <rex/thread/atomic.h>
  
@@ -40228,7 +40391,7 @@ index 8b862fc7..44ebd69d 100644
  namespace rex::kernel::xboxkrnl {
  using namespace rex::system;
  
-@@ -339,6 +352,13 @@ struct X_RTL_CRITICAL_SECTION {
+@@ -339,6 +353,13 @@ struct X_RTL_CRITICAL_SECTION {
  static_assert_size(X_RTL_CRITICAL_SECTION, 28);
  
  void xeRtlInitializeCriticalSection(X_RTL_CRITICAL_SECTION* cs, uint32_t cs_ptr) {
@@ -40242,7 +40405,7 @@ index 8b862fc7..44ebd69d 100644
    cs->header.type = 1;      // EventSynchronizationObject (auto reset)
    cs->header.absolute = 0;  // spin count div 256
    cs->header.signal_state = 0;
-@@ -364,6 +384,13 @@ X_STATUS xeRtlInitializeCriticalSectionAndSpinCount(X_RTL_CRITICAL_SECTION* cs,
+@@ -364,6 +385,13 @@ X_STATUS xeRtlInitializeCriticalSectionAndSpinCount(X_RTL_CRITICAL_SECTION* cs,
    cs->header.type = 1;  // EventSynchronizationObject (auto reset)
    cs->header.absolute = spin_count_div_256;
    cs->header.signal_state = 0;
@@ -40256,7 +40419,7 @@ index 8b862fc7..44ebd69d 100644
    cs->lock_count = -1;
    cs->recursion_count = 0;
    cs->owning_thread = 0;
-@@ -397,9 +424,45 @@ void RtlEnterCriticalSection_entry(ppc_ptr_t<X_RTL_CRITICAL_SECTION> cs) {
+@@ -397,9 +425,46 @@ void RtlEnterCriticalSection_entry(ppc_ptr_t<X_RTL_CRITICAL_SECTION> cs) {
      }
    }
  
@@ -40265,6 +40428,7 @@ index 8b862fc7..44ebd69d 100644
 +  // a waiter: the holders mostly let go within microseconds, and a waiter is
 +  // woken through a kernel event (several microseconds on the PS5).
 +  if (const int32_t spin_us = REXCVAR_GET(ps5_cs_spin_us); spin_us > 0) {
++    const rex::frame_stats::TitleWaitScope title_wait;
 +    // The TSC: a steady_clock read is a system call on the PS5, and the game
 +    // thread spent ~5% of its time in them here.
 +    const uint64_t end = rex::chrono::Clock::QueryHostTickCount() +
@@ -40983,10 +41147,10 @@ index cec91ec7..96ec1fd7 100644
    if (dfn.field) {                      \
 diff --git a/glue/rexglue-sdk-main/src/ui/vulkan/memory_recycler.inc b/glue/rexglue-sdk-main/src/ui/vulkan/memory_recycler.inc
 new file mode 100644
-index 00000000..6d1db99c
+index 00000000..28bcdb26
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/src/ui/vulkan/memory_recycler.inc
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,190 @@
 +// [ps5 port] Device-memory recycling. Included inside namespace
 +// rex::ui::vulkan by vulkan_device.cpp.
 +//
@@ -41004,10 +41168,11 @@ index 00000000..6d1db99c
 +
 +constexpr VkDeviceSize kPage = 16 * 1024;              // the PS5 driver's page
 +constexpr VkDeviceSize kLargest = 48ull * 1024 * 1024;  // a 1440p RGBA16F target fits
-+constexpr VkDeviceSize kBudget = 384ull * 1024 * 1024;
++constexpr VkDeviceSize kBudget = 128ull * 1024 * 1024;
 +
 +PFN_vkAllocateMemory allocate_fn;
 +PFN_vkFreeMemory free_fn;
++VkDevice installed_device = VK_NULL_HANDLE;
 +uint32_t recyclable_types = 0;  // device-local, nothing else
 +
 +using Key = std::pair<uint32_t, VkDeviceSize>;  // (memory type, size)
@@ -41144,6 +41309,10 @@ index 00000000..6d1db99c
 +
 +}  // namespace memory_recycler
 +
++void MemoryRecyclerReleaseAll() {
++  if (memory_recycler::installed_device) memory_recycler::FreeAll(memory_recycler::installed_device);
++}
++
 +std::string MemoryRecyclerSummary() {
 +  using namespace memory_recycler;
 +  VkDeviceSize held;
@@ -41157,9 +41326,11 @@ index 00000000..6d1db99c
 +}
 +
 +static void InstallMemoryRecycler(VulkanDevice::Functions& dfn,
-+                                  const VkPhysicalDeviceMemoryProperties& properties) {
++                                  const VkPhysicalDeviceMemoryProperties& properties,
++                                  VkDevice device) {
 +  using namespace memory_recycler;
 +  if (allocate_fn) return;  // one device
++  installed_device = device;
 +  for (uint32_t i = 0; i < properties.memoryTypeCount && i < 32; ++i) {
 +    if (properties.memoryTypes[i].propertyFlags == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
 +      recyclable_types |= 1u << i;
@@ -41171,7 +41342,7 @@ index 00000000..6d1db99c
 +  dfn.vkFreeMemory = Free;
 +}
 diff --git a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_device.cpp b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_device.cpp
-index 7c25d612..2a6ed4c9 100644
+index 7c25d612..5f485b90 100644
 --- a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_device.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_device.cpp
 @@ -16,7 +16,9 @@
@@ -41211,7 +41382,7 @@ index 7c25d612..2a6ed4c9 100644
 +  {
 +    VkPhysicalDeviceMemoryProperties recycler_memory_properties;
 +    ifn.vkGetPhysicalDeviceMemoryProperties(physical_device, &recycler_memory_properties);
-+    InstallMemoryRecycler(dfn, recycler_memory_properties);
++    InstallMemoryRecycler(dfn, recycler_memory_properties, device->device_);
 +  }
 +#endif
  
@@ -41634,7 +41805,7 @@ index 87f97744..5acee304 100644
    if (allowed_types & Surface::kTypeFlag_AndroidNativeWindow) {
      auto* native_window = static_cast<ANativeWindow*>(GetNativeWindowHandle());
 diff --git a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
-index ac2d8dc4..6862c991 100644
+index ac2d8dc4..07481770 100644
 --- a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 @@ -11,6 +11,7 @@
@@ -41730,7 +41901,7 @@ index ac2d8dc4..6862c991 100644
  
      app->InvokeOnDestroy();
    }
-@@ -161,8 +203,294 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
+@@ -161,8 +203,299 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
  #include <SDL3/SDL_main.h>
  #endif
  
@@ -41882,6 +42053,8 @@ index ac2d8dc4..6862c991 100644
 +      const uint64_t rec_max = g_recorder_max_us.exchange(0), wait_us = g_handoff_wait_us.exchange(0);
 +      const uint64_t gpu_wait_us = g_gpu_wait_us.exchange(0);
 +      const uint64_t slot_wait_us = g_title_slot_wait_us.exchange(0), pacer_us = g_pacer_wait_us.exchange(0);
++      const uint64_t guest_wait_us = uint64_t(double(g_title_guest_wait_ticks.exchange(0)) * 1e6 /
++                                              double(rex::chrono::Clock::QueryHostTickFrequency()));
 +      if (last_ns) {
 +        const double real = double(now_ns - last_ns) / 1e9;
 +        const double guest_s = double(guest - last_guest) / double(rex::chrono::Clock::guest_tick_frequency());
@@ -41892,11 +42065,14 @@ index ac2d8dc4..6862c991 100644
 +        // the renderer; the recorder's is its time less the frame limit's hold.
 +        REXLOG_INFO("ps5 timing: real {:.2f}s, guest clock {:.2f}s, game step {:.1f} ms, frame {:.1f} ms "
 +                    "(TV {:.1f} fps); "
-+                    "game {:.1f} ms (+{:.1f} waiting for the renderer), recorder {:.1f} ms (worst {:.1f}, "
++                    "game {:.1f} ms of work (+{:.1f} waiting for the renderer, {:.1f} waiting on other "
++                    "threads), recorder {:.1f} ms (worst {:.1f}, "
 +                    "waiting for the GPU {:.1f}), held for the frame limit {:.1f} ms, worker waiting on the "
 +                    "recorder {:.1f} ms",
 +                    real, guest_s, step * 1000.0, frame_ms, double(shown - last_shown) / real,
-+                    std::max(0.0, frame_ms - per_frame(slot_wait_us)), per_frame(slot_wait_us),
++                    std::max(0.0, frame_ms - per_frame(slot_wait_us) - per_frame(guest_wait_us) -
++                                      per_frame(pacer_us)),
++                    per_frame(slot_wait_us), per_frame(guest_wait_us),
 +                    rec_n ? double(rec_us) / 1000.0 / double(rec_n) : 0.0, double(rec_max) / 1000.0,
 +                    rec_n ? double(gpu_wait_us) / 1000.0 / double(rec_n) : 0.0, per_frame(pacer_us),
 +                    per_frame(wait_us));
