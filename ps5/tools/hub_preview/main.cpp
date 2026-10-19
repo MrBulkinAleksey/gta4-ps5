@@ -1,4 +1,4 @@
-// DBZ Budokai 3 PS5 - renders the hub (ps5/src/hub/hub_ui.cpp) to a picture on
+// GTA IV PS5 - renders the hub (gta4-recomp/src/ps5/hub/hub_ui.cpp) to a picture on
 // a PC, with a tiny software rasterizer: previews without the console.
 //   hub_preview <out.rgb> <width> <height> <app dir> <fonts dir> <logo.png> <hero.jpg> [presses...]
 // Presses: one per frame, e.g. "r1 down down right". HUB_BUTTONS=<dir>: the
@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 #include <chrono>
@@ -111,9 +112,19 @@ int main(int argc, char** argv) {
   a.nav = io.Fonts->AddFontFromFileTTF((fonts + "/oswald-latin-600-normal.ttf").c_str(), 34.0f * 2, &cfg);
   a.body = io.Fonts->AddFontFromFileTTF((fonts + "/inter-latin-400-normal.ttf").c_str(), 26.0f * 2, &cfg);
   a.body_bold = io.Fonts->AddFontFromFileTTF((fonts + "/inter-latin-600-normal.ttf").c_str(), 26.0f * 2, &cfg);
+  {  // the menu type, at the hub's sizes (the bytes kept for the atlas's life)
+    auto read = [](const std::string& f) {
+      std::ifstream in(f, std::ios::binary);
+      return new std::vector<char>(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+    const auto* bold = read(fonts + "/texgyreheroscn-bold.otf");
+    const auto* regular = read(fonts + "/texgyreheroscn-regular.otf");
+    AddMenuFonts(io.Fonts, bold->data(), int(bold->size()), regular->data(), int(regular->size()), a);
+  }
   unsigned char* px;
   int fw, fh;
   io.Fonts->GetTexDataAsRGBA32(&px, &fw, &fh);
+  if (std::getenv("HUB_ATLAS")) std::fprintf(stderr, "font atlas %dx%d\n", fw, fh);
   Tex font{fw, fh, std::vector<uint8_t>(px, px + size_t(fw) * fh * 4)};
   io.Fonts->SetTexID(reinterpret_cast<ImTextureID>(&font));
   if (Tex* t = LoadPng(argv[6])) a.logo = {reinterpret_cast<ImTextureID>(t), float(t->w), float(t->h)};
@@ -130,7 +141,7 @@ int main(int argc, char** argv) {
       }
   }
   Hub hub;
-  Paths paths{app, app + "/dbz3.toml", app + "/user_data/dbz3"};
+  Paths paths{app, app + "/native.toml", app + "/UserData"};
   hub.SetImageLoader([](const std::filesystem::path& file) {
     Tex* t = LoadPng(file.string());
     return t ? Image{reinterpret_cast<ImTextureID>(t), float(t->w), float(t->h)} : Image{};

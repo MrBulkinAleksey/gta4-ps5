@@ -48,22 +48,41 @@ radv_link_recipe "$stage" "$sdk_root" "$radv_archive"
 # stat("") / lstat("") as on Linux (ps5_stat.c, through --wrap).
 "$sdk_root/bin/prospero-clang" -c -O2 -fno-visibility-from-dllstorageclass -o "$stage/build/ps5_stat.o" "$ps5dir/tools/ps5_stat.c"
 
+link_pie() {  # extra objects, if any
+    "$sdk_root/bin/prospero-lld" "${radv_linker_script[@]}" --eh-frame-hdr "${radv_link_flags[@]}" \
+        --version-script "$tri/tooling/native/app-symbols.map" --exclude-libs=ALL \
+        --wrap=stat --wrap=lstat \
+        -e _start -o "$stage/build/llvm-pie.elf" \
+        "$tri/build/obj/app_crt.o" "$tri/build/obj/app_cpp_runtime.o" "$stage/build/ps5_stat.o" "$@" \
+        --start-group "${inputs[@]}" --end-group \
+        "$tri/build/stubs/libSceAgc.so" "$tri/build/stubs/libSceAgcDriver.so" \
+        "${radv_link_inputs[@]}" \
+        --as-needed "$sdk_root"/target/lib/*.so
+}
+make_eboot() {
+    "$tool" link --in "$stage/build/llvm-pie.elf" --out "$stage/build/eboot.elf" \
+        --stub-dir "$sdk_root/target/lib" --stub "$tri/build/stubs/libSceAgc.so" \
+        --stub "$tri/build/stubs/libSceAgcDriver.so" --module-sdk 0x02000009 \
+        --companion-sdk 0x08050001 --file-name eboot.elf
+}
+
 echo "==> [link] GTA IV + RADV into a PS5 PIE ELF"
-"$sdk_root/bin/prospero-lld" "${radv_linker_script[@]}" --eh-frame-hdr "${radv_link_flags[@]}" \
-    --version-script "$tri/tooling/native/app-symbols.map" --exclude-libs=ALL \
-    --wrap=stat --wrap=lstat \
-    -e _start -o "$stage/build/llvm-pie.elf" \
-    "$tri/build/obj/app_crt.o" "$tri/build/obj/app_cpp_runtime.o" "$stage/build/ps5_stat.o" \
-    --start-group "${inputs[@]}" --end-group \
-    "$tri/build/stubs/libSceAgc.so" "$tri/build/stubs/libSceAgcDriver.so" \
-    "${radv_link_inputs[@]}" \
-    --as-needed "$sdk_root"/target/lib/*.so
+link_pie
 
 echo "==> [package] eboot.bin for $title_id"
-"$tool" link --in "$stage/build/llvm-pie.elf" --out "$stage/build/eboot.elf" \
-    --stub-dir "$sdk_root/target/lib" --stub "$tri/build/stubs/libSceAgc.so" \
-    --stub "$tri/build/stubs/libSceAgcDriver.so" --module-sdk 0x02000009 \
-    --companion-sdk 0x08050001 --file-name eboot.elf
+if ! make_eboot 2> "$stage/build/eboot.err"; then
+    cat "$stage/build/eboot.err" >&2
+    # The tool appends the process parameters right after the image's RELRO
+    # content, inside its last page; when that content happens to end near
+    # the page boundary there is no room. Link again with half a page of
+    # RELRO padding (ps5_relro_pad.c), which moves the end well clear of it.
+    grep -q "no room for PS5 process parameters" "$stage/build/eboot.err" || exit 1
+    echo "==> [link] again with 2 KB of RELRO padding (room for the process parameters)"
+    "$sdk_root/bin/prospero-clang" -c -O2 -fPIC -fno-visibility-from-dllstorageclass \
+        -o "$stage/build/ps5_relro_pad.o" "$ps5dir/tools/ps5_relro_pad.c"
+    link_pie "$stage/build/ps5_relro_pad.o"
+    make_eboot
+fi
 app=$build/ps5-app/$title_id
 rm -rf -- "$app"
 mkdir -p "$app/sce_sys" "$app/sce_module"
@@ -108,6 +127,9 @@ cp -r "$repo/LibertyRecompLib/font_atlases" "$app/Resources/"
 cp -r "$repo/LibertyRecompLib/private/button_prompts/." "$app/Resources/button_prompts/"
 [[ -f "$repo/LibertyRecompLib/aes_key.bin" ]] && cp "$repo/LibertyRecompLib/aes_key.bin" "$app/Resources/"
 cp "$ps5dir/package/install/README.txt" "$app/install/README.txt"
+# The licences of the fonts built into the app (the hub's type and the overlay's).
+mkdir -p "$app/licenses"
+cp "$ps5dir"/assets/fonts/*.txt "$app/licenses/"
 # FSR 3's motion-vector shaders (builds with FidelityFX on): the renderer looks
 # for them next to the executable.
 temporal=$build/glue/gta4-recomp/shaders/vulkan-temporal.bin
