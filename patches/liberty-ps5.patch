@@ -23553,7 +23553,7 @@ index 00000000..4f4ac5e2
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_style.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_style.h
 new file mode 100644
-index 00000000..55dde84e
+index 00000000..370d5e7f
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_style.h
 @@ -0,0 +1,85 @@
@@ -23608,7 +23608,7 @@ index 00000000..55dde84e
 +}
 +
 +const ImU32 kInk = Rgba(12, 13, 16);      // text on a focused (white) row
-+const ImU32 kAccent = Rgba(255, 221, 52);  // the menu's yellow: the page, the row, what's on
++const ImU32 kAccent = Rgba(221, 155, 17);  // the menu's gold (#DD9B11): the page, the row, what's on
 +const ImU32 kText = Rgba(236, 236, 236);
 +const ImU32 kMenuGray = Rgba(170, 170, 170);  // a row, a tab not chosen
 +const ImU32 kDimGray = Rgba(112, 112, 112);   // headings, what's not on
