@@ -20277,10 +20277,10 @@ index 0000000..a631ae4
 +*/
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
 new file mode 100644
-index 0000000..327e46c
+index 0000000..849df1f
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
-@@ -0,0 +1,295 @@
+@@ -0,0 +1,302 @@
 +// GTA IV PS5 - the hub's check of the game's files and its installer (see
 +// hub_install.h). The install itself is LibertyRecomp's (install/).
 +#include "hub_install.h"
@@ -20571,7 +20571,14 @@ index 0000000..327e46c
 +                rs > 0 ? double(io.read_bytes.load()) / rs / double(1 << 20) : 0.0, Bytes(io.write_bytes.load()), ws,
 +                ws > 0 ? double(io.write_bytes.load()) / ws / double(1 << 20) : 0.0);
 +  }
-+  if (s.progress > 0.03f && s.seconds > 15) s.eta = s.seconds * (1 - s.progress) / s.progress;
++  // time left: what's still to write, at the speed of late (so a fast start
++  // from the PS5's cache doesn't promise too much)
++  if (j.copy_total && j.rate > 0 && s.seconds > 10) {
++    const uint64_t unpack = total > j.copy_total ? std::max(total - j.copy_total, j.unpack_guess)
++                                                 : j.copy_total * 23 / 20;
++    const uint64_t expected = j.copy_total + unpack;
++    s.eta = float(double(expected - std::min(expected, done)) / double(j.rate));
++  }
 +  return s;
 +}
 +
