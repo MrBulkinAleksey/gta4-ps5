@@ -268,6 +268,546 @@ index bb44175..1b222e3 100644
  
  struct PlayerInfoBatchProjectionContext {
    bool active = false;
+diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h
+new file mode 100644
+index 0000000..45a81dc
+--- /dev/null
++++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h
+@@ -0,0 +1,203 @@
++// The installer's file reading and writing: positional reads and big
++// sequential writes straight to the file, with no stream in between.
++//
++// [ps5 port] C++ file streams hand the file 4 KB at a time, and on the PS5
++// each small write is slow: copying the game that way ran at a few MB/s.
++// Here a write goes out in 8 MB pieces and a read is one call. The time spent
++// reading and writing is counted, for the installer's log.
++#pragma once
++
++#include <atomic>
++#include <chrono>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <filesystem>
++#include <vector>
++
++#if defined(_WIN32)
++#include <cstdio>
++#else
++#include <cerrno>
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
++
++namespace gta4::install::io {
++
++// Bytes and time spent reading and writing (since the start of the app).
++struct Stats {
++  std::atomic<uint64_t> read_bytes{0}, read_ns{0}, write_bytes{0}, write_ns{0};
++};
++inline Stats& GetStats() {
++  static Stats stats;
++  return stats;
++}
++
++namespace detail {
++inline uint64_t NowNs() {
++  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                      std::chrono::steady_clock::now().time_since_epoch())
++                      .count());
++}
++}  // namespace detail
++
++// A file read at any offset.
++class InFile {
++ public:
++  InFile() = default;
++  InFile(const InFile&) = delete;
++  InFile& operator=(const InFile&) = delete;
++  ~InFile() { Close(); }
++
++  bool Open(const std::filesystem::path& path) {
++    Close();
++#if defined(_WIN32)
++    file_ = _wfopen(path.c_str(), L"rb");
++    if (!file_) return false;
++    _fseeki64(file_, 0, SEEK_END);
++    size_ = uint64_t(_ftelli64(file_));
++    return true;
++#else
++    fd_ = ::open(path.c_str(), O_RDONLY);
++    if (fd_ < 0) return false;
++    struct stat st {};
++    if (::fstat(fd_, &st) != 0) {
++      Close();
++      return false;
++    }
++    size_ = uint64_t(st.st_size);
++    return true;
++#endif
++  }
++
++  uint64_t size() const { return size_; }
++
++  // Exactly `length` bytes at `offset` (false short of that).
++  bool ReadAt(uint64_t offset, void* out, size_t length) {
++    const uint64_t start = detail::NowNs();
++    auto* p = static_cast<uint8_t*>(out);
++    size_t left = length;
++#if defined(_WIN32)
++    if (!file_ || _fseeki64(file_, int64_t(offset), SEEK_SET) != 0) return false;
++    left -= std::fread(p, 1, left, file_);
++#else
++    while (left) {
++      const ssize_t n = ::pread(fd_, p, left, off_t(offset));
++      if (n < 0 && errno == EINTR) continue;
++      if (n <= 0) break;
++      p += n, offset += uint64_t(n), left -= size_t(n);
++    }
++#endif
++    GetStats().read_bytes += length - left;
++    GetStats().read_ns += detail::NowNs() - start;
++    return left == 0;
++  }
++
++  void Close() {
++#if defined(_WIN32)
++    if (file_) std::fclose(file_), file_ = nullptr;
++#else
++    if (fd_ >= 0) ::close(fd_), fd_ = -1;
++#endif
++  }
++
++ private:
++#if defined(_WIN32)
++  FILE* file_ = nullptr;
++#else
++  int fd_ = -1;
++#endif
++  uint64_t size_ = 0;
++};
++
++// A new file written from start to end, 8 MB at a time.
++class OutFile {
++ public:
++  static constexpr size_t kChunk = size_t(8) << 20;
++
++  OutFile() = default;
++  OutFile(const OutFile&) = delete;
++  OutFile& operator=(const OutFile&) = delete;
++  ~OutFile() {
++    if (open_) Close();
++  }
++
++  bool Open(const std::filesystem::path& path) {
++#if defined(_WIN32)
++    file_ = _wfopen(path.c_str(), L"wb");
++    open_ = file_ != nullptr;
++#else
++    fd_ = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
++    open_ = fd_ >= 0;
++#endif
++    ok_ = open_;
++    buffer_.clear();
++    return open_;
++  }
++
++  bool Write(const void* data, size_t length) {
++    if (!ok_) return false;
++    const auto* p = static_cast<const uint8_t*>(data);
++    if (length >= kChunk) {  // (big: straight out, after what's waiting)
++      return Flush() && Out(p, length);
++    }
++    if (buffer_.size() + length > kChunk && !Flush()) return false;
++    buffer_.insert(buffer_.end(), p, p + length);
++    return true;
++  }
++
++  // Writes what's waiting and closes the file; false if any write failed.
++  bool Close() {
++    if (!open_) return ok_;
++    Flush();
++#if defined(_WIN32)
++    if (std::fclose(file_) != 0) ok_ = false;
++    file_ = nullptr;
++#else
++    if (::close(fd_) != 0) ok_ = false;
++    fd_ = -1;
++#endif
++    open_ = false;
++    return ok_;
++  }
++
++ private:
++  bool Flush() {
++    if (buffer_.empty()) return ok_;
++    const bool done = Out(buffer_.data(), buffer_.size());
++    buffer_.clear();
++    return done;
++  }
++
++  bool Out(const uint8_t* p, size_t length) {
++    if (!ok_) return false;
++    const uint64_t start = detail::NowNs();
++    size_t left = length;
++#if defined(_WIN32)
++    left -= std::fwrite(p, 1, left, file_);
++#else
++    while (left) {
++      const ssize_t n = ::write(fd_, p, left);
++      if (n < 0 && errno == EINTR) continue;
++      if (n <= 0) break;
++      p += n, left -= size_t(n);
++    }
++#endif
++    GetStats().write_bytes += length - left;
++    GetStats().write_ns += detail::NowNs() - start;
++    if (left) ok_ = false;
++    return ok_;
++  }
++
++#if defined(_WIN32)
++  FILE* file_ = nullptr;
++#else
++  int fd_ = -1;
++#endif
++  bool open_ = false, ok_ = false;
++  std::vector<uint8_t> buffer_;
++};
++
++}  // namespace gta4::install::io
+diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
+index 84a1723..3c13d5a 100644
+--- a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
++++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
+@@ -31,7 +31,10 @@
+ #include <rex/system/xtypes.h>
+ #include <xxhash.h>
+ 
++#include <rex/platform.h>
++
+ #include "TinySHA1.hpp"
++#include "gta4_install_io.h"
+ #include "gta4_rpf_extractor.h"
+ 
+ #ifndef GTA4_RPF_AES_KEY_SOURCE
+@@ -51,7 +54,7 @@ constexpr std::string_view kRequiredPatchSha256 =
+ constexpr std::string_view kEmbeddedTargetXexSha256 =
+     "8268fdc91f83c4288e1db8319a109e622865497d1405d9f4ca98f46830d1ff21";
+ constexpr size_t kMaximumMetadataFileSize = 64_MiB;
+-constexpr size_t kCopyBufferSize = 1_MiB;
++constexpr size_t kCopyBufferSize = 8_MiB;
+ constexpr size_t kMaximumTreeEntries = 500000;
+ 
+ struct FileDestroyer {
+@@ -469,8 +472,8 @@ bool CopyFileEntry(rex::filesystem::Entry* entry, const std::filesystem::path& d
+     return false;
+   }
+ 
+-  std::ofstream output(destination, std::ios::binary | std::ios::trunc);
+-  if (!output) {
++  io::OutFile output;
++  if (!output.Open(destination)) {
+     error = "Could not create " + destination.string() + ".";
+     return false;
+   }
+@@ -485,22 +488,23 @@ bool CopyFileEntry(rex::filesystem::Entry* entry, const std::filesystem::path& d
+     const size_t remaining = entry->size() - offset;
+     const size_t request = std::min(remaining, buffer.size());
+     size_t bytes_read = 0;
++    const uint64_t read_start = io::detail::NowNs();
+     const rex::X_STATUS read_status =
+         file->ReadSync(std::span<uint8_t>(buffer).first(request), offset, &bytes_read);
++    io::GetStats().read_ns += io::detail::NowNs() - read_start;
++    io::GetStats().read_bytes += bytes_read;
+     if (read_status != 0 || bytes_read == 0 || bytes_read > request) {
+       error = "Failed while reading " + entry->path() + ".";
+       return false;
+     }
+-    output.write(reinterpret_cast<const char*>(buffer.data()), bytes_read);
+-    if (!output) {
++    if (!output.Write(buffer.data(), bytes_read)) {
+       error = "Failed while writing " + destination.string() + ".";
+       return false;
+     }
+     offset += bytes_read;
+     progress.copied_bytes.fetch_add(bytes_read, std::memory_order_relaxed);
+   }
+-  output.flush();
+-  if (!output) {
++  if (!output.Close()) {
+     error = "Failed while flushing " + destination.string() + ".";
+     return false;
+   }
+@@ -571,35 +575,35 @@ bool CopyHostFile(const std::filesystem::path& source, const std::filesystem::pa
+     return false;
+   }
+ 
+-  std::ifstream input(source, std::ios::binary);
+-  std::ofstream output(destination, std::ios::binary | std::ios::trunc);
+-  if (!input || !output) {
++  io::InFile input;
++  io::OutFile output;
++  if (!input.Open(source) || !output.Open(destination)) {
+     error = "Could not copy " + source.string() + ".";
+     return false;
+   }
+-  std::vector<char> buffer(kCopyBufferSize);
+-  while (input) {
++  std::vector<uint8_t> buffer(kCopyBufferSize);
++  for (uint64_t offset = 0; offset < input.size();) {
+     if (progress.cancel_requested.load(std::memory_order_relaxed)) {
+       error = "Installation was cancelled.";
+       return false;
+     }
+-    input.read(buffer.data(), buffer.size());
+-    const std::streamsize count = input.gcount();
+-    if (count > 0) {
+-      output.write(buffer.data(), count);
+-      if (!output) {
+-        error = "Failed while writing " + destination.string() + ".";
+-        return false;
+-      }
+-      progress.copied_bytes.fetch_add(static_cast<uint64_t>(count), std::memory_order_relaxed);
++    const size_t count = size_t(std::min<uint64_t>(buffer.size(), input.size() - offset));
++    if (!input.ReadAt(offset, buffer.data(), count)) {
++      error = "Failed while reading " + source.string() + ".";
++      return false;
+     }
++    if (!output.Write(buffer.data(), count)) {
++      error = "Failed while writing " + destination.string() + ".";
++      return false;
++    }
++    offset += count;
++    progress.copied_bytes.fetch_add(count, std::memory_order_relaxed);
+   }
+-  if (!input.eof()) {
+-    error = "Failed while reading " + source.string() + ".";
++  if (!output.Close()) {
++    error = "Failed while writing " + destination.string() + ".";
+     return false;
+   }
+-  output.flush();
+-  return static_cast<bool>(output);
++  return true;
+ }
+ 
+ std::optional<PreparedSource> PrepareGameSource(const std::filesystem::path& path,
+@@ -1026,8 +1030,15 @@ Result Install(const Selection& selection, const std::filesystem::path& install_
+     result.error = "Could not create the staging directory: " + fs_error.message();
+     return result;
+   }
++#if REX_PLATFORM_PS5
++  // [ps5 port] A title can't learn the free space (the SDK's statvfs always
++  // answers 16 GiB): not checked.
++  const bool enough_space = true;
++#else
+   const auto available_space = std::filesystem::space(staging_root, fs_error);
+-  if (fs_error || available_space.available < total) {
++  const bool enough_space = !fs_error && available_space.available >= total;
++#endif
++  if (!enough_space) {
+     result.error = fs_error
+                        ? "Could not determine available installation space: " + fs_error.message()
+                        : "There is not enough free space for the GTA IV installation.";
+diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
+index 9854392..14a8d82 100644
+--- a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
++++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
+@@ -17,6 +17,10 @@
+ 
+ #include <zlib.h>
+ 
++#include <rex/platform.h>
++
++#include "gta4_install_io.h"
++
+ extern "C" {
+ #include <rijndael-alg-fst.h>
+ }
+@@ -39,7 +43,7 @@ constexpr size_t kMaximumArchiveDepth = 32;
+ constexpr size_t kMaximumDirectoryDepth = 256;
+ constexpr size_t kMaximumNestedArchiveCount = 100000;
+ constexpr uint64_t kMaximumExtractedFileSize = 2147483648;
+-constexpr size_t kIoBufferSize = 1048576;
++constexpr size_t kIoBufferSize = size_t(4) << 20;
+ 
+ struct TocEntry {
+   std::string name;
+@@ -157,9 +161,9 @@ std::optional<Archive> ParseArchive(const std::filesystem::path& path, std::span
+     return std::nullopt;
+   }
+ 
+-  std::ifstream stream(path, std::ios::binary);
++  io::InFile stream;
+   std::array<uint8_t, kHeaderSize> header{};
+-  if (!stream.read(reinterpret_cast<char*>(header.data()), header.size()) ||
++  if (!stream.Open(path) || !stream.ReadAt(0, header.data(), header.size()) ||
+       ReadU32(header, 0) != kRpf2Magic) {
+     error = "The selected game contains an invalid RPF2 archive: " + path.string();
+     return std::nullopt;
+@@ -181,8 +185,7 @@ std::optional<Archive> ParseArchive(const std::filesystem::path& path, std::span
+   }
+ 
+   std::vector<uint8_t> toc(toc_size);
+-  stream.seekg(static_cast<std::streamoff>(kTocOffset), std::ios::beg);
+-  if (!stream.read(reinterpret_cast<char*>(toc.data()), toc.size())) {
++  if (!stream.ReadAt(kTocOffset, toc.data(), toc.size())) {
+     error = "Could not read the RPF2 table of contents: " + path.string();
+     return std::nullopt;
+   }
+@@ -307,6 +310,12 @@ bool ValidateArchiveGraph(const Archive& archive, const std::filesystem::path& a
+ 
+ bool EnsureFreeSpace(const std::filesystem::path& destination, uint64_t required,
+                      std::string& error) {
++#if REX_PLATFORM_PS5
++  // [ps5 port] A title can't learn the free space (the SDK's statvfs always
++  // answers 16 GiB): not checked.
++  (void)destination, (void)required, (void)error;
++  return true;
++#endif
+   std::error_code fs_error;
+   const auto space = std::filesystem::space(destination, fs_error);
+   if (fs_error) {
+@@ -320,16 +329,15 @@ bool EnsureFreeSpace(const std::filesystem::path& destination, uint64_t required
+   return true;
+ }
+ 
+-bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry,
+-                const std::filesystem::path& output_path, const RpfExtractionProgress& progress,
+-                std::string& error) {
++bool WriteEntry(const std::filesystem::path& archive_path, io::InFile& input,
++                const TocEntry& entry, const std::filesystem::path& output_path,
++                const RpfExtractionProgress& progress, std::string& error) {
+   if (IsCancelled(progress)) {
+     error = "Installation was cancelled.";
+     return false;
+   }
+-  std::ifstream input(archive_path, std::ios::binary);
+-  input.seekg(entry.offset, std::ios::beg);
+-  if (!input) {
++  uint64_t read_at = entry.offset;
++  if (read_at > input.size() || entry.archived_size > input.size() - read_at) {
+     error = "Could not read an RPF2 file entry from " + archive_path.string() + ".";
+     return false;
+   }
+@@ -345,14 +353,17 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
+     error = "Could not create an RPF extraction directory: " + fs_error.message();
+     return false;
+   }
+-  std::ofstream destination(output_path, std::ios::binary | std::ios::trunc);
+-  if (!destination) {
++  io::OutFile destination;
++  if (!destination.Open(output_path)) {
+     error = "Could not write an extracted RPF2 file: " + output_path.string();
+     return false;
+   }
+ 
+-  std::vector<uint8_t> input_buffer(kIoBufferSize);
+-  std::vector<uint8_t> output_buffer(kIoBufferSize);
++  // (sized to the entry: most are small)
++  std::vector<uint8_t> input_buffer(
++      std::max<size_t>(1, std::min<uint64_t>(entry.archived_size, kIoBufferSize)));
++  std::vector<uint8_t> output_buffer(
++      std::max<size_t>(65536, std::min<uint64_t>(uint64_t(entry.size) + 1, kIoBufferSize)));
+   uint64_t remaining = entry.archived_size;
+   if (!entry.is_compressed) {
+     while (remaining != 0) {
+@@ -361,12 +372,13 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
+         return false;
+       }
+       const size_t chunk = static_cast<size_t>(std::min<uint64_t>(remaining, input_buffer.size()));
+-      if (!input.read(reinterpret_cast<char*>(input_buffer.data()), chunk) ||
+-          !destination.write(reinterpret_cast<const char*>(input_buffer.data()), chunk)) {
++      if (!input.ReadAt(read_at, input_buffer.data(), chunk) ||
++          !destination.Write(input_buffer.data(), chunk)) {
+         error = "Could not copy an RPF2 file entry from " + archive_path.string() + ".";
+         return false;
+       }
+       remaining -= chunk;
++      read_at += chunk;
+       if (progress.completed_bytes) {
+         progress.completed_bytes->fetch_add(chunk, std::memory_order_relaxed);
+       }
+@@ -388,12 +400,13 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
+       if (stream.avail_in == 0 && remaining != 0) {
+         const size_t chunk =
+             static_cast<size_t>(std::min<uint64_t>(remaining, input_buffer.size()));
+-        if (!input.read(reinterpret_cast<char*>(input_buffer.data()), chunk)) {
++        if (!input.ReadAt(read_at, input_buffer.data(), chunk)) {
+           inflateEnd(&stream);
+           error = "Could not read a compressed RPF2 file entry from " + archive_path.string() + ".";
+           return false;
+         }
+         remaining -= chunk;
++        read_at += chunk;
+         stream.next_in = input_buffer.data();
+         stream.avail_in = static_cast<uInt>(chunk);
+       }
+@@ -404,7 +417,7 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
+       const int status = inflate(&stream, flush);
+       const size_t produced = output_buffer.size() - stream.avail_out;
+       if (produced != 0) {
+-        if (!destination.write(reinterpret_cast<const char*>(output_buffer.data()), produced)) {
++        if (!destination.Write(output_buffer.data(), produced)) {
+           inflateEnd(&stream);
+           error = "Could not write a decompressed RPF2 file entry: " + output_path.string();
+           return false;
+@@ -434,16 +447,15 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
+       return false;
+     }
+   }
+-  destination.flush();
+-  if (!destination) {
++  if (!destination.Close()) {
+     error = "Could not finish an extracted RPF2 file: " + output_path.string();
+     return false;
+   }
+   return true;
+ }
+ 
+-bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive& archive,
+-                      size_t index, const std::filesystem::path& output_root,
++bool ExtractDirectory(const std::filesystem::path& archive_path, io::InFile& input,
++                      const Archive& archive, size_t index, const std::filesystem::path& output_root,
+                       std::vector<bool>& active, std::vector<bool>& visited,
+                       std::vector<std::filesystem::path>& nested_archives,
+                       const RpfExtractionProgress& progress, size_t depth, std::string& error) {
+@@ -477,7 +489,7 @@ bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive&
+     if (entry.is_directory) {
+       std::error_code fs_error;
+       std::filesystem::create_directories(output_path, fs_error);
+-      if (fs_error || !ExtractDirectory(archive_path, archive, child, output_path, active, visited,
++      if (fs_error || !ExtractDirectory(archive_path, input, archive, child, output_path, active, visited,
+                                         nested_archives, progress, depth + 1, error)) {
+         if (error.empty()) {
+           error = "Could not create an RPF extraction directory: " + fs_error.message();
+@@ -486,7 +498,7 @@ bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive&
+       }
+     } else {
+       visited[child] = true;
+-      if (!WriteEntry(archive_path, entry, output_path, progress, error)) {
++      if (!WriteEntry(archive_path, input, entry, output_path, progress, error)) {
+         return false;
+       }
+       std::string extension = output_path.extension().string();
+@@ -530,9 +542,14 @@ bool ExtractOne(const std::filesystem::path& archive_path, const std::filesystem
+     error = "Could not create an RPF extraction directory: " + fs_error.message();
+     return false;
+   }
++  io::InFile input;
++  if (!input.Open(archive_path)) {
++    error = "Could not open " + archive_path.string() + ".";
++    return false;
++  }
+   std::vector<bool> active(archive->entries.size());
+   std::vector<bool> visited(archive->entries.size());
+-  if (!ExtractDirectory(archive_path, *archive, 0, output_root, active, visited, nested_archives,
++  if (!ExtractDirectory(archive_path, input, *archive, 0, output_root, active, visited, nested_archives,
+                         progress, 0, error)) {
+     return false;
+   }
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.cpp
 new file mode 100644
 index 0000000..e5acf1c
@@ -19737,10 +20277,10 @@ index 0000000..a631ae4
 +*/
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
 new file mode 100644
-index 0000000..16ace03
+index 0000000..327e46c
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
-@@ -0,0 +1,282 @@
+@@ -0,0 +1,295 @@
 +// GTA IV PS5 - the hub's check of the game's files and its installer (see
 +// hub_install.h). The install itself is LibertyRecomp's (install/).
 +#include "hub_install.h"
@@ -19756,6 +20296,7 @@ index 0000000..16ace03
 +
 +#include <rex/logging.h>
 +
++#include "../../install/gta4_install_io.h"
 +#include "../../install/gta4_installer.h"
 +#include "../../install/gta4_source_inspector.h"
 +
@@ -19879,6 +20420,7 @@ index 0000000..16ace03
 +  mutable Clock::time_point rate_at{};
 +  mutable uint64_t rate_bytes = 0;
 +  mutable float rate = 0;
++  mutable Clock::time_point logged_at{};
 +
 +  void Set(Phase phase, std::string problem = {}) {
 +    std::lock_guard lock(m);
@@ -20018,6 +20560,17 @@ index 0000000..16ace03
 +    j.rate_at = now, j.rate_bytes = done;
 +  }
 +  s.rate = j.rate;
++  // every 10 s, how it's going in the log (reading vs writing speed)
++  if (now - j.logged_at >= std::chrono::seconds(10)) {
++    j.logged_at = now;
++    const auto& io = gta4::install::io::GetStats();
++    const double rs = double(io.read_ns.load()) / 1e9, ws = double(io.write_ns.load()) / 1e9;
++    REXLOG_INFO("PS5 installer: step {} {:.1f}% {} of {} in {:.0f} s; read {} in {:.1f} s ({:.0f} MB/s), "
++                "wrote {} in {:.1f} s ({:.0f} MB/s)",
++                s.step, s.progress * 100, Bytes(done), Bytes(total), s.seconds, Bytes(io.read_bytes.load()), rs,
++                rs > 0 ? double(io.read_bytes.load()) / rs / double(1 << 20) : 0.0, Bytes(io.write_bytes.load()), ws,
++                ws > 0 ? double(io.write_bytes.load()) / ws / double(1 << 20) : 0.0);
++  }
 +  if (s.progress > 0.03f && s.seconds > 15) s.eta = s.seconds * (1 - s.progress) / s.progress;
 +  return s;
 +}
