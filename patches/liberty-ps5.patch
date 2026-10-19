@@ -19737,10 +19737,10 @@ index 0000000..a631ae4
 +*/
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
 new file mode 100644
-index 0000000..d340942
+index 0000000..16ace03
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
-@@ -0,0 +1,279 @@
+@@ -0,0 +1,282 @@
 +// GTA IV PS5 - the hub's check of the game's files and its installer (see
 +// hub_install.h). The install itself is LibertyRecomp's (install/).
 +#include "hub_install.h"
@@ -19853,7 +19853,10 @@ index 0000000..d340942
 +  std::error_code ec;
 +  fs::create_directories(install_root, ec);
 +  const auto space = fs::space(install_root, ec);
-+  return ec ? 0 : uint64_t(space.available);
++  // (on the PS5 a title can't learn the drive's free space: the SDK's
++  // statvfs always answers 16 GiB, so that means "not known")
++  if (ec || uint64_t(space.available) == (16ull << 30)) return 0;
++  return uint64_t(space.available);
 +}
 +
 +// ------------------------------------------------------------------ the job
@@ -20121,10 +20124,10 @@ index 0000000..8c82240
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
 new file mode 100644
-index 0000000..962ae98
+index 0000000..fa57c88
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
-@@ -0,0 +1,307 @@
+@@ -0,0 +1,308 @@
 +// GTA IV PS5 - the hub's installer (see hub_ui.h, hub_install.h): START GAME
 +// opens it while the game isn't installed. It shows what's in install/ and
 +// the disc image's check, then installs with a progress bar. All on the
@@ -20266,9 +20269,10 @@ index 0000000..962ae98
 +    Row3(y, "TITLE UPDATE 8", found.update.filename().string(), found.update.empty() ? kRowBad : kRowOk,
 +         found.update.empty() ? "Missing" : install::Bytes(found.update_bytes));
 +    y += 122;
++    // (the free space, when it can be known: a PS5 title can't ask)
 +    const bool room = !free_space_ || free_space_ >= needed;
-+    Row3(y, "SPACE", "Needs about " + install::Bytes(needed), room ? kRowOk : kRowBad,
-+         free_space_ ? install::Bytes(free_space_) + " free" : "");
++    Row3(y, "SPACE", "Needs about " + install::Bytes(needed) + " free",
++         !free_space_ ? kRowNone : room ? kRowOk : kRowBad, free_space_ ? install::Bytes(free_space_) + " free" : "");
 +    Panel([&](float px, float py, float pw) {
 +      if (checking) {
 +        Text(a_.display, 44, px, py, kText, "Checking");

@@ -38,7 +38,7 @@ Sources Find(const fs::path&) {
   s.update_bytes = 32571392ull;
   return s;
 }
-uint64_t FreeSpace(const fs::path&) { return 412ull << 30; }
+uint64_t FreeSpace(const fs::path&) { return 0; }
 
 struct Job::Impl {
   Sources found;
