@@ -45,6 +45,7 @@ Drive DriveOf(const fs::path&) {
   d.type = std::getenv("HUB_DRIVE") ? std::getenv("HUB_DRIVE") : "exfatfs";
   d.folder = "/mnt/usb0/homebrew/PPSA94004/UserData/LibertyRecomp";
   d.free = 412ull << 30;
+  d.device = "/dev/da0s1";
   return d;
 }
 
@@ -75,6 +76,9 @@ Job::Job(const fs::path& app, const fs::path&) : impl_(std::make_unique<Impl>())
     s.read_rate = 1650.0f * (1 << 20);
     s.write_rate = 240.0f * (1 << 20);
     s.drive = "an exFAT drive";
+    s.diag_file = "Writing audio.rpf (2.9 GB)";
+    s.diag_time = "Time spent: reading 12 s, writing 210 s, flushing 3 s (40), sizing files 40 s  \xC2\xB7  312.0 MB memory free";
+    s.diag_drive = "/mnt/usb0/homebrew/PPSA94004/UserData/LibertyRecomp  \xC2\xB7  exfatfs /dev/da0s1  \xC2\xB7  412.0 GB free  \xC2\xB7  disc image on exfatfs /dev/da0s1";
   } else if (k == "done") {
     s.phase = Phase::kDone;
     s.progress = 1;

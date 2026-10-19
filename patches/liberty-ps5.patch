@@ -270,10 +270,10 @@ index bb44175..1b222e3 100644
    bool active = false;
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h
 new file mode 100644
-index 0000000..c064cec
+index 0000000..c60abf2
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h
-@@ -0,0 +1,447 @@
+@@ -0,0 +1,486 @@
 +// The installer's file reading and writing: positional reads, big sequential
 +// writes, and a few threads to copy files side by side.
 +//
@@ -341,12 +341,36 @@ index 0000000..c064cec
 +//  - threads: files copied at once (one on an external drive).
 +struct WritePolicy {
 +  bool preallocate = false;
++  uint64_t reserve_step = 0;  // made bigger this much ahead of the writing (0: all at once)
 +  bool direct = true;
 +  int threads = 3;
 +};
 +inline WritePolicy& Policy() {
 +  static WritePolicy policy;
 +  return policy;
++}
++
++// The file being written now (the last one opened), for the install screen.
++namespace detail {
++struct CurrentFile {
++  std::mutex mutex;
++  std::string path;
++  uint64_t size = 0;
++};
++inline CurrentFile& Now() {
++  static CurrentFile current;
++  return current;
++}
++}  // namespace detail
++inline void SetCurrent(const std::filesystem::path& path, uint64_t size) {
++  std::lock_guard lock(detail::Now().mutex);
++  detail::Now().path = path.string();
++  detail::Now().size = size;
++}
++inline void Current(std::string& path, uint64_t& size) {
++  std::lock_guard lock(detail::Now().mutex);
++  path = detail::Now().path;
++  size = detail::Now().size;
 +}
 +inline Stats& GetStats() {
 +  static Stats stats;
@@ -508,12 +532,10 @@ index 0000000..c064cec
 +    if (fd_ < 0) fd_ = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
 +    open_ = fd_ >= 0;
 +    reserved_ = 0;
-+    if (open_ && size && Policy().preallocate) {
-+      const uint64_t start = detail::NowNs();
-+      if (::ftruncate(fd_, off_t(size)) == 0) reserved_ = size;
-+      GetStats().reserve_ns += detail::NowNs() - start;
-+    }
++    size_ = size;
++    if (open_ && size && Policy().preallocate) ReserveFor(0);
 +#endif
++    if (open_) SetCurrent(path, size);
 +    ok_ = open_;
 +    pending_ = 0;
 +    written_ = unflushed_ = 0;
@@ -568,6 +590,12 @@ index 0000000..c064cec
 +  }
 +
 +  void Out(const uint8_t* p, size_t length) {
++#if !defined(_WIN32)
++    // (made big enough first, when the policy says so)
++    if (size_ && Policy().preallocate && written_ + length > reserved_ && reserved_ < size_) {
++      ReserveFor(written_ + length);
++    }
++#endif
 +    const uint64_t start = detail::NowNs();
 +    size_t left = length;
 +#if defined(_WIN32)
@@ -601,6 +629,17 @@ index 0000000..c064cec
 +  }
 +
 +#if !defined(_WIN32)
++  // The file made bigger ahead of the writing (Policy()): up to its full size,
++  // or one step past what's written.
++  void ReserveFor(uint64_t need) {
++    const uint64_t step = Policy().reserve_step;
++    const uint64_t target = step ? std::min(size_, std::max(need, written_) + step) : size_;
++    if (target <= reserved_) return;
++    const uint64_t start = detail::NowNs();
++    if (::ftruncate(fd_, off_t(target)) == 0) reserved_ = target;
++    GetStats().reserve_ns += detail::NowNs() - start;
++  }
++
 +  void Sync() {
 +    const uint64_t start = detail::NowNs();
 +    ::fsync(fd_);
@@ -615,7 +654,7 @@ index 0000000..c064cec
 +#else
 +  int fd_ = -1;
 +  bool direct_ = false;
-+  uint64_t reserved_ = 0;
++  uint64_t reserved_ = 0, size_ = 0;
 +#endif
 +  bool open_ = false, ok_ = false;
 +  AlignedBuffer* gather_ = nullptr;
@@ -20716,10 +20755,10 @@ index 0000000..a631ae4
 +*/
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
 new file mode 100644
-index 0000000..06f2aac
+index 0000000..8e3f0d4
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
-@@ -0,0 +1,403 @@
+@@ -0,0 +1,430 @@
 +// GTA IV PS5 - the hub's check of the game's files and its installer (see
 +// hub_install.h). The install itself is LibertyRecomp's (install/).
 +#include "hub_install.h"
@@ -20839,20 +20878,23 @@ index 0000000..06f2aac
 +
 +#if defined(__PROSPERO__)
 +namespace {
-+// The kernel's statfs for a path (the SDK's statvfs is a stand-in).
++// The kernel's statfs for a path (the SDK's statvfs is a stand-in). A title
++// can't open a folder, so for a folder a file is made in it for the moment.
 +bool StatFs(const fs::path& path, struct statfs& st) {
-+  const int fd = ::open(path.c_str(), O_RDONLY);
++  std::error_code ec;
++  int fd = -1;
++  fs::path probe;
++  if (fs::is_directory(path, ec)) {
++    probe = path / ".drive-probe";
++    fd = ::open(probe.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
++  } else {
++    fd = ::open(path.c_str(), O_RDONLY);
++  }
 +  if (fd < 0) return false;
 +  const bool ok = _fstatfs(fd, &st) == 0;
 +  ::close(fd);
++  if (!probe.empty()) ::unlink(probe.c_str());
 +  return ok;
-+}
-+// "ufs on /dev/... (412.0 GB free)" for the log.
-+std::string Describe(const fs::path& path) {
-+  struct statfs st {};
-+  if (!StatFs(path, st)) return "unknown";
-+  return std::string(st.f_fstypename) + " from " + st.f_mntfromname + " on " + st.f_mntonname + " (" +
-+         Bytes(uint64_t(st.f_bavail) * uint64_t(st.f_bsize)) + " free)";
 +}
 +}  // namespace
 +#endif
@@ -20865,26 +20907,31 @@ index 0000000..06f2aac
 +  return "a " + type + " drive";
 +}
 +
-+Drive DriveOf(const fs::path& install_root) {
++Drive DriveOf(const fs::path& path) {
 +  Drive d;
-+  std::error_code ec;
-+  fs::create_directories(install_root, ec);
 +#if defined(__PROSPERO__)
++  std::error_code ec;
++  if (!fs::exists(path, ec)) fs::create_directories(path, ec);
 +  struct statfs st {};
-+  if (!StatFs(install_root, st)) return d;
++  if (!StatFs(path, st)) return d;
 +  d.type = st.f_fstypename;
 +  d.free = uint64_t(st.f_bavail) * uint64_t(st.f_bsize);
-+  d.folder = install_root.string();
++  d.folder = path.string();
++  d.device = st.f_mntfromname;
 +  // (/app0 is a nullfs mount of the app's real folder: follow it to the drive)
 +  if (d.type == "nullfs") {
-+    const std::string on = st.f_mntonname, from = st.f_mntfromname, path = install_root.string();
++    const std::string on = st.f_mntonname, from = st.f_mntfromname, p = path.string();
++    if (p.rfind(on, 0) == 0) d.folder = from + p.substr(on.size());
++    d.type = "nullfs";
 +    struct statfs lower {};
-+    if (!from.empty() && StatFs(from, lower)) {
++    if (StatFs(d.folder, lower)) {
 +      d.type = lower.f_fstypename;
 +      d.free = uint64_t(lower.f_bavail) * uint64_t(lower.f_bsize);
-+      if (path.rfind(on, 0) == 0) d.folder = from + path.substr(on.size());
++      d.device = lower.f_mntfromname;
 +    }
 +  }
++#else
++  (void)path;
 +#endif
 +  return d;
 +}
@@ -20915,18 +20962,9 @@ index 0000000..06f2aac
 +  bool go = false, quit = false;
 +  gta4::install::Progress progress;
 +  Clock::time_point started;
-+  std::thread thread;
-+  // (Get's bookkeeping)
-+  mutable uint64_t copy_total = 0, unpack_guess = 0;
-+  mutable float shown = 0;
-+  mutable Clock::time_point rate_at{};
-+  mutable uint64_t rate_bytes = 0;
-+  mutable float rate = 0;
-+  mutable Clock::time_point logged_at{};
-+  // (the reading and writing speeds, from the io stats)
-+  mutable Clock::time_point io_at{};
-+  mutable uint64_t io_rb = 0, io_rns = 0, io_wb = 0, io_wns = 0;
-+  mutable float read_rate = 0, write_rate = 0;
++  std::thread thread, monitor;
++  std::atomic<bool> monitoring{false};
++  std::string where;  // the install drive, for the screen
 +
 +  void Set(Phase phase, std::string problem = {}) {
 +    std::lock_guard lock(m);
@@ -20934,14 +20972,103 @@ index 0000000..06f2aac
 +    st.problem = std::move(problem);
 +  }
 +
++  // While installing: once a second, the numbers for the screen; every 10 s,
++  // a line in the log. On its own thread, so the screen never waits on the
++  // drive.
++  void Monitor() {
++    uint64_t copy_total = 0, unpack_guess = 0;
++    float shown = 0, rate = 0, read_rate = 0, write_rate = 0;
++    Clock::time_point rate_at = Clock::now(), io_at = rate_at, logged_at{};
++    uint64_t rate_bytes = 0, io_rb = 0, io_rns = 0, io_wb = 0, io_wns = 0;
++    while (monitoring.load()) {
++      for (int i = 0; i < 10 && monitoring.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
++      if (!monitoring.load()) break;
++      const auto now = Clock::now();
++      const uint64_t done = progress.copied_bytes.load(), total = progress.total_bytes.load();
++      // Two steps: the disc image's files are copied (the total known up
++      // front), then the archives are unpacked (their total grows as each one
++      // is opened, so it's guessed from the archives' sizes).
++      if (!copy_total && total) copy_total = total;
++      int step = 1;
++      float f = 0;
++      if (copy_total && total > copy_total) {
++        if (!unpack_guess) {
++          const fs::path staged = root / ".install-staging" / "game";
++          std::error_code ec;
++          for (const char* rpf : {"common.rpf", "xbox360.rpf", "audio.rpf"}) unpack_guess += fs::file_size(staged / rpf, ec);
++          unpack_guess = unpack_guess * 23 / 20;
++        }
++        const uint64_t unpack_total = std::max(total - copy_total, unpack_guess);
++        step = 2;
++        f = 0.45f + 0.55f * float(double(done - std::min(done, copy_total)) / double(std::max<uint64_t>(unpack_total, 1)));
++      } else if (copy_total) {
++        f = 0.45f * float(double(done) / double(copy_total));
++      }
++      shown = std::max(shown, std::min(f, 0.995f));
++      const float dt = std::chrono::duration<float>(now - rate_at).count();
++      if (dt >= 1.0f) {
++        const float r = float(double(done - std::min(done, rate_bytes)) / dt);
++        rate = rate > 0 ? rate * 0.6f + r * 0.4f : r;
++        rate_at = now, rate_bytes = done;
++      }
++      const auto& io = gta4::install::io::GetStats();
++      const uint64_t rb = io.read_bytes.load(), rns = io.read_ns.load(), wb = io.write_bytes.load(),
++                     wns = io.write_ns.load();
++      if (now - io_at >= std::chrono::seconds(2)) {
++        // (bytes over the time spent at it: one thread's speed)
++        if (rns > io_rns) read_rate = float(double(rb - io_rb) / (double(rns - io_rns) / 1e9));
++        if (wns > io_wns) write_rate = float(double(wb - io_wb) / (double(wns - io_wns) / 1e9));
++        io_at = now, io_rb = rb, io_rns = rns, io_wb = wb, io_wns = wns;
++      }
++      size_t flexible = 0;
++#if defined(__PROSPERO__)
++      sceKernelAvailableFlexibleMemorySize(&flexible);
++#endif
++      std::string current;
++      uint64_t current_size = 0;
++      gta4::install::io::Current(current, current_size);
++      const float seconds = std::chrono::duration<float>(now - started).count();
++      char times[256];
++      std::snprintf(times, sizeof(times),
++                    "Time spent: reading %.0f s, writing %.0f s, flushing %.0f s (%llu), sizing files %.0f s  "
++                    "\xC2\xB7  %s memory free",
++                    double(rns) / 1e9, double(wns) / 1e9, double(io.sync_ns.load()) / 1e9,
++                    (unsigned long long)io.syncs.load(), double(io.reserve_ns.load()) / 1e9, Bytes(flexible).c_str());
++      {
++        std::lock_guard lock(m);
++        st.written = done;
++        st.seconds = seconds;
++        st.step = step;
++        st.progress = shown;
++        st.rate = rate;
++        st.read_rate = read_rate;
++        st.write_rate = write_rate;
++        st.diag_drive = where;
++        st.diag_time = times;
++        st.diag_file = current.empty() ? std::string()
++                                       : "Writing " + fs::path(current).filename().string() + " (" +
++                                             Bytes(current_size) + ")";
++        // time left: what's still to write, at the speed of late
++        st.eta = -1;
++        if (copy_total && rate > 0 && seconds > 10) {
++          const uint64_t unpack = total > copy_total ? std::max(total - copy_total, unpack_guess) : copy_total * 23 / 20;
++          const uint64_t expected = copy_total + unpack;
++          st.eta = float(double(expected - std::min(expected, done)) / double(rate));
++        }
++      }
++      if (now - logged_at >= std::chrono::seconds(10)) {
++        logged_at = now;
++        REXLOG_INFO("PS5 installer: step {} {:.1f}% {} of {} in {:.0f} s ({:.0f} MB/s now, read {:.0f} / write {:.0f} "
++                    "MB/s per thread); {}; {} ({})",
++                    step, shown * 100, Bytes(done), Bytes(total), seconds, double(rate) / double(1 << 20),
++                    double(read_rate) / double(1 << 20), double(write_rate) / double(1 << 20), times, current,
++                    Bytes(current_size));
++      }
++    }
++  }
++
 +  void Run() {
 +    REXLOG_INFO("PS5 installer: disc '{}', title update '{}'", found.disc.string(), found.update.string());
-+#if defined(__PROSPERO__)
-+    size_t flexible = 0;
-+    sceKernelAvailableFlexibleMemorySize(&flexible);
-+    REXLOG_INFO("PS5 installer: disc image on {}; installing to {}; {} flexible memory free",
-+                found.disc.empty() ? std::string("-") : Describe(found.disc), Describe(root), Bytes(flexible));
-+#endif
 +    if (found.disc.empty()) {
 +      Set(Phase::kProblem,
 +          "There's no disc image in the install folder. Copy your GTA IV disc image (.iso) into "
@@ -20964,12 +21091,18 @@ index 0000000..06f2aac
 +          "to the disc image, and press Triangle.");
 +      return;
 +    }
-+    const uint64_t free = FreeSpace(root), needed = SpaceNeeded(found.disc_bytes);
-+    if (free && free < needed) {
++    const Drive drive = DriveOf(root), disc_drive = DriveOf(found.disc);
++    const uint64_t needed = SpaceNeeded(found.disc_bytes);
++    if (drive.free && drive.free < needed) {
 +      Set(Phase::kProblem, "There isn't enough free space. The install needs about " + Bytes(needed) +
-+                               " and the PS5 has " + Bytes(free) + " free.");
++                               " and the drive has " + Bytes(drive.free) + " free.");
 +      return;
 +    }
++    where = (drive.folder.empty() ? root.string() : drive.folder) + "  \xC2\xB7  " +
++            (drive.type.empty() ? std::string("drive not known") : drive.type + " " + drive.device) + "  \xC2\xB7  " +
++            Bytes(drive.free) + " free  \xC2\xB7  disc image on " +
++            (disc_drive.type.empty() ? std::string("?") : disc_drive.type + " " + disc_drive.device);
++    REXLOG_INFO("PS5 installer: installs to {}", where);
 +    Set(Phase::kReady);
 +    {
 +      std::unique_lock lock(m);
@@ -20979,26 +21112,31 @@ index 0000000..06f2aac
 +      started = Clock::now();
 +    }
 +    {
-+      // how to write, for the drive it writes to (gta4_install_io.h)
-+      const Drive drive = DriveOf(root);
++      // how to write, for the drive it writes to (gta4_install_io.h): the
++      // internal storage (ufs) past the file cache, three files at a time;
++      // any other drive (exFAT and the like) one file at a time, each made
++      // bigger in 128 MB steps ahead of the writing
 +      auto& policy = gta4::install::io::Policy();
-+      policy.preallocate = true;
-+      policy.direct = drive.internal();
-+      policy.threads = drive.internal() ? 3 : 1;
++      const bool internal = drive.internal();
++      policy.preallocate = !internal;
++      policy.reserve_step = 128ull << 20;
++      policy.direct = internal;
++      policy.threads = internal ? 3 : 1;
 +      std::lock_guard lock(m);
 +      st.drive = drive.Name();
-+      REXLOG_INFO("PS5 installer: installing into {} ({}: {}, {} free): {} thread(s), {} writes, files made full "
-+                  "size first",
-+                  root.string(), drive.folder, drive.type.empty() ? "unknown" : drive.type, Bytes(drive.free),
-+                  policy.threads, policy.direct ? "direct" : "cached");
++      REXLOG_INFO("PS5 installer: writing with {} thread(s), {} writes, {}", policy.threads,
++                  policy.direct ? "direct" : "cached", policy.preallocate ? "files sized in 128 MB steps" : "no sizing");
 +    }
++    monitoring = true;
++    monitor = std::thread([this] { Monitor(); });
 +    gta4::install::Selection selection;
 +    selection.game_source = found.disc;
 +    selection.update_source = found.update;
 +    const auto result = gta4::install::Install(selection, root, progress);
++    monitoring = false;
++    if (monitor.joinable()) monitor.join();
 +    if (result.success) {
-+      REXLOG_INFO("PS5 installer: done in {:.0f} s",
-+                  std::chrono::duration<float>(Clock::now() - started).count());
++      REXLOG_INFO("PS5 installer: done in {:.0f} s", std::chrono::duration<float>(Clock::now() - started).count());
 +      Set(Phase::kDone);
 +    } else if (progress.cancel_requested.load()) {
 +      REXLOG_INFO("PS5 installer: cancelled");
@@ -21025,6 +21163,8 @@ index 0000000..06f2aac
 +  impl_->progress.cancel_requested = true;
 +  impl_->cv.notify_all();
 +  if (impl_->thread.joinable()) impl_->thread.join();
++  impl_->monitoring = false;
++  if (impl_->monitor.joinable()) impl_->monitor.join();
 +}
 +
 +const Sources& Job::Found() const { return impl_->found; }
@@ -21040,95 +21180,21 @@ index 0000000..06f2aac
 +
 +void Job::Cancel() { impl_->progress.cancel_requested = true; }
 +
++// (only what the monitor last worked out: the screen never touches the drive)
 +Job::Status Job::Get() const {
-+  Impl& j = *impl_;
-+  Status s;
-+  Impl::Clock::time_point started;
-+  {
-+    std::lock_guard lock(j.m);
-+    s = j.st;
-+    started = j.started;
-+  }
++  std::lock_guard lock(impl_->m);
++  Status s = impl_->st;
 +  if (s.phase == Phase::kDone) s.progress = 1;
-+  if (s.phase != Phase::kInstalling) return s;
-+  const auto now = Impl::Clock::now();
-+  const uint64_t done = j.progress.copied_bytes.load(), total = j.progress.total_bytes.load();
-+  s.written = done;
-+  s.seconds = std::chrono::duration<float>(now - started).count();
-+  // Two steps: the disc image's files are copied (the total known up front),
-+  // then the game's archives are unpacked (their total grows as each one is
-+  // opened, so it's guessed from the archives' sizes).
-+  if (!j.copy_total && total) j.copy_total = total;
-+  float f = 0;
-+  if (j.copy_total && total > j.copy_total) {
-+    if (!j.unpack_guess) {
-+      const fs::path staged = j.root / ".install-staging" / "game";
-+      std::error_code ec;
-+      for (const char* rpf : {"common.rpf", "xbox360.rpf", "audio.rpf"}) j.unpack_guess += fs::file_size(staged / rpf, ec);
-+      j.unpack_guess = j.unpack_guess * 23 / 20;
-+    }
-+    const uint64_t unpack_total = std::max(total - j.copy_total, j.unpack_guess);
-+    s.step = 2;
-+    f = 0.45f + 0.55f * float(double(done - std::min(done, j.copy_total)) / double(std::max<uint64_t>(unpack_total, 1)));
-+  } else {
-+    s.step = 1;
-+    f = j.copy_total ? 0.45f * float(double(done) / double(j.copy_total)) : 0;
-+  }
-+  j.shown = std::max(j.shown, std::min(f, 0.995f));
-+  s.progress = j.shown;
-+  // the speed, over the last second or so
-+  if (j.rate_at == Impl::Clock::time_point{}) j.rate_at = now, j.rate_bytes = done;
-+  const float dt = std::chrono::duration<float>(now - j.rate_at).count();
-+  if (dt >= 1.0f) {
-+    const float r = float(double(done - std::min(done, j.rate_bytes)) / dt);
-+    j.rate = j.rate > 0 ? j.rate * 0.6f + r * 0.4f : r;
-+    j.rate_at = now, j.rate_bytes = done;
-+  }
-+  s.rate = j.rate;
-+  {
-+    const auto& io = gta4::install::io::GetStats();
-+    const uint64_t rb = io.read_bytes.load(), rns = io.read_ns.load(), wb = io.write_bytes.load(),
-+                   wns = io.write_ns.load();
-+    if (j.io_at == Impl::Clock::time_point{}) {
-+      j.io_at = now, j.io_rb = rb, j.io_rns = rns, j.io_wb = wb, j.io_wns = wns;
-+    } else if (now - j.io_at >= std::chrono::seconds(2)) {
-+      // (bytes over the time spent at it: one thread's speed)
-+      if (rns > j.io_rns) j.read_rate = float(double(rb - j.io_rb) / (double(rns - j.io_rns) / 1e9));
-+      if (wns > j.io_wns) j.write_rate = float(double(wb - j.io_wb) / (double(wns - j.io_wns) / 1e9));
-+      j.io_at = now, j.io_rb = rb, j.io_rns = rns, j.io_wb = wb, j.io_wns = wns;
-+    }
-+    s.read_rate = j.read_rate;
-+    s.write_rate = j.write_rate;
-+  }
-+  // every 10 s, how it's going in the log (reading vs writing speed)
-+  if (now - j.logged_at >= std::chrono::seconds(10)) {
-+    j.logged_at = now;
-+    const auto& io = gta4::install::io::GetStats();
-+    const double rs = double(io.read_ns.load()) / 1e9, ws = double(io.write_ns.load()) / 1e9;
-+    REXLOG_INFO("PS5 installer: step {} {:.1f}% {} of {} in {:.0f} s ({:.0f} MB/s now); read {} in {:.1f} s, "
-+                "wrote {} in {:.1f} s, {} flushes in {:.1f} s",
-+                s.step, s.progress * 100, Bytes(done), Bytes(total), s.seconds, double(s.rate) / double(1 << 20),
-+                Bytes(io.read_bytes.load()), rs, Bytes(io.write_bytes.load()), ws, io.syncs.load(),
-+                double(io.sync_ns.load()) / 1e9);
-+  }
-+  // time left: what's still to write, at the speed of late (so a fast start
-+  // from the PS5's cache doesn't promise too much)
-+  if (j.copy_total && j.rate > 0 && s.seconds > 10) {
-+    const uint64_t unpack = total > j.copy_total ? std::max(total - j.copy_total, j.unpack_guess)
-+                                                 : j.copy_total * 23 / 20;
-+    const uint64_t expected = j.copy_total + unpack;
-+    s.eta = float(double(expected - std::min(expected, done)) / double(j.rate));
-+  }
 +  return s;
 +}
 +
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h
 new file mode 100644
-index 0000000..bd7f7bb
+index 0000000..9b4cc89
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,110 @@
 +// GTA IV PS5 - the hub's check of the game's files, and its installer: the
 +// game is installed from the disc image and Title Update 8 in the app's
 +// install folder; after that it runs from UserData/LibertyRecomp/game.
@@ -21191,12 +21257,13 @@ index 0000000..bd7f7bb
 +struct Drive {
 +  std::string type;    // empty: not known
 +  std::string folder;  // the install folder's real path (empty: not known)
++  std::string device;  // what's mounted ("/dev/...", the real folder of a nullfs)
 +  uint64_t free = 0;
 +  bool internal() const { return type == "ufs"; }
 +  // "internal storage", "an exFAT drive"...
 +  std::string Name() const;
 +};
-+Drive DriveOf(const fs::path& install_root);
++Drive DriveOf(const fs::path& path);  // (a folder or a file)
 +
 +// About how much room the install takes, from the disc image's size.
 +inline uint64_t SpaceNeeded(uint64_t disc_bytes) { return disc_bytes * 9 / 4 + (512ull << 20); }
@@ -21218,6 +21285,8 @@ index 0000000..bd7f7bb
 +    float eta = -1;        // seconds left (-1: not known yet)
 +    float read_rate = 0, write_rate = 0;  // one thread's reading and writing speed, lately
 +    std::string drive;                    // what it installs to ("an exFAT drive")
++    // what's going on, in detail (small print on the install screen)
++    std::string diag_drive, diag_time, diag_file;
 +  };
 +  // `install_root`: UserData/LibertyRecomp (the game goes in its game/).
 +  Job(const fs::path& app, const fs::path& install_root);
@@ -21238,10 +21307,10 @@ index 0000000..bd7f7bb
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
 new file mode 100644
-index 0000000..48a6371
+index 0000000..66b00e3
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
-@@ -0,0 +1,323 @@
+@@ -0,0 +1,330 @@
 +// GTA IV PS5 - the hub's installer (see hub_ui.h, hub_install.h): START GAME
 +// opens it while the game isn't installed. It shows what's in install/ and
 +// the disc image's check, then installs with a progress bar. All on the
@@ -21404,8 +21473,8 @@ index 0000000..48a6371
 +        py += 30;
 +        py += Wrapped(a_.body_bold, 21, px, py, pw, White(0.8f), folder, 1.3f);
 +        if (!drive_.type.empty()) {
-+          std::string on = "On " + drive_.Name();
-+          Text(a_.body, 20, px, py + 6, White(0.55f), on);
++          std::string on = "On " + drive_.Name() + (drive_.device.empty() ? "" : " (" + drive_.type + ", " + drive_.device + ")");
++          Wrapped(a_.body, 20, px, py + 6, pw, White(0.55f), on);
 +        }
 +      } else {
 +        Text(a_.display, 44, px, py, kText, "Can't install yet");
@@ -21479,6 +21548,13 @@ index 0000000..48a6371
 +      std::snprintf(io, sizeof(io), "Reading at %.0f MB/s  \xC2\xB7  writing at %.0f MB/s", double(st.read_rate) / (1 << 20),
 +                    double(st.write_rate) / (1 << 20));
 +      Text(a_.body, 18, bx, by + 78, White(0.38f), std::string(io) + (st.drive.empty() ? "" : " to " + st.drive));
++    }
++    // the details, small: what it's writing, where the time goes, the drive
++    float dy = by + 112;
++    for (const std::string* line : {&st.diag_file, &st.diag_time, &st.diag_drive}) {
++      if (line->empty()) continue;
++      Text(a_.body, 16, bx, dy, White(0.3f), Fit(a_.body, 16, *line, bw));
++      dy += 26;
 +    }
 +  }
 +}
