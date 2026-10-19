@@ -36842,7 +36842,7 @@ index 1d5402e9..1adeb3c1 100644
    if (command_processor_) {
      command_processor_->increment_counter();
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
-index 581a9d20..e8d9c288 100644
+index 581a9d20..c19e22d6 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 @@ -1,3 +1,4 @@
@@ -36850,20 +36850,23 @@ index 581a9d20..e8d9c288 100644
  #include <rex/graphics/gta4_native/fusion_tone_lut.h>
  #include <rex/graphics/gta4_native/modern_effect_constants.h>
  #include "core/font_atlas.h"
-@@ -404,6 +405,12 @@ REXCVAR_DEFINE_BOOL(gta4_native_pipelined_recording, true, "GTA IV/Graphics/Nati
+@@ -404,6 +405,15 @@ REXCVAR_DEFINE_BOOL(gta4_native_pipelined_recording, true, "GTA IV/Graphics/Nati
                      "Record and submit each frame on a second thread while the worker assembles the next");
  REXCVAR_DEFINE_BOOL(gta4_native_async_command_retire, true, "GTA IV/Graphics/Native Renderer",
                      "Destroy recorded frame commands on a background thread");
 +// [ps5 port] Android's choice on the PS5 too: with the guest swizzle applied
 +// the lights' ARGB textures come out with red and blue swapped (yellow light
 +// drawn blue).
++static std::atomic<uint64_t> g_ps5_texture_evictions{0};
++REXCVAR_DEFINE_BOOL(ps5_hud_trace, true, "PS5",
++                    "Log the radar's draws, triangle fans, and dropped draws (bounded)");
 +REXCVAR_DEFINE_BOOL(gta4_native_guest_texture_swizzle, !(REX_PLATFORM_ANDROID || REX_PLATFORM_PS5),
 +                    "GTA IV/Graphics/Native Renderer",
 +                    "Apply the guest's texture swizzle in image views where the GPU allows it");
  REXCVAR_DEFINE_BOOL(gta4_vertex_color_as_rgba, false, "GTA IV/Diagnostics",
                      "Bind D3DCOLOR vertex elements as R8G8B8A8 instead of B8G8R8A8");
  REXCVAR_DEFINE_BOOL(gta4_trace_startup_content, false, "GTA IV/Diagnostics",
-@@ -542,7 +549,7 @@ REXCVAR_DEFINE_BOOL(gta4_profile_native_detailed_cpu, true, "GTA IV/Diagnostics"
+@@ -542,7 +552,7 @@ REXCVAR_DEFINE_BOOL(gta4_profile_native_detailed_cpu, true, "GTA IV/Diagnostics"
  REXCVAR_DEFINE_UINT32(gta4_profile_native_gpu_query_budget, 512, "GTA IV/Diagnostics",
                        "Maximum timestamp boundaries per sampled frame (more boundaries add GPU overhead)")
      .range(16, rex::graphics::gta4_native::performance::kMaximumGpuQueriesPerFrame);
@@ -36872,7 +36875,7 @@ index 581a9d20..e8d9c288 100644
                        "Capture one native-renderer profile after this many submitted frames")
      .range(1, 3600);
  REXCVAR_DEFINE_UINT32(gta4_profile_native_samples, 600, "GTA IV/Diagnostics",
-@@ -660,6 +667,8 @@ void LogFrameTimeline(uint32_t frame) {
+@@ -660,6 +670,8 @@ void LogFrameTimeline(uint32_t frame) {
    if (++batched == 8) {
  #if REX_PLATFORM_ANDROID
      __android_log_print(ANDROID_LOG_WARN, "LibertyRecomp", "frame-timeline:%s", batch.c_str());
@@ -36881,7 +36884,19 @@ index 581a9d20..e8d9c288 100644
  #endif
      batch.clear();
      batched = 0;
-@@ -4743,6 +4752,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
+@@ -1565,7 +1577,10 @@ class NativeSubmissionCompletion final
+ };
+ 
+ uint64_t NextNativeTraceDiagnosticCount(std::atomic<uint64_t>& counter) {
+-  if (!CachedDiagnosticsEnabled(rex::diagnostics::Category::kNativeTrace)) {
++  // [ps5 port] These are the renderer's own failure reports (a draw dropped,
++  // and why); they are bounded, and the PS5 log is the only way to see them.
++  if (!CachedDiagnosticsEnabled(rex::diagnostics::Category::kNativeTrace) &&
++      !(REX_PLATFORM_PS5 && REXCVAR_GET(ps5_hud_trace))) {
+     return UINT64_MAX;
+   }
+   return counter.fetch_add(1, std::memory_order_relaxed) + 1;
+@@ -4743,6 +4758,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
    if (header.type == CommandType::kPresent) {
      const auto& present = *static_cast<const PresentCommand*>(command);
      MarkFrameTimeline(present.submitted_frame, kTimelineGuestPresent);
@@ -36889,7 +36904,7 @@ index 581a9d20..e8d9c288 100644
      const auto frontbuffer_fetch =
          std::bit_cast<xenos::xe_gpu_texture_fetch_t>(present.frontbuffer_fetch);
      auto fetch_matches = [&frontbuffer_fetch](const NativeTextureResource& resource) {
-@@ -6479,7 +6489,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -6479,7 +6495,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
            bound.read_epoch = read_epoch;
            const auto mark_read = [read_epoch](const NativeTextureResource* resource) {
              if (resource)
@@ -36898,7 +36913,7 @@ index 581a9d20..e8d9c288 100644
            };
            for (const auto& texture : assembled.textures) {
              if (!texture) continue;
-@@ -18714,12 +18724,14 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
+@@ -18714,12 +18730,14 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
      view_info.components.b = VK_COMPONENT_SWIZZLE_ONE;
      view_info.components.a = VK_COMPONENT_SWIZZLE_R;
    } else if (vulkan_device->properties().portabilitySubset ||
@@ -36917,7 +36932,33 @@ index 581a9d20..e8d9c288 100644
      host_swizzle = xenos::XE_GPU_TEXTURE_SWIZZLE_RGBA;
      view_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
                              VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
-@@ -31231,7 +31243,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -20509,6 +20527,7 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+                 configured_limit_bytes, candidates.size(), render_queue_.size()));
+       }
+       evicted_images.push_back(std::move(image->second));
++      ++g_ps5_texture_evictions;
+       const NativeTextureImage* evicted = evicted_images.back().get();
+       RecordNativeMemoryLifecycle(
+           memory::ResourceKind::kTextureImage, memory::LifecycleAction::kEvict,
+@@ -20622,6 +20641,17 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedTextureImages(
+     CollectProtectedTextureGenerations(present_source, protected_texture_generations_);
+     EvictNativeTextureImages(submitted_frame, false);
+   }
++#if REX_PLATFORM_PS5
++  // [ps5 port] Texture memory every ~20 s: textures come and go on the PS5.
++  if (submitted_frame % 600 == 0 && REXCVAR_GET(ps5_hud_trace)) {
++    REXLOG_INFO("ps5 textures: frame={} images={} heap-usage={} MB heap-budget={} MB pressure={} "
++                "alloc-retries={} alloc-failures={} pool-reuses={} evictions={}",
++                submitted_frame, native_texture_images_.size(), texture_heap_usage_ >> 20,
++                texture_heap_budget_ >> 20, texture_budget_pressure_active_,
++                texture_allocation_retry_count_, texture_allocation_failure_count_,
++                texture_allocation_reuses_, g_ps5_texture_evictions.load());
++  }
++#endif
+ }
+ 
+ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_frame) {
+@@ -31231,7 +31261,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
        if (pipelined_recording_ && frame_constant_bound_.valid && frame_constant_bound_.read_epoch &&
            REXCVAR_GET(gta4_native_assembled_frame_scans)) {
          // A later frame's stamp only makes this conservative (an extra resolve).
@@ -36926,6 +36967,79 @@ index 581a9d20..e8d9c288 100644
                 frame_constant_bound_.read_epoch;
        } else for (const NativeCommand& scan : current_frame_) {
          for (const auto& texture : scan.textures) {
+@@ -33478,6 +33508,72 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+       }
+       std::fflush(stderr);
+     }
++#if REX_PLATFORM_PS5
++    // [ps5 port] The radar's map and its health/armor arcs don't show on the
++    // PS5. Log the radar-phase draws and the triangle fans (the map sections
++    // are fans) with the state that decides whether they reach the screen.
++    if (is_draw && REXCVAR_GET(ps5_hud_trace)) {
++      uint32_t primitive = 0, count = 0;
++      if (command.type == CommandType::kDrawPrimitiveUp) {
++        DrawPrimitiveUpCommand d{};
++        std::memcpy(&d, command.bytes.data(), std::min(sizeof(d), command.bytes.size()));
++        primitive = d.primitive_type, count = d.vertex_count;
++      } else if (command.type == CommandType::kDrawPrimitive) {
++        DrawPrimitiveCommand d{};
++        std::memcpy(&d, command.bytes.data(), std::min(sizeof(d), command.bytes.size()));
++        primitive = d.primitive_type, count = d.vertex_count;
++      } else {
++        DrawIndexedPrimitiveCommand d{};
++        std::memcpy(&d, command.bytes.data(), std::min(sizeof(d), command.bytes.size()));
++        primitive = d.primitive_type, count = d.index_count;
++      }
++      const bool radar = command.render_phase == RenderPhase::kRadarMap;
++      const bool fan = primitive == uint32_t(xenos::PrimitiveType::kTriangleFan);
++      const bool sky = command.pipeline_state && command.pipeline_state->pixel_shader_resource &&
++                       IsFusionSkyShader(command.pipeline_state->pixel_shader_resource->hash);
++      static std::atomic<uint64_t> radar_seen{0}, fan_seen{0}, sky_seen{0};
++      const uint64_t n = radar ? ++radar_seen : sky ? ++sky_seen : fan ? ++fan_seen : 0;
++      // The first few, then every frame of a short burst every ~20 s (to
++      // catch what changes from frame to frame).
++      if (n && (n <= 40 || submitted_frame % 600 < 3) && command.pipeline_state) {
++        const NativePipelineState& st = *command.pipeline_state;
++        const NativeFixedFunctionState& f = command.fixed_function_state;
++        std::string tex;
++        for (uint32_t stage = 0; stage < kShaderTextureCount; ++stage) {
++          const auto& t = command.textures[stage];
++          if (!st.textures[stage] && !t) continue;
++          tex += fmt::format(" s{}={:08X}", stage, st.textures[stage]);
++          if (t)
++            tex += fmt::format("/f{}/{}x{}/tiled{}/gpu{}/g{}", uint32_t(t->info.format),
++                               t->info.width + 1, t->info.height + 1, int(t->info.is_tiled),
++                               int(t->gpu_produced), t->generation);
++          else
++            tex += "/none";
++        }
++        REXLOG_INFO(
++            "ps5 hud: {} #{} frame={} cmd={} type={} prim={} count={} vs={:016X} ps={:016X} "
++            "consts={:016X}/{:016X} "
++            "depth={}/{}/{} stencil={}/f{}/ref{}/m{:X}/w{:X}/ops{}{}{} blend={}/{:08X} cwm={:X} "
++            "atest={}/{}/{:.3f} cull={} clip={:X} scissor={}:{},{},{},{} vp={:.1f},{:.1f},{:.1f},{:.1f} "
++            "rt0={:08X}/f{}/{}x{} ds={:08X} target={}x{}/{}x{} presenter={} reflection={}{}",
++            radar ? "radar" : sky ? "sky" : "fan", n, submitted_frame, command_index, CommandTypeName(command.type),
++            primitive, count, st.vertex_shader_resource ? st.vertex_shader_resource->hash : 0,
++            st.pixel_shader_resource ? st.pixel_shader_resource->hash : 0,
++            command.vertex_constants_hash, command.pixel_constants_hash, f.depth_enable,
++            f.depth_function, f.depth_write_enable, f.stencil_enable, f.stencil_function,
++            f.stencil_reference, f.stencil_mask, f.stencil_write_mask, f.stencil_fail,
++            f.stencil_depth_fail, f.stencil_pass, f.blend_enable, f.blend_controls[0],
++            f.color_write_mask, f.alpha_test_enable, f.alpha_function, f.alpha_reference,
++            f.cull_mode, f.user_clip_plane_enable_mask, f.scissor_enable, f.scissor[0],
++            f.scissor[1], f.scissor[2], f.scissor[3], std::bit_cast<float>(f.viewport_bits[0]),
++            std::bit_cast<float>(f.viewport_bits[1]), std::bit_cast<float>(f.viewport_bits[2]),
++            std::bit_cast<float>(f.viewport_bits[3]), st.render_targets[0].handle,
++            st.render_targets[0].format, st.render_targets[0].width, st.render_targets[0].height,
++            st.depth_stencil.handle, target.width, target.height, target.logical_width,
++            target.logical_height, target.uses_presenter, target.is_reflection, tex);
++      }
++    }
++#endif
+     if (legacy_diagnostics && is_draw && command.render_phase == RenderPhase::kRadarMap) {
+       static std::atomic<uint64_t> radar_draw_count{0};
+       const uint64_t radar_draw_index = ++radar_draw_count;
 diff --git a/glue/rexglue-sdk-main/src/graphics/pipeline/texture/cache.cpp b/glue/rexglue-sdk-main/src/graphics/pipeline/texture/cache.cpp
 index c7c824e3..63f155fd 100644
 --- a/glue/rexglue-sdk-main/src/graphics/pipeline/texture/cache.cpp
@@ -38940,6 +39054,27 @@ index 00000000..939a240d
 + * has no window to query); this file keeps the per-platform source layout.
 + */
 +#include <rex/ui/surface_ps5.h>
+diff --git a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_device.cpp b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_device.cpp
+index 7c25d612..ebc63df8 100644
+--- a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_device.cpp
++++ b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_device.cpp
+@@ -1147,6 +1147,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+     if (memory_type_flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) {
+       device->memory_types_.host_cached |= memory_type_bit;
+     }
++#if REX_PLATFORM_PS5
++    // [ps5 port] The PS5's driver is a port; its memory types decide whether
++    // uploads need flushing and where textures live.
++    const uint32_t heap = memory_properties.memoryTypes[memory_type_index].heapIndex;
++    REXLOG_INFO("vulkan memory type {}: heap {} ({} MB{}) flags {:#x}", memory_type_index, heap,
++                memory_properties.memoryHeaps[heap].size >> 20,
++                (memory_properties.memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
++                    ? ", device local" : "",
++                uint32_t(memory_type_flags));
++#endif
+   }
+ 
+   return device;
 diff --git a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_instance.cpp b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_instance.cpp
 index eb0ad80b..41d0e95e 100644
 --- a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_instance.cpp
