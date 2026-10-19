@@ -39,6 +39,14 @@ Sources Find(const fs::path&) {
   return s;
 }
 uint64_t FreeSpace(const fs::path&) { return 0; }
+std::string Drive::Name() const { return type == "ufs" ? "internal storage" : "an exFAT drive"; }
+Drive DriveOf(const fs::path&) {
+  Drive d;
+  d.type = std::getenv("HUB_DRIVE") ? std::getenv("HUB_DRIVE") : "exfatfs";
+  d.folder = "/mnt/usb0/homebrew/PPSA94004/UserData/LibertyRecomp";
+  d.free = 412ull << 30;
+  return d;
+}
 
 struct Job::Impl {
   Sources found;
@@ -66,6 +74,7 @@ Job::Job(const fs::path& app, const fs::path&) : impl_(std::make_unique<Impl>())
     s.eta = 410;
     s.read_rate = 1650.0f * (1 << 20);
     s.write_rate = 240.0f * (1 << 20);
+    s.drive = "an exFAT drive";
   } else if (k == "done") {
     s.phase = Phase::kDone;
     s.progress = 1;

@@ -270,10 +270,10 @@ index bb44175..1b222e3 100644
    bool active = false;
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h
 new file mode 100644
-index 0000000..9e4094f
+index 0000000..c064cec
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h
-@@ -0,0 +1,420 @@
+@@ -0,0 +1,447 @@
 +// The installer's file reading and writing: positional reads, big sequential
 +// writes, and a few threads to copy files side by side.
 +//
@@ -329,8 +329,25 @@ index 0000000..9e4094f
 +// Bytes and time spent reading, writing and flushing (since the app started).
 +struct Stats {
 +  std::atomic<uint64_t> read_bytes{0}, read_ns{0}, write_bytes{0}, write_ns{0}, sync_ns{0}, syncs{0};
-+  std::atomic<uint64_t> direct_files{0}, cached_files{0};
++  std::atomic<uint64_t> direct_files{0}, cached_files{0}, reserve_ns{0};
 +};
++
++// How the installer writes, for the drive it writes to (set before an install).
++//  - preallocate: each file is made its full size before it's written. On an
++//    exFAT drive a file that grows write by write gets slower the bigger it
++//    gets (its cluster chain is extended again and again: 6 MB/s falling to
++//    1); a file made full size first is written straight through.
++//  - direct: writes go past the file cache (an internal UFS drive).
++//  - threads: files copied at once (one on an external drive).
++struct WritePolicy {
++  bool preallocate = false;
++  bool direct = true;
++  int threads = 3;
++};
++inline WritePolicy& Policy() {
++  static WritePolicy policy;
++  return policy;
++}
 +inline Stats& GetStats() {
 +  static Stats stats;
 +  return stats;
@@ -474,8 +491,9 @@ index 0000000..9e4094f
 +    if (open_) Close();
 +  }
 +
-+  // `gather`: the buffer (null: one of its own).
-+  bool Open(const std::filesystem::path& path, AlignedBuffer* gather = nullptr) {
++  // `gather`: the buffer (null: one of its own). `size`: what the file will
++  // be (0: not known), so it can be made that size first (Policy()).
++  bool Open(const std::filesystem::path& path, AlignedBuffer* gather = nullptr, uint64_t size = 0) {
 +    gather_ = gather ? gather : &own_;
 +    if (!gather_->Reserve(kChunk)) return false;
 +#if defined(_WIN32)
@@ -483,12 +501,18 @@ index 0000000..9e4094f
 +    open_ = file_ != nullptr;
 +#else
 +    direct_ = false;
-+    if (rex::filesystem::direct::kEnabled) {
++    if (rex::filesystem::direct::kEnabled && Policy().direct) {
 +      fd_ = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_DIRECT, 0666);
 +      direct_ = fd_ >= 0;
 +    }
 +    if (fd_ < 0) fd_ = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
 +    open_ = fd_ >= 0;
++    reserved_ = 0;
++    if (open_ && size && Policy().preallocate) {
++      const uint64_t start = detail::NowNs();
++      if (::ftruncate(fd_, off_t(size)) == 0) reserved_ = size;
++      GetStats().reserve_ns += detail::NowNs() - start;
++    }
 +#endif
 +    ok_ = open_;
 +    pending_ = 0;
@@ -525,6 +549,8 @@ index 0000000..9e4094f
 +        ++GetStats().syncs;
 +      }
 +    }
++    // (made bigger than what was written: back to what was written)
++    if (reserved_ && reserved_ != written_ && ::ftruncate(fd_, off_t(written_)) != 0) ok_ = false;
 +    if (::close(fd_) != 0) ok_ = false;
 +    fd_ = -1;
 +#else
@@ -589,6 +615,7 @@ index 0000000..9e4094f
 +#else
 +  int fd_ = -1;
 +  bool direct_ = false;
++  uint64_t reserved_ = 0;
 +#endif
 +  bool open_ = false, ok_ = false;
 +  AlignedBuffer* gather_ = nullptr;
@@ -690,12 +717,12 @@ index 0000000..9e4094f
 +  std::string error_;
 +};
 +
-+// How many files are copied at once.
-+constexpr int kCopyThreads = 3;
++// How many files are copied at once (for the drive written to).
++inline int CopyThreads() { return std::max(1, Policy().threads); }
 +
 +}  // namespace gta4::install::io
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
-index 84a1723..ac1ffb2 100644
+index 84a1723..9de044a 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
 @@ -31,7 +31,10 @@
@@ -735,7 +762,7 @@ index 84a1723..ac1ffb2 100644
 -  std::ofstream output(destination, std::ios::binary | std::ios::trunc);
 -  if (!output) {
 +  io::OutFile output;
-+  if (!output.Open(destination, &scratch.gather)) {
++  if (!output.Open(destination, &scratch.gather, entry->size())) {
      error = "Could not create " + destination.string() + ".";
      return false;
    }
@@ -795,7 +822,7 @@ index 84a1723..ac1ffb2 100644
 +int CopyThreadsFor(rex::filesystem::Device* device) {
 +  if (dynamic_cast<rex::filesystem::DiscImageDevice*>(device) ||
 +      dynamic_cast<rex::filesystem::HostPathDevice*>(device)) {
-+    return io::kCopyThreads;
++    return io::CopyThreads();
 +  }
 +  return 1;
 +}
@@ -875,7 +902,7 @@ index 84a1723..ac1ffb2 100644
 -  if (!input || !output) {
 +  io::InFile input;
 +  io::OutFile output;
-+  if (!input.Open(source) || !output.Open(destination)) {
++  if (!input.Open(source) || !output.Open(destination, nullptr, input.size())) {
      error = "Could not copy " + source.string() + ".";
      return false;
    }
@@ -948,7 +975,7 @@ index 84a1723..ac1ffb2 100644
      }
    }
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
-index 9854392..338452c 100644
+index 9854392..55fc045 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
 @@ -7,6 +7,7 @@
@@ -1043,7 +1070,7 @@ index 9854392..338452c 100644
 -  std::ofstream destination(output_path, std::ios::binary | std::ios::trunc);
 -  if (!destination) {
 +  io::OutFile destination;
-+  if (!destination.Open(output_path, &scratch.gather)) {
++  if (!destination.Open(output_path, &scratch.gather, entry.size)) {
      error = "Could not write an extracted RPF2 file: " + output_path.string();
      return false;
    }
@@ -1207,7 +1234,7 @@ index 9854392..338452c 100644
  
    std::unordered_set<std::string> extracted;
    size_t archive_count = 0;
-+  io::WorkerPool pool(io::kCopyThreads);
++  io::WorkerPool pool(io::CopyThreads());
    while (!pending.empty()) {
      if (++archive_count > kMaximumNestedArchiveCount) {
        error = "The GTA IV source contains too many nested RPF archives.";
@@ -20689,10 +20716,10 @@ index 0000000..a631ae4
 +*/
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
 new file mode 100644
-index 0000000..777ab9a
+index 0000000..06f2aac
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
-@@ -0,0 +1,359 @@
+@@ -0,0 +1,403 @@
 +// GTA IV PS5 - the hub's check of the game's files and its installer (see
 +// hub_install.h). The install itself is LibertyRecomp's (install/).
 +#include "hub_install.h"
@@ -20830,12 +20857,43 @@ index 0000000..777ab9a
 +}  // namespace
 +#endif
 +
-+uint64_t FreeSpace(const fs::path& install_root) {
++std::string Drive::Name() const {
++  if (type.empty()) return "the app's drive";
++  if (type == "ufs") return "internal storage";
++  if (type.find("exfat") != std::string::npos) return "an exFAT drive";
++  if (type.find("msdos") != std::string::npos || type.find("fat") != std::string::npos) return "a FAT drive";
++  return "a " + type + " drive";
++}
++
++Drive DriveOf(const fs::path& install_root) {
++  Drive d;
 +  std::error_code ec;
 +  fs::create_directories(install_root, ec);
 +#if defined(__PROSPERO__)
 +  struct statfs st {};
-+  if (StatFs(install_root, st) && st.f_bsize) return uint64_t(st.f_bavail) * uint64_t(st.f_bsize);
++  if (!StatFs(install_root, st)) return d;
++  d.type = st.f_fstypename;
++  d.free = uint64_t(st.f_bavail) * uint64_t(st.f_bsize);
++  d.folder = install_root.string();
++  // (/app0 is a nullfs mount of the app's real folder: follow it to the drive)
++  if (d.type == "nullfs") {
++    const std::string on = st.f_mntonname, from = st.f_mntfromname, path = install_root.string();
++    struct statfs lower {};
++    if (!from.empty() && StatFs(from, lower)) {
++      d.type = lower.f_fstypename;
++      d.free = uint64_t(lower.f_bavail) * uint64_t(lower.f_bsize);
++      if (path.rfind(on, 0) == 0) d.folder = from + path.substr(on.size());
++    }
++  }
++#endif
++  return d;
++}
++
++uint64_t FreeSpace(const fs::path& install_root) {
++  std::error_code ec;
++  fs::create_directories(install_root, ec);
++#if defined(__PROSPERO__)
++  if (const Drive d = DriveOf(install_root); !d.type.empty()) return d.free;
 +#endif
 +  const auto space = fs::space(install_root, ec);
 +  // (on the PS5 a title can't learn the drive's free space: the SDK's
@@ -20920,7 +20978,20 @@ index 0000000..777ab9a
 +      st.phase = Phase::kInstalling;
 +      started = Clock::now();
 +    }
-+    REXLOG_INFO("PS5 installer: installing into {}", root.string());
++    {
++      // how to write, for the drive it writes to (gta4_install_io.h)
++      const Drive drive = DriveOf(root);
++      auto& policy = gta4::install::io::Policy();
++      policy.preallocate = true;
++      policy.direct = drive.internal();
++      policy.threads = drive.internal() ? 3 : 1;
++      std::lock_guard lock(m);
++      st.drive = drive.Name();
++      REXLOG_INFO("PS5 installer: installing into {} ({}: {}, {} free): {} thread(s), {} writes, files made full "
++                  "size first",
++                  root.string(), drive.folder, drive.type.empty() ? "unknown" : drive.type, Bytes(drive.free),
++                  policy.threads, policy.direct ? "direct" : "cached");
++    }
 +    gta4::install::Selection selection;
 +    selection.game_source = found.disc;
 +    selection.update_source = found.update;
@@ -21054,10 +21125,10 @@ index 0000000..777ab9a
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h
 new file mode 100644
-index 0000000..52c22d8
+index 0000000..bd7f7bb
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,107 @@
 +// GTA IV PS5 - the hub's check of the game's files, and its installer: the
 +// game is installed from the disc image and Title Update 8 in the app's
 +// install folder; after that it runs from UserData/LibertyRecomp/game.
@@ -21115,6 +21186,18 @@ index 0000000..52c22d8
 +// Free space where the game goes, in bytes.
 +uint64_t FreeSpace(const fs::path& install_root);
 +
++// The drive the game installs to: its filesystem ("ufs" the internal storage,
++// "exfatfs" an external drive), the real folder behind /app0, its free space.
++struct Drive {
++  std::string type;    // empty: not known
++  std::string folder;  // the install folder's real path (empty: not known)
++  uint64_t free = 0;
++  bool internal() const { return type == "ufs"; }
++  // "internal storage", "an exFAT drive"...
++  std::string Name() const;
++};
++Drive DriveOf(const fs::path& install_root);
++
 +// About how much room the install takes, from the disc image's size.
 +inline uint64_t SpaceNeeded(uint64_t disc_bytes) { return disc_bytes * 9 / 4 + (512ull << 20); }
 +
@@ -21134,6 +21217,7 @@ index 0000000..52c22d8
 +    float rate = 0;        // bytes a second, lately
 +    float eta = -1;        // seconds left (-1: not known yet)
 +    float read_rate = 0, write_rate = 0;  // one thread's reading and writing speed, lately
++    std::string drive;                    // what it installs to ("an exFAT drive")
 +  };
 +  // `install_root`: UserData/LibertyRecomp (the game goes in its game/).
 +  Job(const fs::path& app, const fs::path& install_root);
@@ -21154,10 +21238,10 @@ index 0000000..52c22d8
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
 new file mode 100644
-index 0000000..cfb5ef2
+index 0000000..48a6371
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
-@@ -0,0 +1,315 @@
+@@ -0,0 +1,323 @@
 +// GTA IV PS5 - the hub's installer (see hub_ui.h, hub_install.h): START GAME
 +// opens it while the game isn't installed. It shows what's in install/ and
 +// the disc image's check, then installs with a progress bar. All on the
@@ -21202,7 +21286,8 @@ index 0000000..cfb5ef2
 +  installer_ = true;
 +  job_ = std::make_unique<install::Job>(paths_.app, InstallRoot());
 +  job_phase_ = Phase::kChecking;
-+  free_space_ = install::FreeSpace(InstallRoot());
++  drive_ = install::DriveOf(InstallRoot());
++  free_space_ = drive_.type.empty() ? install::FreeSpace(InstallRoot()) : drive_.free;
 +  shown_progress_ = 0;
 +  page_in_ = 0;
 +  page_dir_ = 1;
@@ -21315,7 +21400,13 @@ index 0000000..cfb5ef2
 +                      "Press Cross to install. It takes a while: keep the app open until it's done. Your disc image "
 +                      "isn't changed.") + 30;
 +        Text(a_.body_bold, 15, px, py, White(0.45f), "INSTALLS TO", 0, 3);
-+        Text(a_.body_bold, 21, px, py + 30, White(0.8f), "/data/homebrew/PPSA94004/UserData");
++        const std::string folder = drive_.folder.empty() ? "/data/homebrew/PPSA94004/UserData" : drive_.folder;
++        py += 30;
++        py += Wrapped(a_.body_bold, 21, px, py, pw, White(0.8f), folder, 1.3f);
++        if (!drive_.type.empty()) {
++          std::string on = "On " + drive_.Name();
++          Text(a_.body, 20, px, py + 6, White(0.55f), on);
++        }
 +      } else {
 +        Text(a_.display, 44, px, py, kText, "Can't install yet");
 +        py += 72;
@@ -21387,7 +21478,7 @@ index 0000000..cfb5ef2
 +      char io[96];
 +      std::snprintf(io, sizeof(io), "Reading at %.0f MB/s  \xC2\xB7  writing at %.0f MB/s", double(st.read_rate) / (1 << 20),
 +                    double(st.write_rate) / (1 << 20));
-+      Text(a_.body, 18, bx, by + 78, White(0.38f), io);
++      Text(a_.body, 18, bx, by + 78, White(0.38f), std::string(io) + (st.drive.empty() ? "" : " to " + st.drive));
 +    }
 +  }
 +}
@@ -21423,7 +21514,8 @@ index 0000000..cfb5ef2
 +  auto again = [this] {
 +    job_ = std::make_unique<install::Job>(paths_.app, InstallRoot());
 +    job_phase_ = Phase::kChecking;
-+    free_space_ = install::FreeSpace(InstallRoot());
++    drive_ = install::DriveOf(InstallRoot());
++    free_space_ = drive_.type.empty() ? install::FreeSpace(InstallRoot()) : drive_.free;
 +    shown_progress_ = 0;
 +    panel_in_ = 0;
 +    Play(Sound::kSelect);
@@ -23560,10 +23652,10 @@ index 0000000..6aa98e3
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
 new file mode 100644
-index 0000000..ba31464
+index 0000000..dabbc58
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
-@@ -0,0 +1,302 @@
+@@ -0,0 +1,303 @@
 +// GTA IV PS5 - the hub: the screen the app opens on, before the game
 +// (the PC launcher's settings, driven by the controller). The SmackDown vs. Raw
 +// and WWE 2K14 PS5 ports' hub, with its Home, Settings, Saves and About pages,
@@ -23838,6 +23930,7 @@ index 0000000..ba31464
 +  install::Job::Phase job_phase_ = install::Job::Phase::kChecking;
 +  float shown_progress_ = 0;
 +  uint64_t free_space_ = 0;
++  install::Drive drive_;  // where the game installs
 +  std::filesystem::path InstallRoot() const;
 +  std::vector<Backup> backups_;
 +  // helpers (virtual coordinates)
