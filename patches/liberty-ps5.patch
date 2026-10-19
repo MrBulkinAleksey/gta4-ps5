@@ -475,7 +475,7 @@ index bb44175b..1b222e35 100644
  struct PlayerInfoBatchProjectionContext {
    bool active = false;
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp
-index 2a4966bd..2c9b5e96 100644
+index 2a4966bd..34ed273b 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp
 @@ -25,7 +25,10 @@
@@ -503,7 +503,7 @@ index 2a4966bd..2c9b5e96 100644
    if (!frames) {
      g_shadow_trace_value = 0;
      return false;
-@@ -7555,6 +7560,52 @@ extern "C" void sub_826273A0(PPCContext& ctx, uint8_t* base) {
+@@ -7555,6 +7560,55 @@ extern "C" void sub_826273A0(PPCContext& ctx, uint8_t* base) {
    }
  }
  
@@ -517,9 +517,12 @@ index 2a4966bd..2c9b5e96 100644
 +// the schedule when it is a whole frame late), so a 40 ms frame is shown at
 +// 40 ms, not at the next 33 ms slot after it.
 +static void Ps5LimitFrameRate() {
-+  if (!rex::frame_stats::g_title_thread.load(std::memory_order_relaxed))
++  if (!rex::frame_stats::g_title_thread.load(std::memory_order_relaxed)) {
 +    rex::frame_stats::g_title_thread.store(reinterpret_cast<uintptr_t>(pthread_self()),
 +                                           std::memory_order_relaxed);
++    rex::frame_stats::KeepRendererThreadOnItsCpus();
++  }
++  rex::frame_stats::NoteCpu(rex::frame_stats::g_cpus_title);
 +  if (!REXCVAR_GET(ps5_decoupled_presentation) ||
 +      rex::frame_stats::g_frame_generation_active.load(std::memory_order_relaxed))
 +    return;
@@ -556,7 +559,7 @@ index 2a4966bd..2c9b5e96 100644
  extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
    if (!IsNativeMode()) {
      __imp__sub_82A467D8(ctx, base);
-@@ -7648,9 +7699,13 @@ extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
+@@ -7648,9 +7702,13 @@ extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
    }
    g_last_present_frontbuffer.store(command.frontbuffer_texture, std::memory_order_relaxed);
    SubmitNativeCommand(command);
@@ -23711,10 +23714,10 @@ index 00000000..7d075b44
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..a075012b
+index 00000000..0cecab31
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1195 @@
+@@ -0,0 +1,1199 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -23882,6 +23885,10 @@ index 00000000..a075012b
 +       "How much goes into the log. Normal is enough for most reports; Detailed and Everything help with "
 +       "crashes and freezes but make big files and can slow the game.",
 +       true, {"info", "debug", "trace"}, {"Normal", "Detailed", "Everything"}, "info"},
++      {"DEBUG", "ps5_renderer_cpus", "Renderer Threads", nullptr,
++       "Together keeps the game's render thread and the two renderer threads on the same half of the "
++       "CPU, so they share its cache. Try it if busy areas dip, and compare.",
++       true, {"any", "together"}, {"Anywhere", "Together"}, "any"},
 +      {"DEBUG", "ps5_frametime_capture", "Frame Time Capture", nullptr,
 +       "Records every frame's time to a CSV file in /app0/logs, for checking stutter and slowdowns.", false,
 +       {"false", "true"}, {"Off", "On"}, "false"},
@@ -31568,10 +31575,10 @@ index 00000000..87e2fd2e
 +#endif  // !_WIN32
 diff --git a/glue/rexglue-sdk-main/include/rex/frame_stats.h b/glue/rexglue-sdk-main/include/rex/frame_stats.h
 new file mode 100644
-index 00000000..aef99b13
+index 00000000..042e622c
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/frame_stats.h
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,123 @@
 +// [ps5 port] The guest's presented frames, for the PS5 build's frame rate
 +// counter and frame time capture: the renderer notes each present.
 +#pragma once
@@ -31649,6 +31656,28 @@ index 00000000..aef99b13
 + private:
 +  uint64_t begin_;
 +};
++
++// [ps5 port] The CPUs the renderer's threads ran on since the last timing
++// line (a bit per CPU), and the CPUs they are kept on (0: anywhere).
++inline std::atomic<uint32_t> g_cpus_title{0}, g_cpus_worker{0}, g_cpus_recorder{0};
++inline std::atomic<uint64_t> g_renderer_cpu_mask{0};
++#if defined(__PROSPERO__)
++extern "C" int32_t sceKernelGetCurrentCpu(void);
++extern "C" int32_t scePthreadSetaffinity(pthread_t thread, uint64_t mask);
++inline void NoteCpu(std::atomic<uint32_t>& cpus) {
++  const int32_t cpu = sceKernelGetCurrentCpu();
++  if (cpu >= 0 && cpu < 32) cpus.fetch_or(1u << cpu, std::memory_order_relaxed);
++}
++// The game's render thread, the worker and the recorder hand each other
++// every draw; kept on one of the CPU's two clusters, they share its cache.
++inline void KeepRendererThreadOnItsCpus() {
++  if (const uint64_t mask = g_renderer_cpu_mask.load(std::memory_order_relaxed))
++    scePthreadSetaffinity(pthread_self(), mask);
++}
++#else
++inline void NoteCpu(std::atomic<uint32_t>&) {}
++inline void KeepRendererThreadOnItsCpus() {}
++#endif
 +
 +inline void NoteTitleSlotWait(uint64_t us) {
 +  g_title_slot_wait_us.fetch_add(us, std::memory_order_relaxed);
@@ -36319,10 +36348,10 @@ index d639924c..7f325c0c 100644
  }  // namespace rex::thread
 diff --git a/glue/rexglue-sdk-main/src/core/ps5_diag.cpp b/glue/rexglue-sdk-main/src/core/ps5_diag.cpp
 new file mode 100644
-index 00000000..5aa182b2
+index 00000000..d62c359b
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/src/core/ps5_diag.cpp
-@@ -0,0 +1,333 @@
+@@ -0,0 +1,354 @@
 +// [ps5 port] see rex/ps5_diag.h
 +#include <rex/ps5_diag.h>
 +
@@ -36414,7 +36443,23 @@ index 00000000..5aa182b2
 +    const uintptr_t lo = anchor > kNear ? anchor - kNear : 0x10000;
 +    uint32_t rel = rip > lo && rip < anchor + kNear ? uint32_t(rip - anchor + 0x10000000) : 0;
 +    uint32_t parent = 0;
-+    if (!rel) {
++    if (rel) {
++      // In the game: note the nearest return address into it in another
++      // block, most often its caller (malloc's, a shared_ptr release's).
++      const uintptr_t rsp = gregs[23] & ~uintptr_t(7);
++      uintptr_t end = rsp + 24 * 8;
++      if (e->stack_top && e->stack_top < end) end = e->stack_top;
++      for (uintptr_t p = rsp; p + 8 <= end; p += 8) {
++        const uintptr_t v = *reinterpret_cast<const uintptr_t*>(p);
++        if (v > lo && v < anchor + kNear) {
++          const uint32_t word = uint32_t(v - anchor + 0x10000000);
++          if ((word & ~63u) != (rel & ~63u)) {
++            parent = word;
++            break;
++          }
++        }
++      }
++    } else {
 +      // In a library (libc's memcpy, a kernel wait...): charge the game code
 +      // that called it, the nearest return address into the eboot on the
 +      // stack, marked with the top bit; and note the next one in another
@@ -36534,6 +36579,7 @@ index 00000000..5aa182b2
 +    uint32_t total, inside, via;
 +    std::unordered_map<uint32_t, uint32_t> hits, callers;
 +    std::unordered_map<uint64_t, uint32_t> pairs;  // caller block << 32 | its caller's block
++    std::unordered_map<uint64_t, uint32_t> code_pairs;  // block << 32 | its caller's block
 +  };
 +  std::vector<Busy> busy;
 +  const int count = std::min(next_thread.load(), kThreads);
@@ -36545,7 +36591,7 @@ index 00000000..5aa182b2
 +    if (end - begin > uint32_t(ThreadEntry::kProfileSamples))
 +      begin = end - ThreadEntry::kProfileSamples;
 +    e.profile_reported = end;
-+    Busy b{&e, end - begin, 0, 0, {}, {}, {}};
++    Busy b{&e, end - begin, 0, 0, {}, {}, {}, {}};
 +    for (uint32_t k = begin; k != end; ++k) {
 +      const uint32_t pc = e.profile[k % ThreadEntry::kProfileSamples];
 +      if (!pc) continue;
@@ -36556,6 +36602,8 @@ index 00000000..5aa182b2
 +        if (parent) ++b.pairs[uint64_t(pc & 0x7FFFFFC0u) << 32 | (parent & ~63u)];
 +      } else {
 +        ++b.hits[pc & ~63u], ++b.inside;
++        const uint32_t parent = e.profile_parent[k % ThreadEntry::kProfileSamples];
++        if (parent) ++b.code_pairs[uint64_t(pc & ~63u) << 32 | (parent & ~63u)];
 +      }
 +    }
 +    // Threads that ran game code; ones only ever blocked (idle job threads)
@@ -36590,8 +36638,9 @@ index 00000000..5aa182b2
 +                  kind, ++part, line);
 +  };
 +  // Library time by caller and that caller's caller ("A/B"), the busiest 120.
-+  auto emit_pairs = [](const Busy& b) {
-+    std::vector<std::pair<uint64_t, uint32_t>> all(b.pairs.begin(), b.pairs.end());
++  auto emit_pairs = [](const Busy& b, const std::unordered_map<uint64_t, uint32_t>& pairs,
++                       const char* kind, uint32_t n) {
++    std::vector<std::pair<uint64_t, uint32_t>> all(pairs.begin(), pairs.end());
 +    std::sort(all.begin(), all.end(), [](const auto& x, const auto& y) { return x.second > y.second; });
 +    std::string line;
 +    int entries = 0;
@@ -36603,13 +36652,14 @@ index 00000000..5aa182b2
 +      ++entries;
 +    }
 +    if (entries)
-+      REXLOG_INFO("ps5 prof: tid {} {}: {} samples, {} in libraries, by caller/parent part 1:{}",
-+                  b.e->tid, b.e->what, b.total, b.via, line);
++      REXLOG_INFO("ps5 prof: tid {} {}: {} samples, {} {} part 1:{}", b.e->tid, b.e->what, b.total, n,
++                  kind, line);
 +  };
 +  for (size_t t = 0; t < busy.size() && t < 10; ++t) {
 +    emit(busy[t], "in game code", busy[t].hits, busy[t].inside);
 +    emit(busy[t], "in libraries, by caller", busy[t].callers, busy[t].via);
-+    emit_pairs(busy[t]);
++    emit_pairs(busy[t], busy[t].pairs, "in libraries, by caller/parent", busy[t].via);
++    emit_pairs(busy[t], busy[t].code_pairs, "in game code, by block/parent", busy[t].inside);
 +  }
 +}
 +
@@ -37573,7 +37623,7 @@ index 1d5402e9..1adeb3c1 100644
    if (command_processor_) {
      command_processor_->increment_counter();
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
-index 581a9d20..2f4a68e5 100644
+index 581a9d20..8d59e3c5 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 @@ -1,3 +1,7 @@
@@ -37592,7 +37642,7 @@ index 581a9d20..2f4a68e5 100644
  #include <cstdio>
  #include <cstring>
  #include <ctime>
-@@ -404,6 +409,24 @@ REXCVAR_DEFINE_BOOL(gta4_native_pipelined_recording, true, "GTA IV/Graphics/Nati
+@@ -404,6 +409,28 @@ REXCVAR_DEFINE_BOOL(gta4_native_pipelined_recording, true, "GTA IV/Graphics/Nati
                      "Record and submit each frame on a second thread while the worker assembles the next");
  REXCVAR_DEFINE_BOOL(gta4_native_async_command_retire, true, "GTA IV/Graphics/Native Renderer",
                      "Destroy recorded frame commands on a background thread");
@@ -37606,6 +37656,10 @@ index 581a9d20..2f4a68e5 100644
 +// 15 fps). Decoupled, the recorder hands the frame over and carries on, and
 +// the game is held to the frame limit on its own (gta4_native_hooks.cpp), so
 +// a heavy scene runs at its real 25 fps instead of 15.
++REXCVAR_DEFINE_STRING(ps5_renderer_cpus, "any", "PS5",
++                      "Where the game's render thread, the render worker and the recorder run: any "
++                      "CPU, or together on the first cluster (CPUs 0-7, one shared cache)")
++    .allowed({"any", "together"});
 +REXCVAR_DEFINE_BOOL(ps5_decoupled_presentation, true, "PS5",
 +                    "Don't hold the renderer until the TV shows each frame; limit the game's frame "
 +                    "rate on its own thread instead");
@@ -37617,7 +37671,7 @@ index 581a9d20..2f4a68e5 100644
  REXCVAR_DEFINE_BOOL(gta4_vertex_color_as_rgba, false, "GTA IV/Diagnostics",
                      "Bind D3DCOLOR vertex elements as R8G8B8A8 instead of B8G8R8A8");
  REXCVAR_DEFINE_BOOL(gta4_trace_startup_content, false, "GTA IV/Diagnostics",
-@@ -542,7 +565,7 @@ REXCVAR_DEFINE_BOOL(gta4_profile_native_detailed_cpu, true, "GTA IV/Diagnostics"
+@@ -542,7 +569,7 @@ REXCVAR_DEFINE_BOOL(gta4_profile_native_detailed_cpu, true, "GTA IV/Diagnostics"
  REXCVAR_DEFINE_UINT32(gta4_profile_native_gpu_query_budget, 512, "GTA IV/Diagnostics",
                        "Maximum timestamp boundaries per sampled frame (more boundaries add GPU overhead)")
      .range(16, rex::graphics::gta4_native::performance::kMaximumGpuQueriesPerFrame);
@@ -37626,7 +37680,7 @@ index 581a9d20..2f4a68e5 100644
                        "Capture one native-renderer profile after this many submitted frames")
      .range(1, 3600);
  REXCVAR_DEFINE_UINT32(gta4_profile_native_samples, 600, "GTA IV/Diagnostics",
-@@ -660,6 +683,8 @@ void LogFrameTimeline(uint32_t frame) {
+@@ -660,6 +687,8 @@ void LogFrameTimeline(uint32_t frame) {
    if (++batched == 8) {
  #if REX_PLATFORM_ANDROID
      __android_log_print(ANDROID_LOG_WARN, "LibertyRecomp", "frame-timeline:%s", batch.c_str());
@@ -37635,7 +37689,7 @@ index 581a9d20..2f4a68e5 100644
  #endif
      batch.clear();
      batched = 0;
-@@ -707,6 +732,21 @@ std::array<std::atomic<uint32_t>, 32> g_light_reuse_failures{};
+@@ -707,6 +736,21 @@ std::array<std::atomic<uint32_t>, 32> g_light_reuse_failures{};
  // Hot producer/worker/recorder critical sections last microseconds, but bionic parks a
  // contended locker in the kernel at once and the futex wakeup costs far more
  // than the wait. Spin briefly before blocking.
@@ -37657,7 +37711,7 @@ index 581a9d20..2f4a68e5 100644
  uint32_t MaxQueuedTitlePresents() {
    return std::clamp<uint32_t>(REXCVAR_GET(gta4_native_max_queued_frames), 1, 4);
  }
-@@ -717,6 +757,8 @@ std::unique_lock<std::mutex> LockWithSpin(std::mutex& mutex) {
+@@ -717,6 +761,8 @@ std::unique_lock<std::mutex> LockWithSpin(std::mutex& mutex) {
      if (lock.try_lock()) return lock;
  #if defined(__aarch64__)
      asm volatile("yield");
@@ -37666,7 +37720,7 @@ index 581a9d20..2f4a68e5 100644
  #endif
    }
    lock.lock();
-@@ -728,16 +770,20 @@ namespace transition = rex::diagnostics::gta4_transition;
+@@ -728,16 +774,20 @@ namespace transition = rex::diagnostics::gta4_transition;
  // The diagnostics policy is configured once at startup and never changes, but
  // asking it is a call into the runtime library; the recorder asks dozens of
  // times per draw. Cached once the policy is configured.
@@ -37697,7 +37751,7 @@ index 581a9d20..2f4a68e5 100644
    return (mask >> uint32_t(category)) & 1u;
  }
  namespace gpu_flight = rex::diagnostics::gpu_flight;
-@@ -1565,7 +1611,10 @@ class NativeSubmissionCompletion final
+@@ -1565,7 +1615,10 @@ class NativeSubmissionCompletion final
  };
  
  uint64_t NextNativeTraceDiagnosticCount(std::atomic<uint64_t>& counter) {
@@ -37709,7 +37763,7 @@ index 581a9d20..2f4a68e5 100644
      return UINT64_MAX;
    }
    return counter.fetch_add(1, std::memory_order_relaxed) + 1;
-@@ -4033,10 +4082,17 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
+@@ -4033,10 +4086,17 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
      std::unique_lock lock = LockWithSpin(render_mutex_);
      const uint64_t queue_lock_end = profile_transport ? profile::CpuTick() : 0;
      producer_waiting_ = render_queue_.size() >= kMaximumQueuedCommands || queued_title_presents_ >= MaxQueuedTitlePresents();
@@ -37727,7 +37781,7 @@ index 581a9d20..2f4a68e5 100644
      const uint64_t backpressure_end = profile_transport ? profile::CpuTick() : 0;
      producer_waiting_ = false;
      if (!render_worker_running_) {
-@@ -4743,6 +4799,25 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
+@@ -4743,6 +4803,25 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
    if (header.type == CommandType::kPresent) {
      const auto& present = *static_cast<const PresentCommand*>(command);
      MarkFrameTimeline(present.submitted_frame, kTimelineGuestPresent);
@@ -37753,7 +37807,7 @@ index 581a9d20..2f4a68e5 100644
      const auto frontbuffer_fetch =
          std::bit_cast<xenos::xe_gpu_texture_fetch_t>(present.frontbuffer_fetch);
      auto fetch_matches = [&frontbuffer_fetch](const NativeTextureResource& resource) {
-@@ -5274,7 +5349,12 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
+@@ -5274,7 +5353,12 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
    // reclamation.
    BufferCaptureCacheSlot& cache_slot = BufferCaptureSlot(handle);
    const uint64_t cache_epoch = buffer_resources_epoch_.load(std::memory_order_acquire);
@@ -37766,7 +37820,7 @@ index 581a9d20..2f4a68e5 100644
      cache_slot.handle = handle;
      cache_slot.flags = flags;
      cache_slot.address = data_address;
-@@ -5286,7 +5366,9 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
+@@ -5286,7 +5370,9 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
        cache_slot.flags == flags && cache_slot.address == data_address &&
        cache_slot.size == data_size && !metadata->guest_locked &&
        !buffer_fast_path_disabled_.load(std::memory_order_relaxed)) {
@@ -37777,7 +37831,7 @@ index 581a9d20..2f4a68e5 100644
        // Already validated (or captured) this frame, and no unlock since: the
        // slot is dropped when the handle is dirtied. Meshes drawn many times a
        // frame then skip the cold shadow compare and the stores into the
-@@ -5294,6 +5376,7 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
+@@ -5294,6 +5380,7 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
        if (REXCVAR_GET(gta4_native_buffer_validation_per_frame) &&
            cached->last_used_frame.load(std::memory_order_relaxed) ==
                g_native_memory_profile_event_frame.load(std::memory_order_relaxed)) {
@@ -37785,7 +37839,7 @@ index 581a9d20..2f4a68e5 100644
          return cached;
        }
        const uint8_t* cached_data = memory_->TranslateVirtual<const uint8_t*>(data_address);
-@@ -5308,6 +5391,7 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
+@@ -5308,6 +5395,7 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
            cached->shadow_validation_offset.store(validation_range.next_offset,
                                                   std::memory_order_relaxed);
            buffer_capture_reuse_count_.fetch_add(1, std::memory_order_relaxed);
@@ -37793,7 +37847,7 @@ index 581a9d20..2f4a68e5 100644
            cached->last_used_frame.store(
                g_native_memory_profile_event_frame.load(std::memory_order_relaxed),
                std::memory_order_relaxed);
-@@ -5319,6 +5403,7 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
+@@ -5319,6 +5407,7 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
    }
    std::shared_ptr<const NativeBufferResource> matching_cache_entry;
    bool can_reuse_clean_capture = false;
@@ -37801,7 +37855,7 @@ index 581a9d20..2f4a68e5 100644
    {
      std::lock_guard lock(buffer_resource_mutex_);
      const auto existing = buffer_resources_.find(handle);
-@@ -5332,7 +5417,8 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
+@@ -5332,7 +5421,8 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
      can_reuse_clean_capture =
          CanReuseNativeBufferCapture(cache_present, dirty_buffer_handles_.contains(handle),
                                       metadata_matches) &&
@@ -37811,7 +37865,7 @@ index 581a9d20..2f4a68e5 100644
    }
  
    const uint8_t* data = memory_->TranslateVirtual<const uint8_t*>(data_address);
-@@ -5343,6 +5429,10 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
+@@ -5343,6 +5433,10 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
    // full validation. Compare against the immutable capture before allocating a
    // temporary payload and hashing it; unchanged bytes need neither operation.
    // Keep this separate from the sampled clean path and its mismatch safeguard.
@@ -37822,7 +37876,7 @@ index 581a9d20..2f4a68e5 100644
    if (!can_reuse_clean_capture && matching_cache_entry &&
        NativeBufferShadowPayloadMatches(data, matching_cache_entry->payload.data(), data_size)) {
      std::lock_guard lock(buffer_resource_mutex_);
-@@ -5376,19 +5466,37 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
+@@ -5376,19 +5470,37 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
        return clean_cache_entry;
      }
      buffer_shadow_mismatch_count_.fetch_add(1, std::memory_order_relaxed);
@@ -37865,7 +37919,7 @@ index 581a9d20..2f4a68e5 100644
    std::vector<uint8_t> payload(data, data + data_size);
    const uint64_t content_hash = XXH3_64bits(payload.data(), payload.size());
    std::lock_guard lock(buffer_resource_mutex_);
-@@ -5468,11 +5576,14 @@ Gta4NativeGraphicsSystem::CaptureTextureResource(uint32_t handle,
+@@ -5468,11 +5580,14 @@ Gta4NativeGraphicsSystem::CaptureTextureResource(uint32_t handle,
    const uint64_t epoch = texture_resources_epoch_.load(std::memory_order_acquire);
    if (slot.handle == handle && slot.epoch == epoch && slot.fetch == fetch_words &&
        stage < kShaderTextureCount) {
@@ -37881,17 +37935,20 @@ index 581a9d20..2f4a68e5 100644
    bool cacheable = false;
    auto resource = CaptureTextureResourceUncached(handle, fetch, stage, cacheable);
    if (cacheable && resource) {
-@@ -6314,6 +6425,9 @@ void Gta4NativeGraphicsSystem::TraceModernShaderDraw(
+@@ -6314,6 +6429,12 @@ void Gta4NativeGraphicsSystem::TraceModernShaderDraw(
  }
  
  void Gta4NativeGraphicsSystem::RenderWorkerMain() {
 +#if REX_PLATFORM_PS5
 +  rex::ps5diag::RegisterThread("worker");
++  rex::frame_stats::g_renderer_cpu_mask.store(REXCVAR_GET(ps5_renderer_cpus) == "together" ? 0xFFull : 0,
++                                             std::memory_order_relaxed);
++  rex::frame_stats::KeepRendererThreadOnItsCpus();
 +#endif
    std::vector<std::pair<RenderPhase, uint32_t>> render_phase_stack;
    uint64_t startup_texture_lock_count = 0;
    bool startup_present_follows_texture_lock_flush = false;
-@@ -6479,7 +6593,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -6479,7 +6600,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
            bound.read_epoch = read_epoch;
            const auto mark_read = [read_epoch](const NativeTextureResource* resource) {
              if (resource)
@@ -37900,7 +37957,7 @@ index 581a9d20..2f4a68e5 100644
            };
            for (const auto& texture : assembled.textures) {
              if (!texture) continue;
-@@ -6976,7 +7090,10 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -6976,7 +7097,10 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
            // Hand the assembled frame to the recorder and start on the next.
            MarkFrameTimeline(present.submitted_frame, kTimelineWorkerPresent);
            const uint64_t handoff_wait_begin = profile::CpuTick();
@@ -37911,7 +37968,7 @@ index 581a9d20..2f4a68e5 100644
            pipeline_present_wait_ticks_ += profile::CpuTick() - handoff_wait_begin;
            MarkFrameTimeline(present.submitted_frame, kTimelineWorkerHandoff);
            SwapAssemblyFrame();
-@@ -6984,7 +7101,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -6984,7 +7108,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
            recording_environmental_data_by_device_ = environmental_data_by_device_;
            assembly_modern_frame_pending_ = false;
            log_frame_batch("present", command, present.submitted_frame, queued_after_pop);
@@ -37920,7 +37977,7 @@ index 581a9d20..2f4a68e5 100644
            // TEMP: pipeline stall telemetry (perf investigation).
            if (++pipeline_report_frames_ == 120) {
              const double ms_per_tick = 1000.0 / double(rex::chrono::Clock::QueryHostTickFrequency());
-@@ -6993,7 +7110,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -6993,7 +7117,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                if (pipeline_sync_type_counts_[i])
                  types += fmt::format(" {}={}", CommandTypeName(CommandType(i)),
                                       pipeline_sync_type_counts_[i]);
@@ -37929,7 +37986,7 @@ index 581a9d20..2f4a68e5 100644
                                  "pipeline: 120 frames sync-waits=%llu sync-wait=%.1fms/f "
                                  "handoff-wait=%.1fms/f dd-factor=%.2f ring=%.0f/%.0f "
                                  "ring-check=%llu/%llu types:%s",
-@@ -7005,7 +7122,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7005,7 +7129,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                                  g_worker_ring_fallbacks.exchange(0) / 120.0,
                                  (unsigned long long)g_worker_ring_mismatches.exchange(0),
                                  (unsigned long long)g_worker_ring_checked.exchange(0), types.c_str());
@@ -37938,7 +37995,7 @@ index 581a9d20..2f4a68e5 100644
                                  "vk: %s ubo-shaders=%u ubo-loads=%llu legacy-mul=%llu",
                                  ui::vulkan::ConsumeCommandCounters(120).c_str(), ubo_rewritten_shaders_,
                                  (unsigned long long)ubo_rewritten_loads_,
-@@ -7016,7 +7133,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7016,7 +7140,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                while (begin < report.size()) {
                  size_t end = report.find('\n', begin);
                  if (end == std::string::npos) end = report.size();
@@ -37947,7 +38004,7 @@ index 581a9d20..2f4a68e5 100644
                                      report.substr(begin, std::min<size_t>(end - begin, 1000)).c_str());
                  begin = end + 1;
                }
-@@ -7024,7 +7141,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7024,7 +7148,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
              if (gpu_counters_.ready()) {
                const std::string report = gpu_counters_.Report();
                for (size_t offset = 0; offset < report.size(); offset += 900)
@@ -37956,7 +38013,7 @@ index 581a9d20..2f4a68e5 100644
                                      report.substr(offset, 900).c_str());
              }
              {
-@@ -7035,7 +7152,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7035,7 +7159,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                std::string top;
                for (size_t i = 0; i < sites.size() && i < 12; ++i)
                  top += fmt::format(" L{}={:.0f}", sites[i].second, sites[i].first / 120.0);
@@ -37965,7 +38022,7 @@ index 581a9d20..2f4a68e5 100644
              }
              {
                std::vector<std::pair<uint32_t, uint32_t>> sites;
-@@ -7045,7 +7162,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7045,7 +7169,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                std::string top;
                for (size_t i = 0; i < sites.size() && i < 12; ++i)
                  top += fmt::format(" L{}={:.0f}", sites[i].second, sites[i].first / 120.0);
@@ -37974,7 +38031,7 @@ index 581a9d20..2f4a68e5 100644
              }
              {
                std::vector<std::pair<uint32_t, uint32_t>> sites;
-@@ -7065,10 +7182,10 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7065,10 +7189,10 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                  for (const auto& [key, n] : kinds)
                    if (n >= 60) line += fmt::format(" [{}]={:.1f}", key, n / 120.0);
                  for (size_t offset = 0; offset < line.size(); offset += 900)
@@ -37987,7 +38044,7 @@ index 581a9d20..2f4a68e5 100644
                                    "skips/frame: invisible-draws=%.1f repeated-clears=%.1f "
                                    "water-reflection=%.2f water-culled=%.1f shadow-culled=%.1f "
                                    "lazy-resolves=%.1f "
-@@ -7101,11 +7218,11 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7101,11 +7225,11 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                    if (const uint32_t n = g_present_surface_rejects[i].exchange(0))
                      a11 += fmt::format(" r{}={:.2f}", i, n / 120.0);
                  }
@@ -38001,7 +38058,7 @@ index 581a9d20..2f4a68e5 100644
                                    "vertex-cache/frame: eligible draws=%.0f indices=%.0f rejected draws=%.0f indices=%.0f "
                                    "reordered draws=%.0f",
                                    g_vertex_cache_draws[1].exchange(0) / 120.0,
-@@ -7113,7 +7230,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7113,7 +7237,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                                    g_vertex_cache_draws[0].exchange(0) / 120.0,
                                    g_vertex_cache_indices[0].exchange(0) / 120.0,
                                    g_vertex_cache_reordered_draws.exchange(0) / 120.0);
@@ -38010,7 +38067,7 @@ index 581a9d20..2f4a68e5 100644
                                    "resolves/frame:%s reuse=%.1f/%.1f", top.c_str(),
                                    g_resolve_reuse_hits.exchange(0) / 120.0,
                                    g_resolve_reuse_candidates.exchange(0) / 120.0);
-@@ -7126,13 +7243,13 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7126,13 +7250,13 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                std::string top;
                for (size_t i = 0; i < reasons.size() && i < 10; ++i)
                  top += fmt::format(" {:03X}={:.0f}", reasons[i].second, reasons[i].first / 120.0);
@@ -38026,7 +38083,7 @@ index 581a9d20..2f4a68e5 100644
              }
              pipeline_report_frames_ = 0;
              pipelined_sync_waits_ = 0;
-@@ -7309,6 +7426,22 @@ void Gta4NativeGraphicsSystem::FinishPresent(NativeCommand& command,
+@@ -7309,6 +7433,22 @@ void Gta4NativeGraphicsSystem::FinishPresent(NativeCommand& command,
    UpdateDynamicDrawDistance();
  }
  
@@ -38049,18 +38106,26 @@ index 581a9d20..2f4a68e5 100644
  void Gta4NativeGraphicsSystem::UpdateDynamicDrawDistance() {
    // Steers gta4_draw_distance_dynamic_factor from the presented frame rate,
    // measured over one-second windows. Short streaming hitches and single
-@@ -7444,6 +7577,9 @@ void Gta4NativeGraphicsSystem::SignalGuestFrameComplete(uint32_t device, uint32_
+@@ -7444,6 +7584,12 @@ void Gta4NativeGraphicsSystem::SignalGuestFrameComplete(uint32_t device, uint32_
  void Gta4NativeGraphicsSystem::FrameRecorderMain() {
  #if REX_PLATFORM_ANDROID
    pthread_setname_np(pthread_self(), "GtaRecorder");
 +#endif
 +#if REX_PLATFORM_PS5
 +  rex::ps5diag::RegisterThread("recorder");
++  rex::frame_stats::g_renderer_cpu_mask.store(REXCVAR_GET(ps5_renderer_cpus) == "together" ? 0xFFull : 0,
++                                             std::memory_order_relaxed);
++  rex::frame_stats::KeepRendererThreadOnItsCpus();
  #endif
    while (true) {
      std::optional<NativeRecorderJob> job;
-@@ -7458,9 +7594,19 @@ void Gta4NativeGraphicsSystem::FrameRecorderMain() {
+@@ -7456,11 +7602,24 @@ void Gta4NativeGraphicsSystem::FrameRecorderMain() {
+       frame_recorder_job_.reset();
+     }
      const uint32_t timeline_frame = job->present.submitted_frame;
++#if REX_PLATFORM_PS5
++    rex::frame_stats::NoteCpu(rex::frame_stats::g_cpus_recorder);
++#endif
      recording_ring_serial_ = job->ring_serial;
      MarkFrameTimeline(timeline_frame, kTimelineRecorderStart);
 +    const int64_t recorder_begin_ns = rex::frame_stats::NowNs();
@@ -38079,7 +38144,17 @@ index 581a9d20..2f4a68e5 100644
      MarkFrameTimeline(timeline_frame, kTimelinePublishEnd);
      LogFrameTimeline(timeline_frame);
      job.reset();
-@@ -9321,9 +9467,23 @@ bool Gta4NativeGraphicsSystem::GetOrCreatePersistentBuffer(
+@@ -7488,6 +7647,9 @@ void Gta4NativeGraphicsSystem::StopFrameRecorder() {
+ }
+ 
+ void Gta4NativeGraphicsSystem::SwapAssemblyFrame() {
++#if REX_PLATFORM_PS5
++  rex::frame_stats::NoteCpu(rex::frame_stats::g_cpus_worker);
++#endif
+   // Only while the recorder is idle: current_frame_ and its protection belong
+   // to the recorder otherwise.
+   current_frame_.swap(assembly_frame_);
+@@ -9321,9 +9483,23 @@ bool Gta4NativeGraphicsSystem::GetOrCreatePersistentBuffer(
      return false;
    }
    const NativeBufferArenaAllocation& reserved = reservation.allocation;
@@ -38103,7 +38178,7 @@ index 581a9d20..2f4a68e5 100644
      return false;
    }
    const auto block_entry = persistent_buffer_blocks_.find(reserved.block_id);
-@@ -9911,7 +10071,10 @@ bool Gta4NativeGraphicsSystem::CompleteNativeFrameSlot(uint32_t slot, uint64_t s
+@@ -9911,7 +10087,10 @@ bool Gta4NativeGraphicsSystem::CompleteNativeFrameSlot(uint32_t slot, uint64_t s
  
    gpu_flight::Record("native.slot-wait-begin", slot, submission, active_texture_frame_);
    const uint64_t wait_begin = actual_wait_ticks ? rex::chrono::Clock::QueryHostTickCount() : 0;
@@ -38114,7 +38189,7 @@ index 581a9d20..2f4a68e5 100644
    if (actual_wait_ticks) {
      *actual_wait_ticks += rex::chrono::Clock::QueryHostTickCount() - wait_begin;
    }
-@@ -18451,6 +18614,9 @@ bool Gta4NativeGraphicsSystem::AllocateNativeTextureImage(const VkImageCreateInf
+@@ -18451,6 +18630,9 @@ bool Gta4NativeGraphicsSystem::AllocateNativeTextureImage(const VkImageCreateInf
        return false;
      }
      ++texture_allocation_retry_count_;
@@ -38124,7 +38199,7 @@ index 581a9d20..2f4a68e5 100644
      TrimTextureAllocationPool(true);
      // Allocation recovery is exceptional backpressure. Complete the other
      // slot so retired generations can release real device memory rather than
-@@ -18714,12 +18880,14 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
+@@ -18714,12 +18896,14 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
      view_info.components.b = VK_COMPONENT_SWIZZLE_ONE;
      view_info.components.a = VK_COMPONENT_SWIZZLE_R;
    } else if (vulkan_device->properties().portabilitySubset ||
@@ -38143,7 +38218,7 @@ index 581a9d20..2f4a68e5 100644
      host_swizzle = xenos::XE_GPU_TEXTURE_SWIZZLE_RGBA;
      view_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
                              VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
-@@ -20409,8 +20577,20 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+@@ -20409,8 +20593,20 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
      }
    }
  
@@ -38165,7 +38240,7 @@ index 581a9d20..2f4a68e5 100644
      for (uint32_t heap = 0; heap < budgets.heap_count; ++heap) {
        pressure_after_poll |=
            UpdateNativeTexturePressure(texture_budget_pressure_active_, budgets.available,
-@@ -20419,13 +20599,18 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+@@ -20419,13 +20615,18 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
      texture_budget_pressure_active_ = pressure_after_poll;
    }
  
@@ -38185,7 +38260,7 @@ index 581a9d20..2f4a68e5 100644
      candidates.push_back({{image->last_use_serial, generation}, image->memory_heap, image->allocation_size});
    };
    if (allocation_recovery) {
-@@ -20481,7 +20666,7 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+@@ -20481,7 +20682,7 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
          continue;
        }
        const bool budget_pressure =
@@ -38194,7 +38269,7 @@ index 581a9d20..2f4a68e5 100644
            (candidate.memory_heap < budgets.heap_count &&
             UpdateNativeTexturePressure(texture_budget_pressure_active_, budgets.available,
                                         budgets.usage[candidate.memory_heap],
-@@ -20489,7 +20674,7 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+@@ -20489,7 +20690,7 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
        if (!allocation_recovery &&
            !ShouldEvictNativeTextureCandidate(false, budget_pressure, submitted_frame,
                                               image->second->last_used_frame,
@@ -38203,7 +38278,7 @@ index 581a9d20..2f4a68e5 100644
          continue;
        }
  
-@@ -20509,6 +20694,7 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+@@ -20509,6 +20710,7 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
                  configured_limit_bytes, candidates.size(), render_queue_.size()));
        }
        evicted_images.push_back(std::move(image->second));
@@ -38211,7 +38286,7 @@ index 581a9d20..2f4a68e5 100644
        const NativeTextureImage* evicted = evicted_images.back().get();
        RecordNativeMemoryLifecycle(
            memory::ResourceKind::kTextureImage, memory::LifecycleAction::kEvict,
-@@ -20552,9 +20738,11 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+@@ -20552,9 +20754,11 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
                                    handle, generation, 0, resource->second->payload.size(),
                                    resource->second->payload.capacity(), 0, submitted_frame,
                                    uint32_t(resource->second->info.format));
@@ -38224,7 +38299,7 @@ index 581a9d20..2f4a68e5 100644
      }
    }
  }
-@@ -20622,6 +20810,59 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedTextureImages(
+@@ -20622,6 +20826,59 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedTextureImages(
      CollectProtectedTextureGenerations(present_source, protected_texture_generations_);
      EvictNativeTextureImages(submitted_frame, false);
    }
@@ -38284,7 +38359,7 @@ index 581a9d20..2f4a68e5 100644
  }
  
  void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_frame) {
-@@ -20633,12 +20874,7 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+@@ -20633,12 +20890,7 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
    if (!poll_due && !buffer_cache_reclamation_pending_) return;
    buffer_cache_reclamation_pending_ = false;
  
@@ -38298,7 +38373,7 @@ index 581a9d20..2f4a68e5 100644
    auto retained_bytes = [](const NativeBufferResource& resource) {
      uint64_t bytes = resource.payload.capacity();
      bytes += resource.host_index16_payload.capacity();
-@@ -20652,9 +20888,19 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+@@ -20652,9 +20904,19 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
  
    constexpr uint64_t kBytesPerMiB = 1048576ull;
    const uint64_t cache_limit = uint64_t(kNativeBufferCacheLimitMiB) * kBytesPerMiB;
@@ -38321,7 +38396,7 @@ index 581a9d20..2f4a68e5 100644
      std::lock_guard lock(buffer_resource_mutex_);
      candidates.reserve(buffer_resources_.size());
      for (const auto& [handle, resource] : buffer_resources_) {
-@@ -20672,7 +20918,7 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+@@ -20672,7 +20934,7 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
    // Under budget every eligible aged entry is reclaimed regardless of order.
    // Only pressure eviction needs oldest-first ordering to choose which younger
    // entries to discard before the byte budget is satisfied.
@@ -38330,7 +38405,7 @@ index 581a9d20..2f4a68e5 100644
      std::sort(candidates.begin(), candidates.end(),
                [](const Candidate& left, const Candidate& right) {
                  return left.last_used_frame < right.last_used_frame ||
-@@ -20684,14 +20930,20 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+@@ -20684,14 +20946,20 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
    size_t reclaimed_resources = 0;
    NativeWorkBudget buffer_reclamation(64, 16777216);
    std::lock_guard lock(buffer_resource_mutex_);
@@ -38353,7 +38428,7 @@ index 581a9d20..2f4a68e5 100644
                                     kNativeBufferCacheRetentionFrames)) {
        continue;
      }
-@@ -20737,8 +20989,16 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+@@ -20737,8 +21005,16 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
          cache_bytes > candidate.retained_bytes ? cache_bytes - candidate.retained_bytes : 0;
      reclaimed_bytes += candidate.retained_bytes;
      ++reclaimed_resources;
@@ -38371,7 +38446,7 @@ index 581a9d20..2f4a68e5 100644
    }
  
    if (reclaimed_resources &&
-@@ -31231,7 +31491,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -31231,7 +31507,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
        if (pipelined_recording_ && frame_constant_bound_.valid && frame_constant_bound_.read_epoch &&
            REXCVAR_GET(gta4_native_assembled_frame_scans)) {
          // A later frame's stamp only makes this conservative (an extra resolve).
@@ -38380,7 +38455,7 @@ index 581a9d20..2f4a68e5 100644
                 frame_constant_bound_.read_epoch;
        } else for (const NativeCommand& scan : current_frame_) {
          for (const auto& texture : scan.textures) {
-@@ -31542,6 +31802,35 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -31542,6 +31818,35 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
      }
  
      const NativeCommand& command = *command_pointer;
@@ -38416,7 +38491,7 @@ index 581a9d20..2f4a68e5 100644
      const bool descriptor_draw = command.type == CommandType::kDrawPrimitive ||
                                   command.type == CommandType::kDrawPrimitiveUp ||
                                   command.type == CommandType::kDrawIndexedPrimitive;
-@@ -33478,6 +33767,119 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -33478,6 +33783,119 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
        }
        std::fflush(stderr);
      }
@@ -38536,7 +38611,7 @@ index 581a9d20..2f4a68e5 100644
      if (legacy_diagnostics && is_draw && command.render_phase == RenderPhase::kRadarMap) {
        static std::atomic<uint64_t> radar_draw_count{0};
        const uint64_t radar_draw_index = ++radar_draw_count;
-@@ -38033,8 +38435,19 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
+@@ -38033,8 +38451,19 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
          return presenter_written;
        },
        ui::GuestOutputProvenance{
@@ -41805,7 +41880,7 @@ index 87f97744..5acee304 100644
    if (allowed_types & Surface::kTypeFlag_AndroidNativeWindow) {
      auto* native_window = static_cast<ANativeWindow*>(GetNativeWindowHandle());
 diff --git a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
-index ac2d8dc4..07481770 100644
+index ac2d8dc4..dc9ce3a3 100644
 --- a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 @@ -11,6 +11,7 @@
@@ -41901,7 +41976,7 @@ index ac2d8dc4..07481770 100644
  
      app->InvokeOnDestroy();
    }
-@@ -161,8 +203,299 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
+@@ -161,8 +203,302 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
  #include <SDL3/SDL_main.h>
  #endif
  
@@ -42076,6 +42151,9 @@ index ac2d8dc4..07481770 100644
 +                    rec_n ? double(rec_us) / 1000.0 / double(rec_n) : 0.0, double(rec_max) / 1000.0,
 +                    rec_n ? double(gpu_wait_us) / 1000.0 / double(rec_n) : 0.0, per_frame(pacer_us),
 +                    per_frame(wait_us));
++        REXLOG_INFO("ps5 cpus: game {:#x}, worker {:#x}, recorder {:#x} (kept on {:#x})",
++                    g_cpus_title.exchange(0), g_cpus_worker.exchange(0), g_cpus_recorder.exchange(0),
++                    g_renderer_cpu_mask.load());
 +      }
 +      last_guest = guest;
 +      last_presents = presents;
