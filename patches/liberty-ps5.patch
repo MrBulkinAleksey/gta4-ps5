@@ -23468,10 +23468,10 @@ index 00000000..7d075b44
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..c4f0166a
+index 00000000..e308e7e2
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1178 @@
+@@ -0,0 +1,1183 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -23639,6 +23639,11 @@ index 00000000..c4f0166a
 +      {"DEBUG", "ps5_hang_reports", "Freeze Reports", nullptr,
 +       "When the game stops drawing for a few seconds, writes where every thread is to the log.", false,
 +       {"false", "true"}, {"Off", "On"}, "true"},
++      {"DEBUG", "ps5_perf_capture", "Performance Capture", nullptr,
++       "Measures where each frame's time goes (graphics card and each stage of the game) for a few "
++       "minutes, then writes it to UserData/LibertyRecomp/Diagnostics. Turn on, play a while, then send "
++       "that folder. Takes effect the next time the app starts.",
++       false, {"false", "true"}, {"Off", "On"}, "false"},
 +      {"DEBUG", "gta4_native_frame_timeline", "Frame Timeline", nullptr,
 +       "Logs when each stage of every frame finished, to find what holds the frame rate back. The log "
 +       "grows quickly with it on.",
@@ -36837,7 +36842,7 @@ index 1d5402e9..1adeb3c1 100644
    if (command_processor_) {
      command_processor_->increment_counter();
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
-index 581a9d20..9589863f 100644
+index 581a9d20..e8d9c288 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 @@ -1,3 +1,4 @@
@@ -36845,15 +36850,6 @@ index 581a9d20..9589863f 100644
  #include <rex/graphics/gta4_native/fusion_tone_lut.h>
  #include <rex/graphics/gta4_native/modern_effect_constants.h>
  #include "core/font_atlas.h"
-@@ -155,7 +156,7 @@ REXCVAR_DEFINE_BOOL(gta4_native_batched_worker_wake, true, "GTA IV/Graphics/Nati
-                     "Wake the render worker per command batch and frame instead of per command");
- REXCVAR_DEFINE_BOOL(gta4_native_pipeline_serialize, false, "GTA IV/Diagnostics",
-                     "Wait for each pipelined frame to finish recording before assembling the next");
--REXCVAR_DEFINE_UINT32(gta4_native_max_queued_frames, 2, "GTA IV/Graphics/Native Renderer",
-+REXCVAR_DEFINE_UINT32(gta4_native_max_queued_frames, REX_PLATFORM_PS5 ? 3 : 2, "GTA IV/Graphics/Native Renderer",
-                       "Title frames the producer may run ahead of the recorder")
-     .range(1, 4);
- REXCVAR_DEFINE_UINT32(gta4_native_frame_complete_signal, 0, "GTA IV/Graphics/Native Renderer",
 @@ -404,6 +405,12 @@ REXCVAR_DEFINE_BOOL(gta4_native_pipelined_recording, true, "GTA IV/Graphics/Nati
                      "Record and submit each frame on a second thread while the worker assembles the next");
  REXCVAR_DEFINE_BOOL(gta4_native_async_command_retire, true, "GTA IV/Graphics/Native Renderer",
@@ -36867,6 +36863,15 @@ index 581a9d20..9589863f 100644
  REXCVAR_DEFINE_BOOL(gta4_vertex_color_as_rgba, false, "GTA IV/Diagnostics",
                      "Bind D3DCOLOR vertex elements as R8G8B8A8 instead of B8G8R8A8");
  REXCVAR_DEFINE_BOOL(gta4_trace_startup_content, false, "GTA IV/Diagnostics",
+@@ -542,7 +549,7 @@ REXCVAR_DEFINE_BOOL(gta4_profile_native_detailed_cpu, true, "GTA IV/Diagnostics"
+ REXCVAR_DEFINE_UINT32(gta4_profile_native_gpu_query_budget, 512, "GTA IV/Diagnostics",
+                       "Maximum timestamp boundaries per sampled frame (more boundaries add GPU overhead)")
+     .range(16, rex::graphics::gta4_native::performance::kMaximumGpuQueriesPerFrame);
+-REXCVAR_DEFINE_UINT32(gta4_profile_native_interval, 1, "GTA IV/Diagnostics",
++REXCVAR_DEFINE_UINT32(gta4_profile_native_interval, REX_PLATFORM_PS5 ? 10 : 1, "GTA IV/Diagnostics",
+                       "Capture one native-renderer profile after this many submitted frames")
+     .range(1, 3600);
+ REXCVAR_DEFINE_UINT32(gta4_profile_native_samples, 600, "GTA IV/Diagnostics",
 @@ -660,6 +667,8 @@ void LogFrameTimeline(uint32_t frame) {
    if (++batched == 8) {
  #if REX_PLATFORM_ANDROID
@@ -38896,20 +38901,22 @@ index 377172d5..6a0c90e6 100644
      pkg_check_modules(X11_XCB REQUIRED x11-xcb)
  
 diff --git a/glue/rexglue-sdk-main/src/ui/rex_app.cpp b/glue/rexglue-sdk-main/src/ui/rex_app.cpp
-index 0f7c5043..769cb0e8 100644
+index 0f7c5043..6b5ae05e 100644
 --- a/glue/rexglue-sdk-main/src/ui/rex_app.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/rex_app.cpp
-@@ -53,6 +53,9 @@
+@@ -53,6 +53,11 @@
  #include <filesystem>
  #include <string_view>
  
 +#if REX_PLATFORM_PS5
 +REXCVAR_DEFINE_BOOL(ps5_save_logs, true, "PS5", "Write the log to /app0/logs");
++REXCVAR_DEFINE_BOOL(ps5_perf_capture, false, "PS5",
++                    "Profile the renderer for a few minutes (read at startup, see windowed_app_main_sdl.cpp)");
 +#endif
  REXCVAR_DEFINE_STRING(gpu_plugin, "", "GPU",
                        "Graphics plugin to load at startup (for example, 'xenos'); empty lets "
                        "the title choose; changes take effect after restart")
-@@ -189,6 +192,12 @@ bool ReXApp::SetupEnvironment() {
+@@ -189,6 +194,12 @@ bool ReXApp::SetupEnvironment() {
    auto category_levels = rex::ParseCategoryLevelsFromConfig(config_path_);
    auto log_config = rex::BuildLogConfig(log_file_cvar.empty() ? nullptr : log_file_cvar.c_str(),
                                          log_level_str, category_levels);
@@ -39253,7 +39260,7 @@ index 87f97744..5acee304 100644
    if (allowed_types & Surface::kTypeFlag_AndroidNativeWindow) {
      auto* native_window = static_cast<ANativeWindow*>(GetNativeWindowHandle());
 diff --git a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
-index ac2d8dc4..c996a943 100644
+index ac2d8dc4..45cfdbec 100644
 --- a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 @@ -11,6 +11,7 @@
@@ -39285,7 +39292,7 @@ index ac2d8dc4..c996a943 100644
  int RunWindowedApp(int argc, char** argv) {
    auto remaining = rex::cvar::Init(argc, argv);
    rex::cvar::ApplyEnvironment();
-@@ -56,10 +64,27 @@ int RunWindowedApp(int argc, char** argv) {
+@@ -56,10 +64,33 @@ int RunWindowedApp(int argc, char** argv) {
    // native-probe instrumentation are gated on it; without this call the
    // policy stays unconfigured and every log line is suppressed.
    {
@@ -39295,17 +39302,23 @@ index ac2d8dc4..c996a943 100644
 +    // [ps5 port] No command line on the PS5: the log is on unless the hub's
 +    // Save Logs setting is off (read straight from its config file, as the
 +    // policy has to be set before the config is loaded).
++    // The hub's Performance Capture setting adds the renderer's profiler (it
++    // writes UserData/LibertyRecomp/Diagnostics/native-performance-latest.*).
 +    if (!diagnostics) {
-+      bool save_logs = true;
++      bool save_logs = true, perf_capture = false;
 +      if (std::FILE* f = std::fopen("/app0/UserData/LibertyRecomp/native.toml", "rb")) {
 +        char line[512];
 +        while (std::fgets(line, sizeof(line), f)) {
++          const char* start = line + std::strspn(line, " \t");
 +          const char* key = std::strstr(line, "ps5_save_logs");
-+          if (key && key == line + std::strspn(line, " \t") && std::strstr(key, "false")) save_logs = false;
++          if (key && key == start && std::strstr(key, "false")) save_logs = false;
++          key = std::strstr(line, "ps5_perf_capture");
++          if (key && key == start && std::strstr(key, "true")) perf_capture = true;
 +        }
 +        std::fclose(f);
 +      }
-+      if (save_logs) diagnostics = true, categories = "logging";
++      if (save_logs || perf_capture) diagnostics = true, categories = "logging";
++      if (perf_capture) categories += ",native-profiler";
 +    }
 +#endif
      std::string diagnostics_error;
@@ -39316,7 +39329,7 @@ index ac2d8dc4..c996a943 100644
        std::fprintf(stderr, "diagnostics: %s\n", diagnostics_error.c_str());
  #if REX_PLATFORM_ANDROID
        // stderr is discarded on Android; without this the app just closes.
-@@ -73,8 +98,16 @@ int RunWindowedApp(int argc, char** argv) {
+@@ -73,8 +104,16 @@ int RunWindowedApp(int argc, char** argv) {
  
    int result;
    {
@@ -39333,7 +39346,7 @@ index ac2d8dc4..c996a943 100644
        return EXIT_FAILURE;
      }
  
-@@ -97,6 +130,11 @@ int RunWindowedApp(int argc, char** argv) {
+@@ -97,6 +136,11 @@ int RunWindowedApp(int argc, char** argv) {
      app->SetParsedArguments(std::move(parsed));
  
      result = app->OnInitialize() ? app_context.RunMainMessageLoop() : EXIT_FAILURE;
@@ -39345,7 +39358,7 @@ index ac2d8dc4..c996a943 100644
  
      app->InvokeOnDestroy();
    }
-@@ -161,8 +199,221 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
+@@ -161,8 +205,221 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
  #include <SDL3/SDL_main.h>
  #endif
  
