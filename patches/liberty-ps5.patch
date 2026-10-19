@@ -438,7 +438,7 @@ index bb44175b..1b222e35 100644
  struct PlayerInfoBatchProjectionContext {
    bool active = false;
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp
-index 2a4966bd..05fccaa0 100644
+index 2a4966bd..23715fd0 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp
 @@ -25,7 +25,10 @@
@@ -466,7 +466,7 @@ index 2a4966bd..05fccaa0 100644
    if (!frames) {
      g_shadow_trace_value = 0;
      return false;
-@@ -7555,6 +7560,45 @@ extern "C" void sub_826273A0(PPCContext& ctx, uint8_t* base) {
+@@ -7555,6 +7560,48 @@ extern "C" void sub_826273A0(PPCContext& ctx, uint8_t* base) {
    }
  }
  
@@ -488,8 +488,11 @@ index 2a4966bd..05fccaa0 100644
 +    next_ns = 0;
 +    return;
 +  }
-+  const int64_t period = 1000000000ll / fps;
++  // At the TV's own rate (59.94 Hz: 30 is 29.97 here): a plain 30 drifts
++  // against the vblanks and a frame slips a vblank every ~17 s.
++  const int64_t period = 1001000000ll / fps;  // 33.367 ms at 30
 +  int64_t now = rex::frame_stats::NowNs();
++
 +  if (!next_ns || now - next_ns >= period || next_ns - now > 2 * period) {
 +    next_ns = now + period;
 +    return;
@@ -512,7 +515,7 @@ index 2a4966bd..05fccaa0 100644
  extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
    if (!IsNativeMode()) {
      __imp__sub_82A467D8(ctx, base);
-@@ -7648,9 +7692,13 @@ extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
+@@ -7648,9 +7695,13 @@ extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
    }
    g_last_present_frontbuffer.store(command.frontbuffer_texture, std::memory_order_relaxed);
    SubmitNativeCommand(command);
