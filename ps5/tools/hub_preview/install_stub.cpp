@@ -64,6 +64,8 @@ Job::Job(const fs::path& app, const fs::path&) : impl_(std::make_unique<Impl>())
     s.seconds = 300;
     s.rate = 214.0f * (1 << 20);
     s.eta = 410;
+    s.read_rate = 1650.0f * (1 << 20);
+    s.write_rate = 240.0f * (1 << 20);
   } else if (k == "done") {
     s.phase = Phase::kDone;
     s.progress = 1;

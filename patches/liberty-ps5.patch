@@ -270,25 +270,28 @@ index bb44175..1b222e3 100644
    bool active = false;
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h
 new file mode 100644
-index 0000000..5bf40fd
+index 0000000..9e4094f
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h
-@@ -0,0 +1,378 @@
+@@ -0,0 +1,420 @@
 +// The installer's file reading and writing: positional reads, big sequential
-+// writes straight to the file, and a few threads to copy files side by side.
++// writes, and a few threads to copy files side by side.
 +//
-+// [ps5 port] Three things made installing on the PS5 crawl:
++// [ps5 port] What made installing on the PS5 crawl:
 +//  - C++ file streams hand the file 4 KB at a time, and each small write is
-+//    slow there. Here a write goes out in pieces of up to 8 MB.
-+//  - Written data waits in the kernel's buffers, and once enough has piled up
-+//    the console flushes it slowly while a game runs (ps5upload measured the
-+//    same: ~60 MiB/s falling to 2-3 MiB/s a few minutes into a big write).
-+//    So the writer flushes its own file every 16 MB, and the small files'
-+//    data every 64 MB, from its own thread.
-+//  - One thread's writes top out around 40 MB/s on a PS5, so files are
-+//    copied three at a time, each thread with buffers made once (a big
-+//    allocation per file wears the console's heap down).
-+// The time spent reading, writing and flushing is counted for the log.
++//    slow there. Here a write goes out 8 MB at a time.
++//  - Everything read or written through the file cache stays in memory, and
++//    while an app runs the console has little to spare: after about 2 GB the
++//    cache is full and every read and write waits on the console freeing
++//    memory (85 MB/s fell to a few). So reads and writes go past the cache
++//    (O_DIRECT, rex/filesystem/direct_io.h), as games do: data gathers in an
++//    aligned buffer and goes out in aligned 8 MB pieces.
++//  - The written data is flushed as it goes (each file every 16 MB, small
++//    files every 64 MB), from the writing thread.
++//  - Files are copied three at a time, each thread with buffers made once
++//    (a big allocation per file wears the console's heap down).
++// The time spent reading, writing and flushing is counted for the log and
++// the install screen.
 +#pragma once
 +
 +#include <algorithm>
@@ -297,6 +300,7 @@ index 0000000..5bf40fd
 +#include <condition_variable>
 +#include <cstdint>
 +#include <cstdio>
++#include <cstdlib>
 +#include <cstring>
 +#include <deque>
 +#include <exception>
@@ -310,12 +314,14 @@ index 0000000..5bf40fd
 +#include <rex/platform.h>
 +
 +#if defined(_WIN32)
-+#include <cstdio>
++#include <malloc.h>
 +#else
 +#include <cerrno>
 +#include <fcntl.h>
 +#include <sys/stat.h>
 +#include <unistd.h>
++
++#include <rex/filesystem/direct_io.h>
 +#endif
 +
 +namespace gta4::install::io {
@@ -323,6 +329,7 @@ index 0000000..5bf40fd
 +// Bytes and time spent reading, writing and flushing (since the app started).
 +struct Stats {
 +  std::atomic<uint64_t> read_bytes{0}, read_ns{0}, write_bytes{0}, write_ns{0}, sync_ns{0}, syncs{0};
++  std::atomic<uint64_t> direct_files{0}, cached_files{0};
 +};
 +inline Stats& GetStats() {
 +  static Stats stats;
@@ -353,6 +360,46 @@ index 0000000..5bf40fd
 +}
 +}  // namespace detail
 +
++// Memory aligned for direct transfers (64 KiB), grown as needed and kept.
++class AlignedBuffer {
++ public:
++  static constexpr size_t kAlign = size_t(64) << 10;
++
++  AlignedBuffer() = default;
++  AlignedBuffer(const AlignedBuffer&) = delete;
++  AlignedBuffer& operator=(const AlignedBuffer&) = delete;
++  ~AlignedBuffer() { Free(); }
++
++  // At least `bytes` (false if that much couldn't be had).
++  bool Reserve(size_t bytes) {
++    if (bytes <= size_) return true;
++    Free();
++#if defined(_WIN32)
++    data_ = static_cast<uint8_t*>(_aligned_malloc(bytes, kAlign));
++#else
++    void* p = nullptr;
++    data_ = posix_memalign(&p, kAlign, bytes) == 0 ? static_cast<uint8_t*>(p) : nullptr;
++#endif
++    size_ = data_ ? bytes : 0;
++    return data_ != nullptr;
++  }
++  uint8_t* data() const { return data_; }
++  size_t size() const { return size_; }
++
++ private:
++  void Free() {
++#if defined(_WIN32)
++    _aligned_free(data_);
++#else
++    std::free(data_);
++#endif
++    data_ = nullptr;
++    size_ = 0;
++  }
++  uint8_t* data_ = nullptr;
++  size_t size_ = 0;
++};
++
 +// A file read at any offset (safe from several threads at once).
 +class InFile {
 + public:
@@ -370,14 +417,8 @@ index 0000000..5bf40fd
 +    size_ = uint64_t(_ftelli64(file_));
 +    return true;
 +#else
-+    fd_ = ::open(path.c_str(), O_RDONLY);
-+    if (fd_ < 0) return false;
-+    struct stat st {};
-+    if (::fstat(fd_, &st) != 0) {
-+      Close();
-+      return false;
-+    }
-+    size_ = uint64_t(st.st_size);
++    if (!reader_.Open(path.c_str())) return false;
++    size_ = reader_.size();
 +    return true;
 +#endif
 +  }
@@ -387,30 +428,26 @@ index 0000000..5bf40fd
 +  // Exactly `length` bytes at `offset` (false short of that).
 +  bool ReadAt(uint64_t offset, void* out, size_t length) {
 +    const uint64_t start = detail::NowNs();
-+    auto* p = static_cast<uint8_t*>(out);
-+    size_t left = length;
 +#if defined(_WIN32)
-+    std::lock_guard lock(win_mutex_);
-+    if (!file_ || _fseeki64(file_, int64_t(offset), SEEK_SET) != 0) return false;
-+    left -= std::fread(p, 1, left, file_);
-+#else
-+    while (left) {
-+      const ssize_t n = ::pread(fd_, p, left, off_t(offset));
-+      if (n < 0 && errno == EINTR) continue;
-+      if (n <= 0) break;
-+      p += n, offset += uint64_t(n), left -= size_t(n);
++    bool ok = false;
++    {
++      std::lock_guard lock(win_mutex_);
++      ok = file_ && _fseeki64(file_, int64_t(offset), SEEK_SET) == 0 &&
++           std::fread(out, 1, length, file_) == length;
 +    }
++#else
++    const bool ok = reader_.ReadAt(offset, out, length);
 +#endif
-+    GetStats().read_bytes += length - left;
++    if (ok) GetStats().read_bytes += length;
 +    GetStats().read_ns += detail::NowNs() - start;
-+    return left == 0;
++    return ok;
 +  }
 +
 +  void Close() {
 +#if defined(_WIN32)
 +    if (file_) std::fclose(file_), file_ = nullptr;
 +#else
-+    if (fd_ >= 0) ::close(fd_), fd_ = -1;
++    reader_.Close();
 +#endif
 +  }
 +
@@ -419,13 +456,13 @@ index 0000000..5bf40fd
 +  FILE* file_ = nullptr;
 +  std::mutex win_mutex_;
 +#else
-+  int fd_ = -1;
++  rex::filesystem::direct::Reader reader_;
 +#endif
 +  uint64_t size_ = 0;
 +};
 +
-+// A new file written from start to end. Small writes gather in `buffer` (the
-+// caller's, kept between files) and go out in pieces of up to 8 MB.
++// A new file written from start to end. What's written gathers in an aligned
++// buffer (the caller's, kept between files) and goes out 8 MB at a time.
 +class OutFile {
 + public:
 +  static constexpr size_t kChunk = size_t(8) << 20;
@@ -437,33 +474,37 @@ index 0000000..5bf40fd
 +    if (open_) Close();
 +  }
 +
-+  // `buffer`: where small writes gather (null: each write goes straight out).
-+  bool Open(const std::filesystem::path& path, std::vector<uint8_t>* buffer = nullptr) {
++  // `gather`: the buffer (null: one of its own).
++  bool Open(const std::filesystem::path& path, AlignedBuffer* gather = nullptr) {
++    gather_ = gather ? gather : &own_;
++    if (!gather_->Reserve(kChunk)) return false;
 +#if defined(_WIN32)
 +    file_ = _wfopen(path.c_str(), L"wb");
 +    open_ = file_ != nullptr;
 +#else
-+    fd_ = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
++    direct_ = false;
++    if (rex::filesystem::direct::kEnabled) {
++      fd_ = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_DIRECT, 0666);
++      direct_ = fd_ >= 0;
++    }
++    if (fd_ < 0) fd_ = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
 +    open_ = fd_ >= 0;
 +#endif
 +    ok_ = open_;
-+    buffer_ = buffer;
 +    pending_ = 0;
 +    written_ = unflushed_ = 0;
 +    return open_;
 +  }
 +
 +  bool Write(const void* data, size_t length) {
-+    if (!ok_) return false;
 +    const auto* p = static_cast<const uint8_t*>(data);
-+    if (!buffer_ || length >= kChunk / 2) {  // (big: straight out, after what's waiting)
-+      return Flush() && Out(p, length);
++    while (ok_ && length) {
++      const size_t take = std::min(length, kChunk - pending_);
++      std::memcpy(gather_->data() + pending_, p, take);
++      pending_ += take, p += take, length -= take;
++      if (pending_ == kChunk) Flush();
 +    }
-+    if (buffer_->size() < kChunk) buffer_->resize(kChunk);
-+    if (pending_ + length > kChunk && !Flush()) return false;
-+    std::memcpy(buffer_->data() + pending_, p, length);
-+    pending_ += length;
-+    return true;
++    return ok_;
 +  }
 +
 +  // Writes what's waiting and closes the file; false if any write failed.
@@ -471,6 +512,7 @@ index 0000000..5bf40fd
 +    if (!open_) return ok_;
 +    Flush();
 +#if !defined(_WIN32)
++    (direct_ ? GetStats().direct_files : GetStats().cached_files)++;
 +    if (detail::kFlushAsWeGo && ok_ && unflushed_) {
 +      if (written_ >= detail::kFlushFileMin) {
 +        Sync();
@@ -494,15 +536,12 @@ index 0000000..5bf40fd
 +  }
 +
 + private:
-+  bool Flush() {
-+    if (!pending_) return ok_;
-+    const bool done = Out(buffer_->data(), pending_);
++  void Flush() {
++    if (pending_ && ok_) Out(gather_->data(), pending_);
 +    pending_ = 0;
-+    return done;
 +  }
 +
-+  bool Out(const uint8_t* p, size_t length) {
-+    if (!ok_) return false;
++  void Out(const uint8_t* p, size_t length) {
 +    const uint64_t start = detail::NowNs();
 +    size_t left = length;
 +#if defined(_WIN32)
@@ -511,6 +550,13 @@ index 0000000..5bf40fd
 +    while (left) {
 +      const ssize_t n = ::write(fd_, p, left);
 +      if (n < 0 && errno == EINTR) continue;
++      if (n < 0 && errno == EINVAL && direct_) {
++        // the kernel won't write this directly (the last piece's size):
++        // through the cache from here
++        rex::filesystem::direct::TurnOff(fd_);
++        direct_ = false;
++        continue;
++      }
 +      if (n <= 0) break;
 +      p += n, left -= size_t(n);
 +    }
@@ -519,14 +565,13 @@ index 0000000..5bf40fd
 +    GetStats().write_ns += detail::NowNs() - start;
 +    if (left) {
 +      ok_ = false;
-+      return false;
++      return;
 +    }
 +    written_ += length;
 +    unflushed_ += length;
 +#if !defined(_WIN32)
 +    if (detail::kFlushAsWeGo && unflushed_ >= detail::kFlushEvery) Sync();
 +#endif
-+    return ok_;
 +  }
 +
 +#if !defined(_WIN32)
@@ -543,9 +588,11 @@ index 0000000..5bf40fd
 +  FILE* file_ = nullptr;
 +#else
 +  int fd_ = -1;
++  bool direct_ = false;
 +#endif
 +  bool open_ = false, ok_ = false;
-+  std::vector<uint8_t>* buffer_ = nullptr;
++  AlignedBuffer* gather_ = nullptr;
++  AlignedBuffer own_;
 +  size_t pending_ = 0;
 +  uint64_t written_ = 0, unflushed_ = 0;
 +};
@@ -556,7 +603,7 @@ index 0000000..5bf40fd
 +class WorkerPool {
 + public:
 +  struct Scratch {
-+    std::vector<uint8_t> read, write, gather;
++    AlignedBuffer read, write, gather;
 +  };
 +  using Job = std::function<bool(Scratch&, std::string& error)>;
 +
@@ -593,11 +640,6 @@ index 0000000..5bf40fd
 +      return false;
 +    }
 +    return true;
-+  }
-+
-+  bool Failed() {
-+    std::lock_guard lock(mutex_);
-+    return failed_;
 +  }
 +
 + private:
@@ -653,7 +695,7 @@ index 0000000..5bf40fd
 +
 +}  // namespace gta4::install::io
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
-index 84a1723..d8c770a 100644
+index 84a1723..ac1ffb2 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
 @@ -31,7 +31,10 @@
@@ -681,38 +723,44 @@ index 84a1723..d8c770a 100644
  
  bool CopyFileEntry(rex::filesystem::Entry* entry, const std::filesystem::path& destination,
 -                   Progress& progress, std::string& error) {
-+                   Progress& progress, std::vector<uint8_t>& buffer, std::string& error) {
++                   Progress& progress, io::WorkerPool::Scratch& scratch, std::string& error) {
 +  const uint64_t started = io::detail::NowNs();
    std::error_code fs_error;
    std::filesystem::create_directories(destination.parent_path(), fs_error);
    if (fs_error) {
-@@ -469,13 +473,16 @@ bool CopyFileEntry(rex::filesystem::Entry* entry, const std::filesystem::path& d
+@@ -469,13 +473,18 @@ bool CopyFileEntry(rex::filesystem::Entry* entry, const std::filesystem::path& d
      return false;
    }
  
 -  std::ofstream output(destination, std::ios::binary | std::ios::trunc);
 -  if (!output) {
 +  io::OutFile output;
-+  if (!output.Open(destination)) {
++  if (!output.Open(destination, &scratch.gather)) {
      error = "Could not create " + destination.string() + ".";
      return false;
    }
  
 -  std::vector<uint8_t> buffer(kCopyBufferSize);
-+  // (the caller's buffer, kept between files)
-+  if (buffer.size() < kCopyBufferSize) {
-+    buffer.resize(kCopyBufferSize);
++  // (the worker's buffer, kept between files)
++  io::AlignedBuffer& buffer = scratch.read;
++  if (!buffer.Reserve(kCopyBufferSize)) {
++    error = "Not enough memory to copy " + entry->path() + ".";
++    return false;
 +  }
    size_t offset = 0;
    while (offset < entry->size()) {
      if (progress.cancel_requested.load(std::memory_order_relaxed)) {
-@@ -485,30 +492,57 @@ bool CopyFileEntry(rex::filesystem::Entry* entry, const std::filesystem::path& d
+@@ -483,32 +492,59 @@ bool CopyFileEntry(rex::filesystem::Entry* entry, const std::filesystem::path& d
+       return false;
+     }
      const size_t remaining = entry->size() - offset;
-     const size_t request = std::min(remaining, buffer.size());
+-    const size_t request = std::min(remaining, buffer.size());
++    const size_t request = std::min(remaining, kCopyBufferSize);
      size_t bytes_read = 0;
 +    const uint64_t read_start = io::detail::NowNs();
      const rex::X_STATUS read_status =
-         file->ReadSync(std::span<uint8_t>(buffer).first(request), offset, &bytes_read);
+-        file->ReadSync(std::span<uint8_t>(buffer).first(request), offset, &bytes_read);
++        file->ReadSync(std::span<uint8_t>(buffer.data(), request), offset, &bytes_read);
 +    io::GetStats().read_ns += io::detail::NowNs() - read_start;
 +    io::GetStats().read_bytes += bytes_read;
      if (read_status != 0 || bytes_read == 0 || bytes_read > request) {
@@ -768,7 +816,7 @@ index 84a1723..d8c770a 100644
    struct Pending {
      rex::filesystem::Entry* entry;
      std::filesystem::path relative_path;
-@@ -530,13 +564,13 @@ bool CopyTree(rex::filesystem::Entry* root, const std::filesystem::path& destina
+@@ -530,13 +566,13 @@ bool CopyTree(rex::filesystem::Entry* root, const std::filesystem::path& destina
      pending.pop_back();
      if (++visited > kMaximumTreeEntries) {
        error = "The source contains an unexpectedly large directory tree.";
@@ -784,7 +832,7 @@ index 84a1723..d8c770a 100644
      }
  
      const auto output_path = destination / current.relative_path;
-@@ -545,21 +579,28 @@ bool CopyTree(rex::filesystem::Entry* root, const std::filesystem::path& destina
+@@ -545,21 +581,28 @@ bool CopyTree(rex::filesystem::Entry* root, const std::filesystem::path& destina
        std::filesystem::create_directories(output_path, fs_error);
        if (fs_error) {
          error = "Could not create an installation directory: " + fs_error.message();
@@ -806,7 +854,7 @@ index 84a1723..d8c770a 100644
 +      rex::filesystem::Entry* entry = current.entry;
 +      const bool queued = pool.Add([entry, output_path, &progress](io::WorkerPool::Scratch& scratch,
 +                                                                    std::string& job_error) {
-+        return CopyFileEntry(entry, output_path, progress, scratch.read, job_error);
++        return CopyFileEntry(entry, output_path, progress, scratch, job_error);
 +      });
 +      if (!queued) {
 +        break;  // (a copy failed: finish() reports it)
@@ -818,7 +866,7 @@ index 84a1723..d8c770a 100644
  }
  
  bool CopyHostFile(const std::filesystem::path& source, const std::filesystem::path& destination,
-@@ -571,35 +612,35 @@ bool CopyHostFile(const std::filesystem::path& source, const std::filesystem::pa
+@@ -571,35 +614,35 @@ bool CopyHostFile(const std::filesystem::path& source, const std::filesystem::pa
      return false;
    }
  
@@ -872,7 +920,7 @@ index 84a1723..d8c770a 100644
  }
  
  std::optional<PreparedSource> PrepareGameSource(const std::filesystem::path& path,
-@@ -1026,8 +1067,15 @@ Result Install(const Selection& selection, const std::filesystem::path& install_
+@@ -1026,8 +1069,15 @@ Result Install(const Selection& selection, const std::filesystem::path& install_
      result.error = "Could not create the staging directory: " + fs_error.message();
      return result;
    }
@@ -889,18 +937,18 @@ index 84a1723..d8c770a 100644
      result.error = fs_error
                         ? "Could not determine available installation space: " + fs_error.message()
                         : "There is not enough free space for the GTA IV installation.";
-@@ -1069,7 +1117,8 @@ Result Install(const Selection& selection, const std::filesystem::path& install_
+@@ -1069,7 +1119,8 @@ Result Install(const Selection& selection, const std::filesystem::path& install_
        if (!CopyHostFile(selection.update_source, sibling_patch, progress, result.error)) {
          return fail(std::move(result.error));
        }
 -    } else if (!CopyFileEntry(update->patch.entry, sibling_patch, progress, result.error)) {
-+    } else if (std::vector<uint8_t> buffer;
-+               !CopyFileEntry(update->patch.entry, sibling_patch, progress, buffer, result.error)) {
++    } else if (io::WorkerPool::Scratch scratch;
++               !CopyFileEntry(update->patch.entry, sibling_patch, progress, scratch, result.error)) {
        return fail(std::move(result.error));
      }
    }
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
-index 9854392..e4bc026 100644
+index 9854392..338452c 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
 @@ -7,6 +7,7 @@
@@ -988,7 +1036,7 @@ index 9854392..e4bc026 100644
      error = "Could not read an RPF2 file entry from " + archive_path.string() + ".";
      return false;
    }
-@@ -345,14 +355,21 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
+@@ -345,14 +355,19 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
      error = "Could not create an RPF extraction directory: " + fs_error.message();
      return false;
    }
@@ -1003,18 +1051,16 @@ index 9854392..e4bc026 100644
 -  std::vector<uint8_t> input_buffer(kIoBufferSize);
 -  std::vector<uint8_t> output_buffer(kIoBufferSize);
 +  // (the worker's buffers, kept between files)
-+  std::vector<uint8_t>& input_buffer = scratch.read;
-+  std::vector<uint8_t>& output_buffer = scratch.write;
-+  if (input_buffer.size() != kIoBufferSize) {
-+    input_buffer.resize(kIoBufferSize);
-+  }
-+  if (output_buffer.size() != kIoBufferSize) {
-+    output_buffer.resize(kIoBufferSize);
++  io::AlignedBuffer& input_buffer = scratch.read;
++  io::AlignedBuffer& output_buffer = scratch.write;
++  if (!input_buffer.Reserve(kIoBufferSize) || !output_buffer.Reserve(kIoBufferSize)) {
++    error = "Not enough memory to extract " + output_path.string() + ".";
++    return false;
 +  }
    uint64_t remaining = entry.archived_size;
    if (!entry.is_compressed) {
      while (remaining != 0) {
-@@ -361,12 +378,13 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
+@@ -361,12 +376,13 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
          return false;
        }
        const size_t chunk = static_cast<size_t>(std::min<uint64_t>(remaining, input_buffer.size()));
@@ -1030,7 +1076,7 @@ index 9854392..e4bc026 100644
        if (progress.completed_bytes) {
          progress.completed_bytes->fetch_add(chunk, std::memory_order_relaxed);
        }
-@@ -388,12 +406,13 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
+@@ -388,12 +404,13 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
        if (stream.avail_in == 0 && remaining != 0) {
          const size_t chunk =
              static_cast<size_t>(std::min<uint64_t>(remaining, input_buffer.size()));
@@ -1045,7 +1091,7 @@ index 9854392..e4bc026 100644
          stream.next_in = input_buffer.data();
          stream.avail_in = static_cast<uInt>(chunk);
        }
-@@ -404,7 +423,7 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
+@@ -404,7 +421,7 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
        const int status = inflate(&stream, flush);
        const size_t produced = output_buffer.size() - stream.avail_out;
        if (produced != 0) {
@@ -1054,7 +1100,7 @@ index 9854392..e4bc026 100644
            inflateEnd(&stream);
            error = "Could not write a decompressed RPF2 file entry: " + output_path.string();
            return false;
-@@ -434,16 +453,16 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
+@@ -434,16 +451,16 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
        return false;
      }
    }
@@ -1075,7 +1121,7 @@ index 9854392..e4bc026 100644
                        std::vector<bool>& active, std::vector<bool>& visited,
                        std::vector<std::filesystem::path>& nested_archives,
                        const RpfExtractionProgress& progress, size_t depth, std::string& error) {
-@@ -477,7 +496,8 @@ bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive&
+@@ -477,7 +494,8 @@ bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive&
      if (entry.is_directory) {
        std::error_code fs_error;
        std::filesystem::create_directories(output_path, fs_error);
@@ -1085,7 +1131,7 @@ index 9854392..e4bc026 100644
                                          nested_archives, progress, depth + 1, error)) {
          if (error.empty()) {
            error = "Could not create an RPF extraction directory: " + fs_error.message();
-@@ -486,15 +506,26 @@ bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive&
+@@ -486,15 +504,26 @@ bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive&
        }
      } else {
        visited[child] = true;
@@ -1119,7 +1165,7 @@ index 9854392..e4bc026 100644
      }
    }
    active[index] = false;
-@@ -503,7 +534,8 @@ bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive&
+@@ -503,7 +532,8 @@ bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive&
  
  bool ExtractOne(const std::filesystem::path& archive_path, const std::filesystem::path& output_root,
                  std::span<const uint8_t> key, const RpfExtractionProgress& progress,
@@ -1129,7 +1175,7 @@ index 9854392..e4bc026 100644
    auto archive = ParseArchive(archive_path, key, error);
    if (!archive) {
      return false;
-@@ -530,10 +562,25 @@ bool ExtractOne(const std::filesystem::path& archive_path, const std::filesystem
+@@ -530,10 +560,25 @@ bool ExtractOne(const std::filesystem::path& archive_path, const std::filesystem
      error = "Could not create an RPF extraction directory: " + fs_error.message();
      return false;
    }
@@ -1157,7 +1203,7 @@ index 9854392..e4bc026 100644
      return false;
    }
    return true;
-@@ -579,6 +626,7 @@ bool ExtractGameArchives(const std::filesystem::path& staged_game_root,
+@@ -579,6 +624,7 @@ bool ExtractGameArchives(const std::filesystem::path& staged_game_root,
  
    std::unordered_set<std::string> extracted;
    size_t archive_count = 0;
@@ -1165,7 +1211,7 @@ index 9854392..e4bc026 100644
    while (!pending.empty()) {
      if (++archive_count > kMaximumNestedArchiveCount) {
        error = "The GTA IV source contains too many nested RPF archives.";
-@@ -596,7 +644,7 @@ bool ExtractGameArchives(const std::filesystem::path& staged_game_root,
+@@ -596,7 +642,7 @@ bool ExtractGameArchives(const std::filesystem::path& staged_game_root,
        return false;
      }
      std::vector<std::filesystem::path> nested;
@@ -20643,10 +20689,10 @@ index 0000000..a631ae4
 +*/
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
 new file mode 100644
-index 0000000..e595a9e
+index 0000000..777ab9a
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
-@@ -0,0 +1,302 @@
+@@ -0,0 +1,359 @@
 +// GTA IV PS5 - the hub's check of the game's files and its installer (see
 +// hub_install.h). The install itself is LibertyRecomp's (install/).
 +#include "hub_install.h"
@@ -20661,6 +20707,14 @@ index 0000000..e595a9e
 +#include <thread>
 +
 +#include <rex/logging.h>
++
++#if defined(__PROSPERO__)
++#include <fcntl.h>
++#include <sys/mount.h>
++#include <unistd.h>
++extern "C" int _fstatfs(int fd, struct statfs* buf);
++extern "C" int32_t sceKernelAvailableFlexibleMemorySize(size_t* size);
++#endif
 +
 +#include "../../install/gta4_install_io.h"
 +#include "../../install/gta4_installer.h"
@@ -20756,9 +20810,33 @@ index 0000000..e595a9e
 +  return s;
 +}
 +
++#if defined(__PROSPERO__)
++namespace {
++// The kernel's statfs for a path (the SDK's statvfs is a stand-in).
++bool StatFs(const fs::path& path, struct statfs& st) {
++  const int fd = ::open(path.c_str(), O_RDONLY);
++  if (fd < 0) return false;
++  const bool ok = _fstatfs(fd, &st) == 0;
++  ::close(fd);
++  return ok;
++}
++// "ufs on /dev/... (412.0 GB free)" for the log.
++std::string Describe(const fs::path& path) {
++  struct statfs st {};
++  if (!StatFs(path, st)) return "unknown";
++  return std::string(st.f_fstypename) + " from " + st.f_mntfromname + " on " + st.f_mntonname + " (" +
++         Bytes(uint64_t(st.f_bavail) * uint64_t(st.f_bsize)) + " free)";
++}
++}  // namespace
++#endif
++
 +uint64_t FreeSpace(const fs::path& install_root) {
 +  std::error_code ec;
 +  fs::create_directories(install_root, ec);
++#if defined(__PROSPERO__)
++  struct statfs st {};
++  if (StatFs(install_root, st) && st.f_bsize) return uint64_t(st.f_bavail) * uint64_t(st.f_bsize);
++#endif
 +  const auto space = fs::space(install_root, ec);
 +  // (on the PS5 a title can't learn the drive's free space: the SDK's
 +  // statvfs always answers 16 GiB, so that means "not known")
@@ -20787,6 +20865,10 @@ index 0000000..e595a9e
 +  mutable uint64_t rate_bytes = 0;
 +  mutable float rate = 0;
 +  mutable Clock::time_point logged_at{};
++  // (the reading and writing speeds, from the io stats)
++  mutable Clock::time_point io_at{};
++  mutable uint64_t io_rb = 0, io_rns = 0, io_wb = 0, io_wns = 0;
++  mutable float read_rate = 0, write_rate = 0;
 +
 +  void Set(Phase phase, std::string problem = {}) {
 +    std::lock_guard lock(m);
@@ -20796,6 +20878,12 @@ index 0000000..e595a9e
 +
 +  void Run() {
 +    REXLOG_INFO("PS5 installer: disc '{}', title update '{}'", found.disc.string(), found.update.string());
++#if defined(__PROSPERO__)
++    size_t flexible = 0;
++    sceKernelAvailableFlexibleMemorySize(&flexible);
++    REXLOG_INFO("PS5 installer: disc image on {}; installing to {}; {} flexible memory free",
++                found.disc.empty() ? std::string("-") : Describe(found.disc), Describe(root), Bytes(flexible));
++#endif
 +    if (found.disc.empty()) {
 +      Set(Phase::kProblem,
 +          "There's no disc image in the install folder. Copy your GTA IV disc image (.iso) into "
@@ -20926,6 +21014,21 @@ index 0000000..e595a9e
 +    j.rate_at = now, j.rate_bytes = done;
 +  }
 +  s.rate = j.rate;
++  {
++    const auto& io = gta4::install::io::GetStats();
++    const uint64_t rb = io.read_bytes.load(), rns = io.read_ns.load(), wb = io.write_bytes.load(),
++                   wns = io.write_ns.load();
++    if (j.io_at == Impl::Clock::time_point{}) {
++      j.io_at = now, j.io_rb = rb, j.io_rns = rns, j.io_wb = wb, j.io_wns = wns;
++    } else if (now - j.io_at >= std::chrono::seconds(2)) {
++      // (bytes over the time spent at it: one thread's speed)
++      if (rns > j.io_rns) j.read_rate = float(double(rb - j.io_rb) / (double(rns - j.io_rns) / 1e9));
++      if (wns > j.io_wns) j.write_rate = float(double(wb - j.io_wb) / (double(wns - j.io_wns) / 1e9));
++      j.io_at = now, j.io_rb = rb, j.io_rns = rns, j.io_wb = wb, j.io_wns = wns;
++    }
++    s.read_rate = j.read_rate;
++    s.write_rate = j.write_rate;
++  }
 +  // every 10 s, how it's going in the log (reading vs writing speed)
 +  if (now - j.logged_at >= std::chrono::seconds(10)) {
 +    j.logged_at = now;
@@ -20951,10 +21054,10 @@ index 0000000..e595a9e
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h
 new file mode 100644
-index 0000000..8c82240
+index 0000000..52c22d8
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,94 @@
 +// GTA IV PS5 - the hub's check of the game's files, and its installer: the
 +// game is installed from the disc image and Title Update 8 in the app's
 +// install folder; after that it runs from UserData/LibertyRecomp/game.
@@ -21030,6 +21133,7 @@ index 0000000..8c82240
 +    float seconds = 0;     // since the install started
 +    float rate = 0;        // bytes a second, lately
 +    float eta = -1;        // seconds left (-1: not known yet)
++    float read_rate = 0, write_rate = 0;  // one thread's reading and writing speed, lately
 +  };
 +  // `install_root`: UserData/LibertyRecomp (the game goes in its game/).
 +  Job(const fs::path& app, const fs::path& install_root);
@@ -21050,10 +21154,10 @@ index 0000000..8c82240
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
 new file mode 100644
-index 0000000..fa57c88
+index 0000000..cfb5ef2
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
-@@ -0,0 +1,308 @@
+@@ -0,0 +1,315 @@
 +// GTA IV PS5 - the hub's installer (see hub_ui.h, hub_install.h): START GAME
 +// opens it while the game isn't installed. It shows what's in install/ and
 +// the disc image's check, then installs with a progress bar. All on the
@@ -21278,6 +21382,13 @@ index 0000000..fa57c88
 +    if (st.eta >= 0) right += (right.empty() ? "" : "  \xC2\xB7  ") + std::string("About ") + Minutes(st.eta) + " left";
 +    else if (st.seconds > 2) right += (right.empty() ? "" : "  \xC2\xB7  ") + std::string("Working out the time left");
 +    Text(a_.body, 21, bx + bw, by + 40, White(0.6f), right, 1);
++    // (what the time goes to: reading the disc image or writing the game)
++    if (st.read_rate > 0 || st.write_rate > 0) {
++      char io[96];
++      std::snprintf(io, sizeof(io), "Reading at %.0f MB/s  \xC2\xB7  writing at %.0f MB/s", double(st.read_rate) / (1 << 20),
++                    double(st.write_rate) / (1 << 20));
++      Text(a_.body, 18, bx, by + 78, White(0.38f), io);
++    }
 +  }
 +}
 +
@@ -29874,10 +29985,20 @@ index 6f4b3f0..0744c00 100644
  using hundrednano = std::ratio<1, 10000000>;
  
 diff --git a/glue/rexglue-sdk-main/include/rex/filesystem/devices/disc_image_device.h b/glue/rexglue-sdk-main/include/rex/filesystem/devices/disc_image_device.h
-index f97559e..d08d145 100644
+index f97559e..5c77308 100644
 --- a/glue/rexglue-sdk-main/include/rex/filesystem/devices/disc_image_device.h
 +++ b/glue/rexglue-sdk-main/include/rex/filesystem/devices/disc_image_device.h
-@@ -43,12 +43,16 @@ class DiscImageDevice : public Device {
+@@ -20,6 +20,9 @@
+ 
+ namespace rex::filesystem {
+ 
++namespace direct {
++class Reader;
++}
+ class DiscImageEntry;
+ 
+ class DiscImageDevice : public Device {
+@@ -43,12 +46,16 @@ class DiscImageDevice : public Device {
    uint64_t total_file_size() const { return total_file_size_; }
    const DiscInfo& disc_info() const { return disc_info_; }
  
@@ -29895,15 +30016,203 @@ index f97559e..d08d145 100644
    }
    uint32_t available_allocation_units() const override { return 0; }
    uint32_t sectors_per_allocation_unit() const override { return 1; }
-@@ -67,6 +71,8 @@ class DiscImageDevice : public Device {
+@@ -67,6 +74,8 @@ class DiscImageDevice : public Device {
    std::filesystem::path host_path_;
    std::unique_ptr<Entry> root_entry_;
    std::unique_ptr<memory::MappedMemory> mmap_;
-+  int fd_ = -1;  // [ps5 port] the image, read with pread (never mapped)
++  std::unique_ptr<direct::Reader> reader_;  // [ps5 port] the image, read past the cache (never mapped)
 +  size_t host_size_ = 0;
    DiscInfo disc_info_{};
    uint64_t file_count_ = 0;
    uint64_t total_file_size_ = 0;
+diff --git a/glue/rexglue-sdk-main/include/rex/filesystem/direct_io.h b/glue/rexglue-sdk-main/include/rex/filesystem/direct_io.h
+new file mode 100644
+index 0000000..87e2fd2
+--- /dev/null
++++ b/glue/rexglue-sdk-main/include/rex/filesystem/direct_io.h
+@@ -0,0 +1,182 @@
++/**
++ * [ps5 port] Reading past the system's file cache (O_DIRECT).
++ *
++ * On the PS5 everything read or written through the file cache stays in
++ * memory, and while an app runs the console has little to spare: after a
++ * couple of GB the cache is full and every read and write waits on the
++ * console freeing memory, which it does slowly (an install fell from 85 MB/s
++ * to a few). Games read past the cache, and so do these.
++ *
++ * A direct read is widened to 64 KiB-aligned bounds into an aligned buffer
++ * (kept for the next read) and copied out. Where the kernel refuses a direct
++ * transfer, the file goes on through the cache.
++ */
++#pragma once
++
++#if !defined(_WIN32)
++
++#include <algorithm>
++#include <atomic>
++#include <cerrno>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <mutex>
++#include <vector>
++
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include <rex/platform.h>
++
++namespace rex::filesystem::direct {
++
++constexpr size_t kAlign = size_t(64) << 10;
++
++// Past the cache only on the PS5 (elsewhere the cache is the fast path).
++#if REX_PLATFORM_PS5
++constexpr bool kEnabled = true;
++#else
++constexpr bool kEnabled = false;
++#endif
++
++inline uint8_t* AlignedAlloc(size_t bytes) {
++  void* p = nullptr;
++  return posix_memalign(&p, kAlign, std::max<size_t>(bytes, kAlign)) == 0 ? static_cast<uint8_t*>(p)
++                                                                         : nullptr;
++}
++
++// From here on, `fd` goes through the cache.
++inline void TurnOff(int fd) {
++  const int flags = fcntl(fd, F_GETFL);
++  if (flags != -1) fcntl(fd, F_SETFL, flags & ~O_DIRECT);
++}
++
++inline uint64_t AlignDown(uint64_t v) { return v & ~uint64_t(kAlign - 1); }
++inline uint64_t AlignUp(uint64_t v) { return (v + kAlign - 1) & ~uint64_t(kAlign - 1); }
++
++// A file read at any offset, from several threads at once.
++class Reader {
++ public:
++  Reader() = default;
++  Reader(const Reader&) = delete;
++  Reader& operator=(const Reader&) = delete;
++  ~Reader() {
++    Close();
++    for (auto& buffer : free_) std::free(buffer.data);
++  }
++
++  bool Open(const char* path) {
++    Close();
++    if (kEnabled) {
++      fd_ = ::open(path, O_RDONLY | O_DIRECT);
++      direct_ = fd_ >= 0;
++    }
++    if (fd_ < 0) fd_ = ::open(path, O_RDONLY);
++    if (fd_ < 0) return false;
++    struct stat st {};
++    if (::fstat(fd_, &st) != 0) {
++      Close();
++      return false;
++    }
++    size_ = uint64_t(st.st_size);
++    return true;
++  }
++
++  void Close() {
++    if (fd_ >= 0) ::close(fd_);
++    fd_ = -1;
++  }
++
++  int fd() const { return fd_; }
++  uint64_t size() const { return size_; }
++  bool direct() const { return direct_.load(std::memory_order_relaxed); }
++
++  // Exactly `length` bytes at `offset` (false past the end or on an error).
++  bool ReadAt(uint64_t offset, void* out, size_t length) {
++    if (length == 0) return true;
++    if (offset > size_ || length > size_ - offset) return false;
++    if (direct_.load(std::memory_order_relaxed)) {
++      const uint64_t start = AlignDown(offset), end = AlignUp(offset + length);
++      const size_t window = size_t(end - start), need = size_t(offset + length - start);
++      Buffer buffer = Take(window);
++      if (buffer.data) {
++        size_t got = 0;
++        bool refused = false;
++        while (got < need) {
++          const ssize_t n = ::pread(fd_, buffer.data + got, window - got, off_t(start + got));
++          if (n < 0 && errno == EINTR) continue;
++          if (n < 0 && errno == EINVAL) {
++            refused = true;
++            break;
++          }
++          if (n <= 0) break;
++          got += size_t(n);
++        }
++        const bool ok = got >= need;
++        if (ok) std::memcpy(out, buffer.data + (offset - start), length);
++        Give(buffer);
++        if (ok) return true;
++        if (!refused) return false;
++        // The kernel won't read this file directly: through the cache from now on.
++        if (direct_.exchange(false)) TurnOff(fd_);
++      }
++    }
++    auto* p = static_cast<uint8_t*>(out);
++    while (length) {
++      const ssize_t n = ::pread(fd_, p, length, off_t(offset));
++      if (n < 0 && errno == EINTR) continue;
++      if (n <= 0) return false;
++      p += n, offset += uint64_t(n), length -= size_t(n);
++    }
++    return true;
++  }
++
++ private:
++  struct Buffer {
++    uint8_t* data = nullptr;
++    size_t size = 0;
++  };
++
++  Buffer Take(size_t bytes) {
++    {
++      std::lock_guard lock(mutex_);
++      for (size_t i = 0; i < free_.size(); ++i) {
++        if (free_[i].size >= bytes) {
++          const Buffer buffer = free_[i];
++          free_.erase(free_.begin() + std::ptrdiff_t(i));
++          return buffer;
++        }
++      }
++    }
++    const size_t size = (bytes + (size_t(1) << 20) - 1) & ~((size_t(1) << 20) - 1);  // (1 MiB steps)
++    Buffer buffer{AlignedAlloc(size), size};
++    if (!buffer.data) buffer.size = 0;
++    return buffer;
++  }
++
++  void Give(Buffer buffer) {
++    if (!buffer.data) return;
++    std::lock_guard lock(mutex_);
++    if (free_.size() < 8) {
++      free_.push_back(buffer);
++      return;
++    }
++    // (full: the smallest goes)
++    auto smallest = std::min_element(free_.begin(), free_.end(),
++                                     [](const Buffer& a, const Buffer& b) { return a.size < b.size; });
++    if (smallest->size < buffer.size) std::swap(*smallest, buffer);
++    std::free(buffer.data);
++  }
++
++  int fd_ = -1;
++  uint64_t size_ = 0;
++  std::atomic<bool> direct_{false};
++  std::mutex mutex_;
++  std::vector<Buffer> free_;
++};
++
++}  // namespace rex::filesystem::direct
++
++#endif  // !_WIN32
 diff --git a/glue/rexglue-sdk-main/include/rex/frame_stats.h b/glue/rexglue-sdk-main/include/rex/frame_stats.h
 new file mode 100644
 index 0000000..96410f8
@@ -35101,10 +35410,10 @@ index 8c31d93..77249fd 100644
    if (!android_pthread_getname_np_ && current_thread_) {
      current_thread_->condition().SetAndroidPreApi26Name(name);
 diff --git a/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_device.cpp b/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_device.cpp
-index 46220c7..b32e1cf 100644
+index 46220c7..90bc005 100644
 --- a/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_device.cpp
 +++ b/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_device.cpp
-@@ -12,7 +12,17 @@
+@@ -12,7 +12,15 @@
  #include <rex/filesystem/devices/disc_image_device.h>
  #include <rex/filesystem/devices/disc_image_entry.h>
  
@@ -35115,37 +35424,27 @@ index 46220c7..b32e1cf 100644
 +
 +#include <rex/platform.h>
 +#if REX_PLATFORM_PS5
-+#include <fcntl.h>
-+#include <sys/stat.h>
-+#include <unistd.h>
++#include <rex/filesystem/direct_io.h>
 +#endif
  
  #include <rex/literals.h>
  #include <rex/logging.h>
-@@ -50,25 +60,49 @@ DiscImageDevice::DiscImageDevice(const std::string_view mount_path,
-                                  const std::filesystem::path& host_path)
-     : Device(mount_path), name_("GDFX"), host_path_(host_path) {}
- 
--DiscImageDevice::~DiscImageDevice() = default;
-+DiscImageDevice::~DiscImageDevice() {
-+#if REX_PLATFORM_PS5
-+  if (fd_ >= 0) {
-+    close(fd_);
-+  }
-+#endif
-+}
+@@ -53,22 +61,42 @@ DiscImageDevice::DiscImageDevice(const std::string_view mount_path,
+ DiscImageDevice::~DiscImageDevice() = default;
  
  bool DiscImageDevice::Initialize() {
 +#if REX_PLATFORM_PS5
-+  // [ps5 port] The image is read with pread, not mapped: paging an 8 GB disc
-+  // image in through a file mapping froze the whole console.
-+  fd_ = open(host_path_.c_str(), O_RDONLY);
-+  struct stat st {};
-+  if (fd_ < 0 || fstat(fd_, &st) != 0) {
++  // [ps5 port] The image is read with pread, not mapped (paging an 8 GB disc
++  // image in through a file mapping froze the whole console), and past the
++  // file cache (rex/filesystem/direct_io.h).
++  reader_ = std::make_unique<direct::Reader>();
++  if (!reader_->Open(host_path_.c_str())) {
 +    REXFS_ERROR("Disc image could not be opened");
 +    return false;
 +  }
-+  host_size_ = size_t(st.st_size);
++  host_size_ = size_t(reader_->size());
++  REXFS_INFO("Disc image {}: {} bytes, read {}", host_path_.string(), host_size_,
++             reader_->direct() ? "past the cache" : "through the cache");
 +#else
    mmap_ = memory::MappedMemory::Open(host_path_, memory::MappedMemory::Mode::kRead);
    if (!mmap_) {
@@ -35176,7 +35475,7 @@ index 46220c7..b32e1cf 100644
    if (result != Error::kSuccess) {
      REXFS_ERROR("Failed to read all GDFX entries: {}", static_cast<int>(result));
      return false;
-@@ -85,6 +119,31 @@ void DiscImageDevice::Dump(string::StringBuffer* string_buffer) {
+@@ -85,6 +113,18 @@ void DiscImageDevice::Dump(string::StringBuffer* string_buffer) {
        disc_info_.root_size, disc_info_.host_size);
  }
  
@@ -35185,20 +35484,7 @@ index 46220c7..b32e1cf 100644
 +    return false;
 +  }
 +#if REX_PLATFORM_PS5
-+  auto* p = static_cast<uint8_t*>(out);
-+  while (length) {
-+    const ssize_t n = pread(fd_, p, length, off_t(offset));
-+    if (n < 0 && errno == EINTR) {
-+      continue;
-+    }
-+    if (n <= 0) {
-+      return false;
-+    }
-+    p += n;
-+    offset += size_t(n);
-+    length -= size_t(n);
-+  }
-+  return true;
++  return reader_->ReadAt(offset, out, length);
 +#else
 +  std::memcpy(out, mmap_->data() + offset, length);
 +  return true;
@@ -35208,7 +35494,7 @@ index 46220c7..b32e1cf 100644
  Entry* DiscImageDevice::ResolvePath(const std::string_view path) {
    // The filesystem will have stripped our prefix off already, so the path will
    // be in the form:
-@@ -119,7 +178,11 @@ DiscImageDevice::Error DiscImageDevice::Verify(ParseState* state) {
+@@ -119,7 +159,11 @@ DiscImageDevice::Error DiscImageDevice::Verify(ParseState* state) {
        !RangeWithin(descriptor_offset, kVolumeDescriptorSize, state->size)) {
      return Error::kErrorReadError;
    }
@@ -35221,7 +35507,7 @@ index 46220c7..b32e1cf 100644
    state->root_sector = memory::load<uint32_t>(fs_ptr + 20);
    state->root_size = memory::load<uint32_t>(fs_ptr + 24);
    if (state->root_size < kMinimumRootDirectorySize ||
-@@ -143,7 +206,9 @@ bool DiscImageDevice::VerifyMagic(ParseState* state, size_t offset) {
+@@ -143,7 +187,9 @@ bool DiscImageDevice::VerifyMagic(ParseState* state, size_t offset) {
    }
  
    // Simple check to see if the given offset contains the magic value.
@@ -35232,7 +35518,7 @@ index 46220c7..b32e1cf 100644
  }
  
  DiscImageDevice::Error DiscImageDevice::ReadAllEntries(ParseState* state,
-@@ -222,10 +287,13 @@ bool DiscImageDevice::ReadEntry(ParseState* state, const uint8_t* buffer, size_t
+@@ -222,10 +268,13 @@ bool DiscImageDevice::ReadEntry(ParseState* state, const uint8_t* buffer, size_t
            !RangeWithin(folder_offset, length, state->size)) {
          return false;
        }
