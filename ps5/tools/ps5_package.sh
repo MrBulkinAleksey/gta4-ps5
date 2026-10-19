@@ -108,5 +108,12 @@ cp -r "$repo/LibertyRecompLib/font_atlases" "$app/Resources/"
 cp -r "$repo/LibertyRecompLib/private/button_prompts/." "$app/Resources/button_prompts/"
 [[ -f "$repo/LibertyRecompLib/aes_key.bin" ]] && cp "$repo/LibertyRecompLib/aes_key.bin" "$app/Resources/"
 cp "$ps5dir/package/install/README.txt" "$app/install/README.txt"
+# The installer payload (ps5/payload/installer): the app sends it to the
+# console's payload loader on port 9021 to install the game at the drive's
+# full speed.
+zlib=${ZLIB:-$tri/.deps/native/zlib/root/usr}
+make -s -C "$ps5dir/payload/installer" PS5_PAYLOAD_SDK="$sdk_root" ZLIB="$zlib"
+mkdir -p "$app/payloads"
+cp "$ps5dir/payload/installer/gta4-ps5-installer.elf" "$app/payloads/"
 "$tool" self --inspect --file "$app/eboot.bin" | tail -3
 echo "==> $app ($(stat -c %s "$app/eboot.bin") bytes)"

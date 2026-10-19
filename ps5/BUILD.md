@@ -51,5 +51,6 @@ The app ends up in `out/ps5/ps5-app/PPSA94004`. Copy it to `/data/homebrew/` on 
 | `glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/` | the hub |
 | `glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/` | trophies, the FPS counter and watermark, 360 save import, sound |
 | `glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp` | where the game and the hub meet |
+| `ps5/payload/installer/` | the installer payload: the app sends it to the payload loader on port 9021 to install the game at full speed (built by `ps5_package.sh`) |
 | `ps5/package/` | home screen icon, hub art and music, the button pictures |
 | `ps5/tools/` | packaging, the button pictures, the hub preview |

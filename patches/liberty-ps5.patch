@@ -761,7 +761,7 @@ index 0000000..c60abf2
 +
 +}  // namespace gta4::install::io
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
-index 84a1723..9de044a 100644
+index 84a1723..7a35fee 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
 @@ -31,7 +31,10 @@
@@ -986,7 +986,57 @@ index 84a1723..9de044a 100644
  }
  
  std::optional<PreparedSource> PrepareGameSource(const std::filesystem::path& path,
-@@ -1026,8 +1069,15 @@ Result Install(const Selection& selection, const std::filesystem::path& install_
+@@ -881,6 +924,49 @@ bool ValidateInstalledPair(const std::filesystem::path& game_root, std::string&
+   return ParseXex(patch_bytes, patch, reason) && ValidatePatch(base, patch, patch_bytes, reason);
+ }
+ 
++// [ps5 port] Every file under `root` in `destination`, at its size (an
++// install written by someone else, checked before it's used).
++bool MatchesTree(rex::filesystem::Entry* root, const std::filesystem::path& destination,
++                 std::string& error) {
++  struct Pending {
++    rex::filesystem::Entry* entry;
++    std::filesystem::path relative_path;
++  };
++  std::vector<Pending> pending;
++  pending.push_back({root, {}});
++  size_t visited = 0;
++  while (!pending.empty()) {
++    Pending current = std::move(pending.back());
++    pending.pop_back();
++    if (++visited > kMaximumTreeEntries) {
++      error = "The source contains an unexpectedly large directory tree.";
++      return false;
++    }
++    if (IsDirectory(current.entry)) {
++      for (const auto& child : current.entry->children()) {
++        auto component = SafeComponent(child->name());
++        if (!component) {
++          error = "The source contains an unsafe path component.";
++          return false;
++        }
++        pending.push_back({child.get(), current.relative_path / *component});
++      }
++      continue;
++    }
++    std::error_code fs_error;
++    const auto size = std::filesystem::file_size(destination / current.relative_path, fs_error);
++    if (fs_error) {
++      error = current.relative_path.generic_string() + " is missing from the installed game.";
++      return false;
++    }
++    if (size != current.entry->size()) {
++      error = current.relative_path.generic_string() + " wasn't copied whole.";
++      return false;
++    }
++  }
++  return true;
++}
++
+ }  // namespace
+ 
+ const char* EpisodeDirectory(Episode episode) {
+@@ -1026,8 +1112,15 @@ Result Install(const Selection& selection, const std::filesystem::path& install_
      result.error = "Could not create the staging directory: " + fs_error.message();
      return result;
    }
@@ -1003,7 +1053,7 @@ index 84a1723..9de044a 100644
      result.error = fs_error
                         ? "Could not determine available installation space: " + fs_error.message()
                         : "There is not enough free space for the GTA IV installation.";
-@@ -1069,7 +1119,8 @@ Result Install(const Selection& selection, const std::filesystem::path& install_
+@@ -1069,7 +1162,8 @@ Result Install(const Selection& selection, const std::filesystem::path& install_
        if (!CopyHostFile(selection.update_source, sibling_patch, progress, result.error)) {
          return fail(std::move(result.error));
        }
@@ -1013,6 +1063,158 @@ index 84a1723..9de044a 100644
        return fail(std::move(result.error));
      }
    }
+@@ -1134,4 +1228,113 @@ Result Install(const Selection& selection, const std::filesystem::path& install_
+   }
+ }
+ 
++bool PlanInstall(const Selection& selection, InstallPlan& plan, std::string& error) {
++  try {
++    plan = {};
++    if (selection.game_source.empty() || selection.update_source.empty() ||
++        !selection.dlc_sources.empty()) {
++      error = "Only the game and its title update can be installed this way.";
++      return false;
++    }
++    const GameSourceInspection inspection = InspectGameSource(selection.game_source);
++    if (!inspection.supported()) {
++      error = inspection.rejection_reason;
++      return false;
++    }
++    auto game = PrepareGameSource(selection.game_source, error);
++    if (!game) {
++      return false;
++    }
++    auto update = PrepareUpdateSource(selection.update_source, game->xex_info, error);
++    if (!update) {
++      return false;
++    }
++    uint64_t total = 0;
++    if (!TreeSize(game->payload_root, total, error)) {
++      return false;
++    }
++    plan.disc_root = game->xex.relative_path.parent_path().generic_string();
++    plan.update_package = !update->raw_patch;
++    if (plan.update_package) {
++      plan.update_root = update->patch.relative_path.parent_path().generic_string();
++      plan.update_xexp = update->patch.relative_path.generic_string();
++      if (!TreeSize(update->payload_root, total, error)) {
++        return false;
++      }
++    }
++    const auto aes_key_path = FindRpfAesKey();
++    if (!aes_key_path || !ReadHostFile(*aes_key_path, plan.aes_key, error) ||
++        plan.aes_key.size() != 32) {
++      error = "The bundled GTA IV RPF AES key is missing.";
++      return false;
++    }
++    if (!CheckedAdd(update->patch_bytes.size(), total) || !CheckedAdd(plan.aes_key.size(), total)) {
++      error = "The installation size exceeds the supported range.";
++      return false;
++    }
++    plan.copy_bytes = total;
++    return true;
++  } catch (const std::exception& exception) {
++    error = "The selected source couldn't be read: " + std::string(exception.what());
++    return false;
++  }
++}
++
++Result FinishInstall(const Selection& selection, const std::filesystem::path& install_root) {
++  const auto staging_root = install_root / ".install-staging";
++  const auto staged_game = staging_root / "game";
++  auto fail = [&](std::string error) {
++    std::error_code cleanup_error;
++    std::filesystem::remove_all(staging_root, cleanup_error);
++    return Result{false, std::move(error)};
++  };
++  try {
++    Result result;
++    auto game = PrepareGameSource(selection.game_source, result.error);
++    if (!game) {
++      return fail(std::move(result.error));
++    }
++    auto update = PrepareUpdateSource(selection.update_source, game->xex_info, result.error);
++    if (!update) {
++      return fail(std::move(result.error));
++    }
++    // the source's files and the update's, each whole; the key; the archives
++    // unpacked beside themselves
++    if (!MatchesTree(game->payload_root, staged_game, result.error) ||
++        (!update->raw_patch &&
++         !MatchesTree(update->payload_root, staged_game / "update", result.error))) {
++      return fail("The installed game isn't complete: " + result.error);
++    }
++    std::error_code fs_error;
++    if (std::filesystem::file_size(staged_game / "aes_key.bin", fs_error) != 32 || fs_error) {
++      return fail("The installed game has no archive key.");
++    }
++    for (const char* unpacked : {"common", "xbox360", "audio"}) {
++      if (!std::filesystem::is_directory(staged_game / unpacked, fs_error)) {
++        return fail("The game's archives weren't unpacked.");
++      }
++    }
++    // (default.xex and default.xexp checked byte for byte against the supported
++    // release; a look through the whole folder, archives unpacked, would add nothing)
++    std::string staged_reason;
++    if (!ValidateInstalledPair(staged_game, staged_reason)) {
++      return fail("The staged game failed final validation: " + staged_reason);
++    }
++    if (!WriteManifest(staged_game, game->xex_info, game->xex_bytes, update->patch_bytes,
++                       result.error)) {
++      return fail(std::move(result.error));
++    }
++    std::vector<PublishItem> publish;
++    publish.push_back({staged_game, install_root / "game", install_root / ".game-backup"});
++    if (!PublishDirectories(publish, result.error)) {
++      return fail(std::move(result.error));
++    }
++    std::filesystem::remove_all(staging_root, fs_error);
++    result.success = true;
++    return result;
++  } catch (const std::exception& exception) {
++    return fail("The installed game couldn't be checked: " + std::string(exception.what()));
++  }
++}
++
+ }  // namespace gta4::install
+diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.h b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.h
+index 7e9c391..fc7d2d7 100644
+--- a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.h
++++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <atomic>
++#include <cstdint>
+ #include <filesystem>
+ #include <string>
+ #include <vector>
+@@ -43,6 +44,25 @@ Result VerifyInstall(const std::filesystem::path& game_root,
+ Result Install(const Selection& selection, const std::filesystem::path& install_root,
+                Progress& progress);
+ 
++// [ps5 port] An install of the game and its title update whose writing is
++// done somewhere else: on the PS5 a title may only write slowly, so the
++// installer payload writes it (ps5/payload/installer). PlanInstall checks the
++// sources as Install() does and says what to copy; the writer puts the game in
++// <install_root>/.install-staging/game the way Install() does (the source's
++// files, the update's files in update/, default.xexp beside default.xex,
++// aes_key.bin, the archives unpacked); FinishInstall checks that against the
++// sources, writes the manifest and moves it into place.
++struct InstallPlan {
++  std::string disc_root;         // the source's folder with default.xex ("": its top), '/' between
++  bool update_package = false;   // Title Update 8 is a content package (else a bare .xexp)
++  std::string update_root;       // the package's folder with default.xexp
++  std::string update_xexp;       // default.xexp's path in the package
++  uint64_t copy_bytes = 0;       // what's copied before the archives are unpacked
++  std::vector<uint8_t> aes_key;  // the archives' key (32 bytes)
++};
++bool PlanInstall(const Selection& selection, InstallPlan& plan, std::string& error);
++Result FinishInstall(const Selection& selection, const std::filesystem::path& install_root);
++
+ const char* EpisodeDirectory(Episode episode);
+ 
+ }  // namespace gta4::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
 index 9854392..55fc045 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
@@ -20755,22 +20957,34 @@ index 0000000..a631ae4
 +*/
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
 new file mode 100644
-index 0000000..8e3f0d4
+index 0000000..ae4d537
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
-@@ -0,0 +1,430 @@
+@@ -0,0 +1,954 @@
 +// GTA IV PS5 - the hub's check of the game's files and its installer (see
-+// hub_install.h). The install itself is LibertyRecomp's (install/).
++// hub_install.h). The install itself is LibertyRecomp's (install/), written by
++// the installer payload (ps5/payload/installer) when a payload loader runs it.
 +#include "hub_install.h"
 +
 +#include <algorithm>
 +#include <cctype>
++#include <cerrno>
 +#include <chrono>
 +#include <condition_variable>
 +#include <cstdio>
++#include <cstdlib>
 +#include <cstring>
++#include <ctime>
 +#include <fstream>
++#include <iterator>
 +#include <thread>
++
++#include <arpa/inet.h>
++#include <netinet/in.h>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <sys/time.h>
++#include <unistd.h>
 +
 +#include <rex/logging.h>
 +
@@ -20949,28 +21163,517 @@ index 0000000..8e3f0d4
 +  return uint64_t(space.available);
 +}
 +
++// ------------------------------------------------------------------ the installer payload
++
++namespace {
++
++using Clock = std::chrono::steady_clock;
++
++// The installer payload, packaged in the app (ps5/payload/installer).
++constexpr const char* kPayloadElf = "payloads/gta4-ps5-installer.elf";
++// The install's job files, in the install root. The payload looks for them at
++// <the app's real folder>/UserData/LibertyRecomp/.install-job.
++constexpr const char* kJobDir = ".install-job";
++
++// `path` as a path inside the app's folder ("install/x.iso"), or "" when it
++// isn't in it.
++std::string InsideApp(const fs::path& app, const fs::path& path) {
++  const fs::path rel = path.lexically_normal().lexically_relative(app.lexically_normal());
++  if (rel.empty() || rel.is_absolute()) return {};
++  const std::string first = rel.begin()->string();
++  if (first == ".." || first == ".") return {};
++  return rel.generic_string();
++}
++
++bool ReadText(const fs::path& path, std::string& out) {
++  std::ifstream in(path, std::ios::binary);
++  if (!in) return false;
++  out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
++  return true;
++}
++
++// Whole, at once: written beside, then renamed over (never read half done).
++bool WriteText(const fs::path& path, const std::string& text) {
++  const fs::path tmp = path.string() + ".tmp";
++  {
++    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
++    if (!out.write(text.data(), std::streamsize(text.size()))) return false;
++  }
++  std::error_code ec;
++  fs::rename(tmp, path, ec);
++  return !ec;
++}
++
++std::string Field(const std::string& text, const char* key) {
++  const std::string k = std::string(key) + "=";
++  size_t at = 0;
++  while (at < text.size()) {
++    size_t end = text.find('\n', at);
++    if (end == std::string::npos) end = text.size();
++    if (text.compare(at, k.size(), k) == 0) return text.substr(at + k.size(), end - at - k.size());
++    at = end + 1;
++  }
++  return {};
++}
++
++uint64_t Number(const std::string& text, const char* key) {
++  return std::strtoull(Field(text, key).c_str(), nullptr, 10);
++}
++
++// Seconds since `path` was written (a lot when it isn't there).
++double Age(const fs::path& path) {
++  struct stat st {};
++  if (::stat(path.c_str(), &st) != 0) return 1e9;
++  return std::difftime(std::time(nullptr), st.st_mtime);
++}
++
++// What the payload last wrote to status.txt.
++struct PayloadStatus {
++  std::string token, phase, error, file, folder, drive;
++  int step = 0;
++  uint64_t copy_done = 0, copy_total = 0, unpack_done = 0, unpack_total = 0, unpack_guess = 0;
++  uint64_t file_size = 0, read_bytes = 0, read_ns = 0, write_bytes = 0, write_ns = 0, free = 0, beat = 0;
++  float seconds = 0;
++  // still at it (the phases before done, failed or stopped)
++  bool Working() const { return phase != "done" && phase != "failed" && phase != "stopped"; }
++};
++
++bool ReadStatus(const fs::path& dir, PayloadStatus& s) {
++  std::string text;
++  if (!ReadText(dir / "status.txt", text)) return false;
++  s.token = Field(text, "token");
++  s.phase = Field(text, "phase");
++  s.error = Field(text, "error");
++  s.file = Field(text, "file");
++  s.folder = Field(text, "folder");
++  s.drive = Field(text, "drive");
++  s.step = int(Number(text, "step"));
++  s.copy_done = Number(text, "copy_done");
++  s.copy_total = Number(text, "copy_total");
++  s.unpack_done = Number(text, "unpack_done");
++  s.unpack_total = Number(text, "unpack_total");
++  s.unpack_guess = Number(text, "unpack_guess");
++  s.file_size = Number(text, "file_size");
++  s.read_bytes = Number(text, "read_bytes");
++  s.read_ns = Number(text, "read_ns");
++  s.write_bytes = Number(text, "write_bytes");
++  s.write_ns = Number(text, "write_ns");
++  s.free = Number(text, "free");
++  s.beat = Number(text, "beat");
++  s.seconds = std::strtof(Field(text, "seconds").c_str(), nullptr);
++  return !s.token.empty() && !s.phase.empty();
++}
++
++// The payload to the console's payload loader (etaHEN, elfldr or any other)
++// on 127.0.0.1:9021, which runs it as a process of its own.
++bool SendToLoader(const std::string& elf, int& err) {
++  err = 0;
++  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
++  if (fd < 0) {
++    err = errno;
++    return false;
++  }
++  timeval limit{};
++  limit.tv_sec = 3;
++  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &limit, sizeof(limit));
++  ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &limit, sizeof(limit));
++#ifdef SO_NOSIGPIPE
++  const int one = 1;  // (a loader that hangs up mustn't end the app)
++  ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
++#endif
++#ifdef MSG_NOSIGNAL
++  const int flags = MSG_NOSIGNAL;
++#else
++  const int flags = 0;
++#endif
++  sockaddr_in sa{};
++  sa.sin_family = AF_INET;
++  sa.sin_port = htons(9021);
++  sa.sin_addr.s_addr = htonl(0x7F000001);
++  if (::connect(fd, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) != 0) {
++    err = errno;
++    ::close(fd);
++    return false;
++  }
++  size_t at = 0;
++  while (at < elf.size()) {
++    const ssize_t n = ::send(fd, elf.data() + at, elf.size() - at, flags);
++    if (n < 0 && errno == EINTR) continue;
++    if (n <= 0) {
++      err = errno;
++      ::close(fd);
++      return false;
++    }
++    at += size_t(n);
++  }
++  ::shutdown(fd, SHUT_WR);
++  ::close(fd);
++  return true;
++}
++
++std::string Hex(const std::vector<uint8_t>& bytes) {
++  static constexpr char kDigits[] = "0123456789abcdef";
++  std::string out;
++  for (const uint8_t b : bytes) out += kDigits[b >> 4], out += kDigits[b & 15];
++  return out;
++}
++
++std::string Seconds(uint64_t ns) {
++  char buf[32];
++  std::snprintf(buf, sizeof(buf), "%.0f s", double(ns) / 1e9);
++  return buf;
++}
++
++}  // namespace
++
 +// ------------------------------------------------------------------ the job
 +
 +struct Job::Impl {
-+  using Clock = std::chrono::steady_clock;
++  enum class Outcome { kUnavailable, kDone, kFailed, kStopped, kLeft };
 +
 +  fs::path app, root;
 +  Sources found;
 +  mutable std::mutex m;
 +  std::condition_variable cv;
 +  Status st;
-+  bool go = false, quit = false;
++  bool go = false;
++  std::atomic<bool> quit{false}, stop{false};
 +  gta4::install::Progress progress;
 +  Clock::time_point started;
 +  std::thread thread, monitor;
 +  std::atomic<bool> monitoring{false};
-+  std::string where;  // the install drive, for the screen
++  Drive drive;
++  std::string where;    // the install drive, for the screen (installing in the app)
++  std::string failure;  // why the payload's install failed
++  std::string token;    // the payload's job
++
++  fs::path JobDir() const { return root / kJobDir; }
 +
 +  void Set(Phase phase, std::string problem = {}) {
 +    std::lock_guard lock(m);
 +    st.phase = phase;
 +    st.problem = std::move(problem);
++    st.stopping = false;
 +  }
++
++  // The job's files, once it's over ("running" stays: a payload's lock).
++  void ClearJob() {
++    std::error_code ec;
++    for (const char* name : {"job.txt", "job.txt.tmp", "job.taken", "cancel", "cancel.tmp", "status.txt", "status.tmp"})
++      fs::remove(JobDir() / name, ec);
++  }
++
++  // A job no payload has taken yet, taken back (job.txt deleted). False when one
++  // took it first (it renames job.txt to job.taken), so exactly one of them has it.
++  bool TakeBack() {
++    std::error_code ec;
++    return fs::remove(JobDir() / "job.txt", ec) && !ec;
++  }
++
++  // A payload at work right now (its status written in the last 15 s).
++  bool PayloadWorking(PayloadStatus& s) const {
++    return ReadStatus(JobDir(), s) && s.Working() && Age(JobDir() / "status.txt") <= 15;
++  }
++
++  // ---------------------------------------------- with the installer payload
++
++  // How fast it's going, from the payload's numbers over the last second or so.
++  struct Rates {
++    Clock::time_point at{}, logged{};
++    uint64_t written = 0, rb = 0, rns = 0, wb = 0, wns = 0;
++    float rate = 0, read = 0, write = 0, shown = 0;
++  };
++
++  void Show(const PayloadStatus& s, Rates& r) {
++    const auto now = Clock::now();
++    const uint64_t written = s.copy_done + s.unpack_done;
++    const uint64_t unpack = std::max(s.unpack_total, s.unpack_guess);
++    // two steps: the disc image's files copied (45%), the archives unpacked
++    // (their total grows as each one is opened, so it starts as a guess)
++    float f = 0;
++    if (s.step >= 2) {
++      f = 0.45f + 0.55f * float(double(s.unpack_done) / double(std::max<uint64_t>(unpack, 1)));
++    } else if (s.copy_total) {
++      f = 0.45f * float(double(s.copy_done) / double(s.copy_total));
++    }
++    r.shown = std::max(r.shown, std::min(f, 0.99f));
++    if (r.at == Clock::time_point{}) {
++      r.at = now, r.written = written, r.rb = s.read_bytes, r.rns = s.read_ns, r.wb = s.write_bytes, r.wns = s.write_ns;
++    }
++    const float dt = std::chrono::duration<float>(now - r.at).count();
++    if (dt >= 1.0f) {
++      const float w = float(double(written - std::min(written, r.written)) / dt);
++      r.rate = r.rate > 0 ? r.rate * 0.6f + w * 0.4f : w;
++      // (bytes over the time spent at it: one thread's speed)
++      if (s.read_ns > r.rns) r.read = float(double(s.read_bytes - std::min(s.read_bytes, r.rb)) / (double(s.read_ns - r.rns) / 1e9));
++      if (s.write_ns > r.wns) r.write = float(double(s.write_bytes - std::min(s.write_bytes, r.wb)) / (double(s.write_ns - r.wns) / 1e9));
++      r.at = now, r.written = written, r.rb = s.read_bytes, r.rns = s.read_ns, r.wb = s.write_bytes, r.wns = s.write_ns;
++    }
++    Drive d;
++    d.type = s.drive.substr(0, s.drive.find(' '));
++    std::lock_guard lock(m);
++    st.step = s.step >= 2 ? 2 : 1;
++    st.progress = r.shown;
++    st.written = written;
++    st.seconds = std::chrono::duration<float>(now - started).count();
++    st.rate = r.rate;
++    st.read_rate = r.read;
++    st.write_rate = r.write;
++    if (!d.type.empty()) st.drive = d.Name();
++    // time left: what's still to write, at the speed of late
++    st.eta = -1;
++    if (s.copy_total && r.rate > 0 && s.seconds > 8) {
++      const uint64_t expected = s.copy_total + (unpack ? unpack : s.copy_total * 23 / 20);
++      st.eta = float(double(expected - std::min(expected, written)) / double(r.rate));
++    }
++    st.diag_file = s.file.empty() ? std::string() : "Writing " + s.file + " (" + Bytes(s.file_size) + ")";
++    st.diag_time = "Installer payload  \xC2\xB7  " + s.phase + "  \xC2\xB7  reading " + Seconds(s.read_ns) +
++                   ", writing " + Seconds(s.write_ns);
++    st.diag_drive = s.folder + "  \xC2\xB7  " + (s.drive.empty() ? std::string("drive not known") : s.drive) +
++                    "  \xC2\xB7  " + Bytes(s.free) + " free";
++    if (now - r.logged >= std::chrono::seconds(10)) {
++      r.logged = now;
++      REXLOG_INFO("PS5 installer: payload {} step {} {:.1f}%: copied {} of {}, unpacked {} of {}, {:.0f} MB/s now "
++                  "(read {:.0f} / write {:.0f} MB/s per thread); {}",
++                  s.phase, st.step, st.progress * 100, Bytes(s.copy_done), Bytes(s.copy_total), Bytes(s.unpack_done),
++                  Bytes(unpack), double(r.rate) / double(1 << 20), double(r.read) / double(1 << 20),
++                  double(r.write) / double(1 << 20), st.diag_file);
++    }
++  }
++
++  // Follows the payload's status until it's done, failed or stopped. Stopping
++  // (Cancel) is passed on as the cancel file.
++  Outcome Follow(const std::string& token, bool attached) {
++    const auto sent = Clock::now();
++    auto changed = sent;
++    uint64_t beat = 0;
++    bool running = attached, asked = false;
++    Rates rates;
++    for (;;) {
++      std::this_thread::sleep_for(std::chrono::milliseconds(250));
++      if (quit.load()) return Outcome::kLeft;  // (the app is closing: the payload carries on)
++      const auto now = Clock::now();
++      if (stop.load() && !asked) {
++        asked = true;
++        // (not taken yet: taken back, and that's the end of it)
++        if (!running && TakeBack()) return Outcome::kStopped;
++        WriteText(JobDir() / "cancel", "stop\n");
++        REXLOG_INFO("PS5 installer: asked the payload to stop");
++        std::lock_guard lock(m);
++        st.stopping = true;
++      }
++      PayloadStatus s;
++      if (ReadStatus(JobDir(), s) && s.token == token) {
++        if (!running) {
++          REXLOG_INFO("PS5 installer: the payload started after {:.1f} s",
++                      std::chrono::duration<float>(now - sent).count());
++        }
++        running = true;
++        if (s.beat != beat) beat = s.beat, changed = now;
++        if (s.phase == "done") {
++          Show(s, rates);
++          return Outcome::kDone;
++        }
++        if (s.phase == "stopped") return Outcome::kStopped;
++        if (s.phase == "failed") {
++          failure = s.error.empty() ? std::string("The installer payload stopped with an error.") : s.error;
++          return Outcome::kFailed;
++        }
++        if (s.phase == "cleaning") {
++          std::lock_guard lock(m);
++          st.stopping = true;
++        } else if (!asked) {
++          Show(s, rates);
++        }
++      }
++      if (!running && now - sent > std::chrono::seconds(15)) {
++        // Not started: the job taken back (one that starts late finds none), and the
++        // app installs by itself. Taken but quiet: given longer.
++        if (TakeBack()) return Outcome::kUnavailable;
++        if (now - sent > std::chrono::seconds(45)) {
++          WriteText(JobDir() / "cancel", "stop\n");
++          failure = "The installer payload didn't start.";
++          return Outcome::kFailed;
++        }
++      }
++      if (running && now - changed > std::chrono::seconds(30)) {
++        failure = "The installer payload stopped answering.";
++        return Outcome::kFailed;
++      }
++    }
++  }
++
++  // The install, written by the payload. kUnavailable (and why) when it can't
++  // be used: then the app installs by itself.
++  Outcome WithPayload(std::string& why_not) {
++    // (the payload finds the job at <the app's real folder>/UserData/LibertyRecomp)
++    if (root.lexically_normal() != (app / "UserData" / "LibertyRecomp").lexically_normal()) {
++      why_not = "The install folder isn't where the installer payload looks for it";
++      return Outcome::kUnavailable;
++    }
++    const std::string image = InsideApp(app, found.disc), update = InsideApp(app, found.update),
++                      staging = InsideApp(app, root / ".install-staging");
++    if (image.empty() || update.empty() || staging.empty()) {
++      why_not = "The disc image isn't in the app's folder";
++      return Outcome::kUnavailable;
++    }
++    std::string elf;
++    if (!ReadText(app / kPayloadElf, elf) || elf.size() < 64 || elf.compare(0, 4, "\x7F" "ELF") != 0) {
++      why_not = "The installer payload is missing from the app";
++      return Outcome::kUnavailable;
++    }
++    gta4::install::Selection selection;
++    selection.game_source = found.disc;
++    selection.update_source = found.update;
++    gta4::install::InstallPlan plan;
++    if (!gta4::install::PlanInstall(selection, plan, failure)) return Outcome::kFailed;
++
++    // the job (an earlier one's files gone first; never while a payload is at it)
++    const fs::path dir = JobDir();
++    std::error_code ec;
++    fs::create_directories(dir, ec);
++    if (PayloadStatus busy; PayloadWorking(busy)) {
++      failure = "An earlier install is still running. Wait for it to finish, then try again.";
++      return Outcome::kFailed;
++    }
++    ClearJob();
++    char made[48];
++    std::snprintf(made, sizeof(made), "%lld-%lld", (long long)std::time(nullptr),
++                  (long long)(Clock::now().time_since_epoch().count() % 1000000));
++    token = made;
++    std::error_code kind_ec;
++    const std::string job =
++        "token=" + token + "\nkind=install\nstaging=" + staging + "\nimage=" + image +
++        "\nimage_kind=" + (fs::is_directory(found.disc, kind_ec) ? "folder" : "iso") +
++        "\ndisc_root=" + plan.disc_root + "\nupdate=" + update +
++        "\nupdate_kind=" + (plan.update_package ? "package" : "xexp") + "\nupdate_root=" + plan.update_root +
++        "\nupdate_xexp=" + plan.update_xexp + "\nkey=" + Hex(plan.aes_key) +
++        "\nneeded=" + std::to_string(SpaceNeeded(found.disc_bytes)) + "\nthreads=3\n";
++    if (!WriteText(dir / "job.txt", job)) {
++      why_not = "The install job couldn't be written";
++      return Outcome::kUnavailable;
++    }
++    int err = 0;
++    if (!SendToLoader(elf, err)) {
++      fs::remove(dir / "job.txt", ec);
++      REXLOG_WARN("PS5 installer: no payload loader answered on port 9021 (errno {})", err);
++      why_not = "No payload loader answered on port 9021";
++      return Outcome::kUnavailable;
++    }
++    REXLOG_INFO("PS5 installer: sent the installer payload ({} KB) to the payload loader on port 9021, job {}",
++                elf.size() / 1024, token);
++    {
++      std::lock_guard lock(m);
++      st.diag_time = "Starting the installer payload";
++    }
++    const Outcome outcome = Follow(token, false);
++    if (outcome == Outcome::kUnavailable) why_not = "The payload loader didn't start the installer";
++    return outcome;
++  }
++
++  // The payload's work checked against the disc image, and put in place.
++  void Finish(const std::string& token) {
++    {
++      std::lock_guard lock(m);
++      st.step = 3;
++      st.progress = std::max(st.progress, 0.99f);
++      st.eta = -1;
++      st.rate = 0;
++      st.stopping = false;
++      st.diag_file.clear();
++    }
++    gta4::install::Selection selection;
++    selection.game_source = found.disc;
++    selection.update_source = found.update;
++    const auto t0 = Clock::now();
++    // (the staging folder carries the token of the job that filled it)
++    std::string mark;
++    gta4::install::Result result;
++    if (!ReadText(root / ".install-staging" / ".token", mark) || mark != token) {
++      result.error = "The installed files aren't from this install. Press Cross to install again.";
++    } else {
++      result = gta4::install::FinishInstall(selection, root);
++    }
++    ClearJob();
++    {
++      std::lock_guard lock(m);
++      st.seconds = std::chrono::duration<float>(Clock::now() - started).count();
++    }
++    if (result.success) {
++      REXLOG_INFO("PS5 installer: done in {:.0f} s (checked and put in place in {:.1f} s)", st.seconds,
++                  std::chrono::duration<float>(Clock::now() - t0).count());
++      Set(Phase::kDone);
++    } else {
++      REXLOG_ERROR("PS5 installer: the installed game didn't check out: {}", result.error);
++      Set(Phase::kFailed, result.error);
++    }
++  }
++
++  void Conclude(Outcome outcome, const std::string& token) {
++    switch (outcome) {
++      case Outcome::kDone:
++        Finish(token);
++        break;
++      case Outcome::kFailed:
++        // (a payload that stopped answering may still be there: what it wrote is left
++        // to the next install, which empties the staging folder first)
++        REXLOG_ERROR("PS5 installer: failed: {}", failure);
++        ClearJob();
++        Set(Phase::kFailed, failure);
++        break;
++      case Outcome::kStopped:
++        REXLOG_INFO("PS5 installer: stopped");
++        ClearJob();
++        Set(Phase::kCancelled);
++        break;
++      case Outcome::kLeft:
++      case Outcome::kUnavailable:
++        break;
++    }
++  }
++
++  // An install from before: the app was closed while the payload worked. One
++  // still going is followed again; one that finished is checked and put in
++  // place. True when it took over.
++  bool Resume() {
++    const fs::path dir = JobDir();
++    std::string job;
++    PayloadStatus s;
++    if (!ReadText(dir / "job.taken", job) || !ReadStatus(dir, s) || s.token != Field(job, "token")) return false;
++    token = s.token;
++    std::error_code ec;
++    if (s.phase == "done") {
++      if (!fs::is_directory(root / ".install-staging" / "game", ec)) return false;
++      REXLOG_INFO("PS5 installer: the payload finished an install while the app was closed; finishing it");
++      {
++        std::lock_guard lock(m);
++        st.phase = Phase::kInstalling;
++        started = Clock::now();
++      }
++      Finish(token);
++      return true;
++    }
++    if (!s.Working() || Age(dir / "status.txt") > 15) return false;
++    if (s.phase == "cleaning") {
++      // (one that was stopped, still removing its files: waited for)
++      REXLOG_INFO("PS5 installer: waiting for an earlier install to finish removing its files");
++      for (int i = 0; i < 1200 && !quit.load(); ++i) {
++        std::this_thread::sleep_for(std::chrono::milliseconds(250));
++        if (!ReadStatus(dir, s) || s.phase != "cleaning" || Age(dir / "status.txt") > 15) break;
++      }
++      return false;
++    }
++    REXLOG_INFO("PS5 installer: an install from before is still going ({}); following it", s.phase);
++    {
++      std::lock_guard lock(m);
++      st.phase = Phase::kInstalling;
++      started = Clock::now() - std::chrono::milliseconds(int64_t(s.seconds * 1000));
++    }
++    Conclude(Follow(token, true), token);
++    return true;
++  }
++
++  // ---------------------------------------------- in the app (no payload loader)
 +
 +  // While installing: once a second, the numbers for the screen; every 10 s,
 +  // a line in the log. On its own thread, so the screen never waits on the
@@ -21067,50 +21770,7 @@ index 0000000..8e3f0d4
 +    }
 +  }
 +
-+  void Run() {
-+    REXLOG_INFO("PS5 installer: disc '{}', title update '{}'", found.disc.string(), found.update.string());
-+    if (found.disc.empty()) {
-+      Set(Phase::kProblem,
-+          "There's no disc image in the install folder. Copy your GTA IV disc image (.iso) into "
-+          "/data/homebrew/PPSA94004/install/ and press Triangle.");
-+      return;
-+    }
-+    const auto inspected = gta4::install::InspectGameSource(found.disc);
-+    if (!inspected.supported()) {
-+      Set(Phase::kProblem, "This disc image can't be used: " + inspected.rejection_reason +
-+                               "\nIt has to be the USA disc of GTA IV, the original release.");
-+      return;
-+    }
-+    {
-+      std::lock_guard lock(m);
-+      st.disc = gta4::install::FormatXexRegion(inspected.region) + "  \xC2\xB7  " + inspected.release_label;
-+    }
-+    if (found.update.empty()) {
-+      Set(Phase::kProblem,
-+          "Title Update 8 is missing. Copy TU_1A581VI_000000K000000.0000000000205 into the install folder, next "
-+          "to the disc image, and press Triangle.");
-+      return;
-+    }
-+    const Drive drive = DriveOf(root), disc_drive = DriveOf(found.disc);
-+    const uint64_t needed = SpaceNeeded(found.disc_bytes);
-+    if (drive.free && drive.free < needed) {
-+      Set(Phase::kProblem, "There isn't enough free space. The install needs about " + Bytes(needed) +
-+                               " and the drive has " + Bytes(drive.free) + " free.");
-+      return;
-+    }
-+    where = (drive.folder.empty() ? root.string() : drive.folder) + "  \xC2\xB7  " +
-+            (drive.type.empty() ? std::string("drive not known") : drive.type + " " + drive.device) + "  \xC2\xB7  " +
-+            Bytes(drive.free) + " free  \xC2\xB7  disc image on " +
-+            (disc_drive.type.empty() ? std::string("?") : disc_drive.type + " " + disc_drive.device);
-+    REXLOG_INFO("PS5 installer: installs to {}", where);
-+    Set(Phase::kReady);
-+    {
-+      std::unique_lock lock(m);
-+      cv.wait(lock, [this] { return go || quit; });
-+      if (quit) return;
-+      st.phase = Phase::kInstalling;
-+      started = Clock::now();
-+    }
++  void InApp() {
 +    {
 +      // how to write, for the drive it writes to (gta4_install_io.h): the
 +      // internal storage (ufs) past the file cache, three files at a time;
@@ -21146,6 +21806,69 @@ index 0000000..8e3f0d4
 +      Set(Phase::kFailed, result.error);
 +    }
 +  }
++
++  // ---------------------------------------------- the job
++
++  void Run() {
++    REXLOG_INFO("PS5 installer: disc '{}', title update '{}'", found.disc.string(), found.update.string());
++    if (found.disc.empty()) {
++      Set(Phase::kProblem,
++          "There's no disc image in the install folder. Copy your GTA IV disc image (.iso) into "
++          "/data/homebrew/PPSA94004/install/ and press Triangle.");
++      return;
++    }
++    const auto inspected = gta4::install::InspectGameSource(found.disc);
++    if (!inspected.supported()) {
++      Set(Phase::kProblem, "This disc image can't be used: " + inspected.rejection_reason +
++                               "\nIt has to be the USA disc of GTA IV, the original release.");
++      return;
++    }
++    {
++      std::lock_guard lock(m);
++      st.disc = gta4::install::FormatXexRegion(inspected.region) + "  \xC2\xB7  " + inspected.release_label;
++    }
++    if (found.update.empty()) {
++      Set(Phase::kProblem,
++          "Title Update 8 is missing. Copy TU_1A581VI_000000K000000.0000000000205 into the install folder, next "
++          "to the disc image, and press Triangle.");
++      return;
++    }
++    drive = DriveOf(root);
++    const Drive disc_drive = DriveOf(found.disc);
++    where = (drive.folder.empty() ? root.string() : drive.folder) + "  \xC2\xB7  " +
++            (drive.type.empty() ? std::string("drive not known") : drive.type + " " + drive.device) + "  \xC2\xB7  " +
++            Bytes(drive.free) + " free  \xC2\xB7  disc image on " +
++            (disc_drive.type.empty() ? std::string("?") : disc_drive.type + " " + disc_drive.device);
++    REXLOG_INFO("PS5 installer: installs to {}", where);
++    // an install from before: still going, or finished while the app was closed
++    if (Resume() || quit.load()) return;
++    // (an earlier try's files in the staging folder are removed first: they count as free)
++    const uint64_t needed = SpaceNeeded(found.disc_bytes);
++    if (drive.free && drive.free < needed && drive.free + FolderSize(root / ".install-staging") < needed) {
++      Set(Phase::kProblem, "There isn't enough free space. The install needs about " + Bytes(needed) +
++                               " and the drive has " + Bytes(drive.free) + " free.");
++      return;
++    }
++    Set(Phase::kReady);
++    {
++      std::unique_lock lock(m);
++      cv.wait(lock, [this] { return go || quit.load(); });
++      if (quit.load()) return;
++      st.phase = Phase::kInstalling;
++      started = Clock::now();
++    }
++    std::string why_not;
++    const Outcome outcome = WithPayload(why_not);
++    if (outcome != Outcome::kUnavailable) return Conclude(outcome, token);
++    if (stop.load()) return Conclude(Outcome::kStopped, token);
++    REXLOG_WARN("PS5 installer: {}; installing in the app instead", why_not);
++    {
++      std::lock_guard lock(m);
++      st.note = why_not + ", so the app is installing by itself. That's much slower.";
++      st.diag_time.clear();
++    }
++    InApp();
++  }
 +};
 +
 +Job::Job(const fs::path& app, const fs::path& install_root) : impl_(std::make_unique<Impl>()) {
@@ -21178,9 +21901,12 @@ index 0000000..8e3f0d4
 +  impl_->cv.notify_all();
 +}
 +
-+void Job::Cancel() { impl_->progress.cancel_requested = true; }
++void Job::Cancel() {
++  impl_->stop = true;
++  impl_->progress.cancel_requested = true;
++}
 +
-+// (only what the monitor last worked out: the screen never touches the drive)
++// (only what was last worked out: the screen never touches the drive)
 +Job::Status Job::Get() const {
 +  std::lock_guard lock(impl_->m);
 +  Status s = impl_->st;
@@ -21191,10 +21917,10 @@ index 0000000..8e3f0d4
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h
 new file mode 100644
-index 0000000..9b4cc89
+index 0000000..07ec1bb
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,118 @@
 +// GTA IV PS5 - the hub's check of the game's files, and its installer: the
 +// game is installed from the disc image and Title Update 8 in the app's
 +// install folder; after that it runs from UserData/LibertyRecomp/game.
@@ -21270,6 +21996,10 @@ index 0000000..9b4cc89
 +
 +// The installer's work, on a thread of its own: it checks the disc image
 +// right away (the USA disc, the original release), and installs once started.
++// The writing is done by the installer payload (ps5/payload/installer), sent to
++// the console's payload loader on port 9021: the PS5 lets a title write only
++// about a gigabyte quickly before slowing it to a few MB/s, and a payload
++// isn't held back. With no loader the app installs by itself (slowly).
 +class Job {
 + public:
 +  enum class Phase { kChecking, kReady, kProblem, kInstalling, kDone, kFailed, kCancelled };
@@ -21277,8 +22007,12 @@ index 0000000..9b4cc89
 +    Phase phase = Phase::kChecking;
 +    std::string disc;     // what the disc image is ("USA  ·  Retail 1.00")
 +    std::string problem;  // why it can't install, or why the install stopped
-+    int step = 0;         // installing: 1 copying from the disc image, 2 unpacking the archives
-+    float progress = 0;   // 0..1
++    // installing: 1 copying from the disc image, 2 unpacking the archives,
++    // 3 checking the installed game and putting it in place
++    int step = 0;
++    bool stopping = false;  // stopped: what was copied is being removed
++    std::string note;       // something to know about this install (no payload loader...)
++    float progress = 0;     // 0..1
 +    uint64_t written = 0;  // bytes so far
 +    float seconds = 0;     // since the install started
 +    float rate = 0;        // bytes a second, lately
@@ -21307,10 +22041,10 @@ index 0000000..9b4cc89
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
 new file mode 100644
-index 0000000..66b00e3
+index 0000000..1f433f7
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
-@@ -0,0 +1,330 @@
+@@ -0,0 +1,343 @@
 +// GTA IV PS5 - the hub's installer (see hub_ui.h, hub_install.h): START GAME
 +// opens it while the game isn't installed. It shows what's in install/ and
 +// the disc image's check, then installs with a progress bar. All on the
@@ -21466,8 +22200,8 @@ index 0000000..66b00e3
 +        Text(a_.display, 44, px, py, kText, "Ready");
 +        py += 72;
 +        py += Wrapped(a_.body, 22, px, py, pw, White(0.65f),
-+                      "Press Cross to install. It takes a while: keep the app open until it's done. Your disc image "
-+                      "isn't changed.") + 30;
++                      "Press Cross to install. Keep the app open until it's done. Your disc image isn't changed.") +
++              30;
 +        Text(a_.body_bold, 15, px, py, White(0.45f), "INSTALLS TO", 0, 3);
 +        const std::string folder = drive_.folder.empty() ? "/data/homebrew/PPSA94004/UserData" : drive_.folder;
 +        py += 30;
@@ -21513,11 +22247,18 @@ index 0000000..66b00e3
 +  std::snprintf(pct, sizeof(pct), "%d%%", done ? 100 : std::min(99, int(p * 100 + 0.0001f)));
 +  Text(a_.display, 150, 104, 300, kText, pct);
 +  // the step
-+  Text(a_.body_bold, 15, 112, 530, White(0.45f),
-+       done ? "ALL DONE" : st.step >= 2 ? "STEP 2 OF 2" : "STEP 1 OF 2", 0, 3);
-+  Text(a_.body_bold, 27, 112, 558, White(0.92f),
-+       done ? "The game's files are in place" : st.step >= 2 ? "Unpacking the game's archives"
-+                                                          : "Copying the game from your disc image");
++  const char* step = done ? "ALL DONE"
++                     : st.stopping ? "STOPPING"
++                     : st.step >= 3 ? "FINISHING"
++                     : st.step == 2 ? "STEP 2 OF 2"
++                                    : "STEP 1 OF 2";
++  const char* doing = done ? "The game's files are in place"
++                      : st.stopping ? "Removing what was copied"
++                      : st.step >= 3 ? "Checking the game and putting it in place"
++                      : st.step == 2 ? "Unpacking the game's archives"
++                                     : "Copying the game from your disc image";
++  Text(a_.body_bold, 15, 112, 530, White(0.45f), step, 0, 3);
++  Text(a_.body_bold, 27, 112, 558, White(0.92f), doing);
 +  // the bar
 +  const float bx = 112, by = 640, bw = 1696, bh = 12;
 +  Rect(bx, by, bw, bh, White(0.12f), bh * 0.5f);
@@ -21536,7 +22277,8 @@ index 0000000..66b00e3
 +  std::string left = install::Bytes(st.written) + " written";
 +  if (done) left = "Took " + Minutes(st.seconds > 0 ? st.seconds : 1);
 +  Text(a_.body, 21, bx, by + 40, White(0.6f), left);
-+  if (!done) {
++  // (stopping, or checking at the end: nothing more being written, no speed or time left)
++  if (!done && !st.stopping && st.step < 3) {
 +    std::string right;
 +    if (st.rate > 0) right = Rate(st.rate);
 +    if (st.eta >= 0) right += (right.empty() ? "" : "  \xC2\xB7  ") + std::string("About ") + Minutes(st.eta) + " left";
@@ -21549,8 +22291,13 @@ index 0000000..66b00e3
 +                    double(st.write_rate) / (1 << 20));
 +      Text(a_.body, 18, bx, by + 78, White(0.38f), std::string(io) + (st.drive.empty() ? "" : " to " + st.drive));
 +    }
-+    // the details, small: what it's writing, where the time goes, the drive
++    // something to know about this install (no payload loader: installing in the app)
 +    float dy = by + 112;
++    if (!st.note.empty()) {
++      Text(a_.body, 18, bx, dy, White(0.6f), Fit(a_.body, 18, st.note, bw));
++      dy += 34;
++    }
++    // the details, small: what it's writing, where the time goes, the drive
 +    for (const std::string* line : {&st.diag_file, &st.diag_time, &st.diag_drive}) {
 +      if (line->empty()) continue;
 +      Text(a_.body, 16, bx, dy, White(0.3f), Fit(a_.body, 16, *line, bw));

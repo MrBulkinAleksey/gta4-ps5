@@ -1,7 +1,8 @@
 // The hub preview's stand-in for hub_install.cpp (no game, no runtime).
 // HUB_INSTALLED=0: the game isn't installed (START GAME opens the installer).
-// HUB_INSTALL=checking|ready|problem|installing|unpacking|done|failed: the
-// installer's state to show.
+// HUB_INSTALL=checking|ready|problem|installing|unpacking|finishing|stopping|
+// inapp|done|failed: the installer's state to show (inapp: installing without
+// the installer payload, no loader on port 9021).
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -65,20 +66,29 @@ Job::Job(const fs::path& app, const fs::path&) : impl_(std::make_unique<Impl>())
     impl_->found.update.clear();
     s.problem = "Title Update 8 is missing. Copy TU_1A581VI_000000K000000.0000000000205 into the install folder, next "
                 "to the disc image, and press Triangle.";
-  } else if (k == "installing" || k == "unpacking") {
+  } else if (k == "installing" || k == "unpacking" || k == "finishing" || k == "stopping" || k == "inapp") {
     s.phase = Phase::kInstalling;
-    s.step = k == "installing" ? 1 : 2;
-    s.progress = k == "installing" ? 0.31f : 0.72f;
-    s.written = k == "installing" ? 4724464025ull : 11811160064ull;
-    s.seconds = 300;
-    s.rate = 214.0f * (1 << 20);
-    s.eta = 410;
+    s.step = k == "unpacking" ? 2 : k == "finishing" ? 3 : 1;
+    s.stopping = k == "stopping";
+    s.progress = k == "unpacking" ? 0.72f : k == "finishing" ? 0.99f : 0.31f;
+    s.written = k == "unpacking" ? 11811160064ull : k == "finishing" ? 17179869184ull : 4724464025ull;
+    s.seconds = 140;
+    s.rate = k == "inapp" ? 4.0f * (1 << 20) : 412.0f * (1 << 20);
+    s.eta = k == "finishing" ? -1 : k == "inapp" ? 2900 : 95;
     s.read_rate = 1650.0f * (1 << 20);
-    s.write_rate = 240.0f * (1 << 20);
-    s.drive = "an exFAT drive";
-    s.diag_file = "Writing audio.rpf (2.9 GB)";
-    s.diag_time = "Time spent: reading 12 s, writing 210 s, flushing 3 s (40), sizing files 40 s  \xC2\xB7  312.0 MB memory free";
-    s.diag_drive = "/mnt/usb0/homebrew/PPSA94004/UserData/LibertyRecomp  \xC2\xB7  exfatfs /dev/da0s1  \xC2\xB7  412.0 GB free  \xC2\xB7  disc image on exfatfs /dev/da0s1";
+    s.write_rate = k == "inapp" ? 2.0f * (1 << 20) : 520.0f * (1 << 20);
+    s.drive = "internal storage";
+    if (k == "inapp") {
+      s.note = "No payload loader answered on port 9021, so the app is installing by itself. That's much slower.";
+      s.diag_file = "Writing bronx_w.img (52 MB)";
+      s.diag_time = "Time spent: reading 2 s, writing 289 s, flushing 0 s (228), sizing files 0 s  \xC2\xB7  298 MB memory free";
+      s.diag_drive = "/app0/UserData/LibertyRecomp  \xC2\xB7  drive not known  \xC2\xB7  0 KB free  \xC2\xB7  disc image on ?";
+    } else if (k != "finishing") {
+      s.diag_file = k == "unpacking" ? "Writing bronx_e.img (61 MB)" : "Writing audio.rpf (2.9 GB)";
+      s.diag_time = "Installer payload  \xC2\xB7  " + std::string(k == "unpacking" ? "unpacking" : "copying") +
+                    "  \xC2\xB7  reading 9 s, writing 31 s";
+      s.diag_drive = "/data/homebrew/PPSA94004  \xC2\xB7  ufs /dev/ssd0.user  \xC2\xB7  412.0 GB free";
+    }
   } else if (k == "done") {
     s.phase = Phase::kDone;
     s.progress = 1;

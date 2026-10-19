@@ -8,4 +8,9 @@ second file is its Title Update 8. Press START GAME in the app and it
 installs the game from them (about 17 GB free needed). After that you can
 delete both.
 
+The app hands the install to a small payload it sends to your payload
+loader on port 9021 (etaHEN, elfldr or any other), which writes at the
+drive's full speed. With no loader running, the app installs by itself,
+which is much slower.
+
 No game files come with this app: you need your own copy of the game.
