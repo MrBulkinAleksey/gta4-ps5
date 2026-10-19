@@ -38983,10 +38983,18 @@ index 87f9774..5acee30 100644
    if (allowed_types & Surface::kTypeFlag_AndroidNativeWindow) {
      auto* native_window = static_cast<ANativeWindow*>(GetNativeWindowHandle());
 diff --git a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
-index ac2d8dc..189422f 100644
+index ac2d8dc..87d9454 100644
 --- a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
-@@ -23,6 +23,9 @@
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <cstdio>
++#include <cstring>
+ #include <cstdlib>
+ #include <map>
+ #include <memory>
+@@ -23,6 +24,9 @@
  #include <rex/platform.h>
  #include <rex/ui/windowed_app.h>
  #include <rex/ui/windowed_app_context_sdl.h>
@@ -38996,7 +39004,7 @@ index ac2d8dc..189422f 100644
  
  REXCVAR_DEFINE_BOOL(diagnostics, false, "Diagnostics",
                      "Enable diagnostic logging and instrumentation");
-@@ -48,6 +51,10 @@ REXCVAR_DEFINE_STRING(diagnostics_categories, "", "Diagnostics",
+@@ -48,6 +52,10 @@ REXCVAR_DEFINE_STRING(diagnostics_categories, "", "Diagnostics",
  
  namespace {
  
@@ -39007,7 +39015,38 @@ index ac2d8dc..189422f 100644
  int RunWindowedApp(int argc, char** argv) {
    auto remaining = rex::cvar::Init(argc, argv);
    rex::cvar::ApplyEnvironment();
-@@ -73,8 +80,16 @@ int RunWindowedApp(int argc, char** argv) {
+@@ -56,10 +64,27 @@ int RunWindowedApp(int argc, char** argv) {
+   // native-probe instrumentation are gated on it; without this call the
+   // policy stays unconfigured and every log line is suppressed.
+   {
++    bool diagnostics = REXCVAR_GET(diagnostics);
++    std::string categories = REXCVAR_GET(diagnostics_categories);
++#if REX_PLATFORM_PS5
++    // [ps5 port] No command line on the PS5: the log is on unless the hub's
++    // Save Logs setting is off (read straight from its config file, as the
++    // policy has to be set before the config is loaded).
++    if (!diagnostics) {
++      bool save_logs = true;
++      if (std::FILE* f = std::fopen("/app0/UserData/LibertyRecomp/native.toml", "rb")) {
++        char line[512];
++        while (std::fgets(line, sizeof(line), f)) {
++          const char* key = std::strstr(line, "ps5_save_logs");
++          if (key && key == line + std::strspn(line, " \t") && std::strstr(key, "false")) save_logs = false;
++        }
++        std::fclose(f);
++      }
++      if (save_logs) diagnostics = true, categories = "logging";
++    }
++#endif
+     std::string diagnostics_error;
+-    if (!rex::diagnostics::Configure(REXCVAR_GET(diagnostics),
+-                                     REXCVAR_GET(diagnostics_categories),
+-                                     &diagnostics_error)) {
++    if (!rex::diagnostics::Configure(diagnostics, categories, &diagnostics_error)) {
+       std::fprintf(stderr, "diagnostics: %s\n", diagnostics_error.c_str());
+ #if REX_PLATFORM_ANDROID
+       // stderr is discarded on Android; without this the app just closes.
+@@ -73,8 +98,16 @@ int RunWindowedApp(int argc, char** argv) {
  
    int result;
    {
@@ -39024,7 +39063,7 @@ index ac2d8dc..189422f 100644
        return EXIT_FAILURE;
      }
  
-@@ -97,6 +112,11 @@ int RunWindowedApp(int argc, char** argv) {
+@@ -97,6 +130,11 @@ int RunWindowedApp(int argc, char** argv) {
      app->SetParsedArguments(std::move(parsed));
  
      result = app->OnInitialize() ? app_context.RunMainMessageLoop() : EXIT_FAILURE;
@@ -39036,7 +39075,7 @@ index ac2d8dc..189422f 100644
  
      app->InvokeOnDestroy();
    }
-@@ -161,8 +181,186 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
+@@ -161,8 +199,186 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
  #include <SDL3/SDL_main.h>
  #endif
  
