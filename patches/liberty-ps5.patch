@@ -270,26 +270,44 @@ index bb44175..1b222e3 100644
    bool active = false;
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h
 new file mode 100644
-index 0000000..45a81dc
+index 0000000..5bf40fd
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h
-@@ -0,0 +1,203 @@
-+// The installer's file reading and writing: positional reads and big
-+// sequential writes straight to the file, with no stream in between.
+@@ -0,0 +1,378 @@
++// The installer's file reading and writing: positional reads, big sequential
++// writes straight to the file, and a few threads to copy files side by side.
 +//
-+// [ps5 port] C++ file streams hand the file 4 KB at a time, and on the PS5
-+// each small write is slow: copying the game that way ran at a few MB/s.
-+// Here a write goes out in 8 MB pieces and a read is one call. The time spent
-+// reading and writing is counted, for the installer's log.
++// [ps5 port] Three things made installing on the PS5 crawl:
++//  - C++ file streams hand the file 4 KB at a time, and each small write is
++//    slow there. Here a write goes out in pieces of up to 8 MB.
++//  - Written data waits in the kernel's buffers, and once enough has piled up
++//    the console flushes it slowly while a game runs (ps5upload measured the
++//    same: ~60 MiB/s falling to 2-3 MiB/s a few minutes into a big write).
++//    So the writer flushes its own file every 16 MB, and the small files'
++//    data every 64 MB, from its own thread.
++//  - One thread's writes top out around 40 MB/s on a PS5, so files are
++//    copied three at a time, each thread with buffers made once (a big
++//    allocation per file wears the console's heap down).
++// The time spent reading, writing and flushing is counted for the log.
 +#pragma once
 +
++#include <algorithm>
 +#include <atomic>
 +#include <chrono>
++#include <condition_variable>
 +#include <cstdint>
 +#include <cstdio>
 +#include <cstring>
++#include <deque>
++#include <exception>
 +#include <filesystem>
++#include <functional>
++#include <mutex>
++#include <string>
++#include <thread>
 +#include <vector>
++
++#include <rex/platform.h>
 +
 +#if defined(_WIN32)
 +#include <cstdio>
@@ -302,9 +320,9 @@ index 0000000..45a81dc
 +
 +namespace gta4::install::io {
 +
-+// Bytes and time spent reading and writing (since the start of the app).
++// Bytes and time spent reading, writing and flushing (since the app started).
 +struct Stats {
-+  std::atomic<uint64_t> read_bytes{0}, read_ns{0}, write_bytes{0}, write_ns{0};
++  std::atomic<uint64_t> read_bytes{0}, read_ns{0}, write_bytes{0}, write_ns{0}, sync_ns{0}, syncs{0};
 +};
 +inline Stats& GetStats() {
 +  static Stats stats;
@@ -317,9 +335,25 @@ index 0000000..45a81dc
 +                      std::chrono::steady_clock::now().time_since_epoch())
 +                      .count());
 +}
++
++#if REX_PLATFORM_PS5
++constexpr bool kFlushAsWeGo = true;
++#else
++constexpr bool kFlushAsWeGo = false;
++#endif
++// A file's own data is flushed every this many bytes, and at its end when
++// it's at least kFlushFileMin; smaller files add up toward kFlushSmall.
++constexpr uint64_t kFlushEvery = 16ull << 20;
++constexpr uint64_t kFlushFileMin = 1ull << 20;
++constexpr uint64_t kFlushSmall = 64ull << 20;
++
++inline std::atomic<uint64_t>& SmallUnflushed() {
++  static std::atomic<uint64_t> bytes{0};
++  return bytes;
++}
 +}  // namespace detail
 +
-+// A file read at any offset.
++// A file read at any offset (safe from several threads at once).
 +class InFile {
 + public:
 +  InFile() = default;
@@ -356,6 +390,7 @@ index 0000000..45a81dc
 +    auto* p = static_cast<uint8_t*>(out);
 +    size_t left = length;
 +#if defined(_WIN32)
++    std::lock_guard lock(win_mutex_);
 +    if (!file_ || _fseeki64(file_, int64_t(offset), SEEK_SET) != 0) return false;
 +    left -= std::fread(p, 1, left, file_);
 +#else
@@ -382,13 +417,15 @@ index 0000000..45a81dc
 + private:
 +#if defined(_WIN32)
 +  FILE* file_ = nullptr;
++  std::mutex win_mutex_;
 +#else
 +  int fd_ = -1;
 +#endif
 +  uint64_t size_ = 0;
 +};
 +
-+// A new file written from start to end, 8 MB at a time.
++// A new file written from start to end. Small writes gather in `buffer` (the
++// caller's, kept between files) and go out in pieces of up to 8 MB.
 +class OutFile {
 + public:
 +  static constexpr size_t kChunk = size_t(8) << 20;
@@ -400,7 +437,8 @@ index 0000000..45a81dc
 +    if (open_) Close();
 +  }
 +
-+  bool Open(const std::filesystem::path& path) {
++  // `buffer`: where small writes gather (null: each write goes straight out).
++  bool Open(const std::filesystem::path& path, std::vector<uint8_t>* buffer = nullptr) {
 +#if defined(_WIN32)
 +    file_ = _wfopen(path.c_str(), L"wb");
 +    open_ = file_ != nullptr;
@@ -409,18 +447,22 @@ index 0000000..45a81dc
 +    open_ = fd_ >= 0;
 +#endif
 +    ok_ = open_;
-+    buffer_.clear();
++    buffer_ = buffer;
++    pending_ = 0;
++    written_ = unflushed_ = 0;
 +    return open_;
 +  }
 +
 +  bool Write(const void* data, size_t length) {
 +    if (!ok_) return false;
 +    const auto* p = static_cast<const uint8_t*>(data);
-+    if (length >= kChunk) {  // (big: straight out, after what's waiting)
++    if (!buffer_ || length >= kChunk / 2) {  // (big: straight out, after what's waiting)
 +      return Flush() && Out(p, length);
 +    }
-+    if (buffer_.size() + length > kChunk && !Flush()) return false;
-+    buffer_.insert(buffer_.end(), p, p + length);
++    if (buffer_->size() < kChunk) buffer_->resize(kChunk);
++    if (pending_ + length > kChunk && !Flush()) return false;
++    std::memcpy(buffer_->data() + pending_, p, length);
++    pending_ += length;
 +    return true;
 +  }
 +
@@ -428,12 +470,24 @@ index 0000000..45a81dc
 +  bool Close() {
 +    if (!open_) return ok_;
 +    Flush();
-+#if defined(_WIN32)
-+    if (std::fclose(file_) != 0) ok_ = false;
-+    file_ = nullptr;
-+#else
++#if !defined(_WIN32)
++    if (detail::kFlushAsWeGo && ok_ && unflushed_) {
++      if (written_ >= detail::kFlushFileMin) {
++        Sync();
++      } else if ((detail::SmallUnflushed() += unflushed_) >= detail::kFlushSmall) {
++        // the small files' data, all at once
++        detail::SmallUnflushed() = 0;
++        const uint64_t start = detail::NowNs();
++        ::sync();
++        GetStats().sync_ns += detail::NowNs() - start;
++        ++GetStats().syncs;
++      }
++    }
 +    if (::close(fd_) != 0) ok_ = false;
 +    fd_ = -1;
++#else
++    if (std::fclose(file_) != 0) ok_ = false;
++    file_ = nullptr;
 +#endif
 +    open_ = false;
 +    return ok_;
@@ -441,9 +495,9 @@ index 0000000..45a81dc
 +
 + private:
 +  bool Flush() {
-+    if (buffer_.empty()) return ok_;
-+    const bool done = Out(buffer_.data(), buffer_.size());
-+    buffer_.clear();
++    if (!pending_) return ok_;
++    const bool done = Out(buffer_->data(), pending_);
++    pending_ = 0;
 +    return done;
 +  }
 +
@@ -463,9 +517,27 @@ index 0000000..45a81dc
 +#endif
 +    GetStats().write_bytes += length - left;
 +    GetStats().write_ns += detail::NowNs() - start;
-+    if (left) ok_ = false;
++    if (left) {
++      ok_ = false;
++      return false;
++    }
++    written_ += length;
++    unflushed_ += length;
++#if !defined(_WIN32)
++    if (detail::kFlushAsWeGo && unflushed_ >= detail::kFlushEvery) Sync();
++#endif
 +    return ok_;
 +  }
++
++#if !defined(_WIN32)
++  void Sync() {
++    const uint64_t start = detail::NowNs();
++    ::fsync(fd_);
++    GetStats().sync_ns += detail::NowNs() - start;
++    ++GetStats().syncs;
++    unflushed_ = 0;
++  }
++#endif
 +
 +#if defined(_WIN32)
 +  FILE* file_ = nullptr;
@@ -473,12 +545,115 @@ index 0000000..45a81dc
 +  int fd_ = -1;
 +#endif
 +  bool open_ = false, ok_ = false;
-+  std::vector<uint8_t> buffer_;
++  std::vector<uint8_t>* buffer_ = nullptr;
++  size_t pending_ = 0;
++  uint64_t written_ = 0, unflushed_ = 0;
 +};
++
++// A few threads running jobs from a queue. Each thread has buffers of its
++// own (Scratch), made the first time a job needs them and kept. The first
++// job that fails stops the rest; Wait() reports its error.
++class WorkerPool {
++ public:
++  struct Scratch {
++    std::vector<uint8_t> read, write, gather;
++  };
++  using Job = std::function<bool(Scratch&, std::string& error)>;
++
++  explicit WorkerPool(int threads) {
++    for (int i = 0; i < std::max(1, threads); ++i) threads_.emplace_back([this] { Run(); });
++  }
++  ~WorkerPool() {
++    {
++      std::lock_guard lock(mutex_);
++      quit_ = true;
++    }
++    work_.notify_all();
++    for (auto& thread : threads_) thread.join();
++  }
++  WorkerPool(const WorkerPool&) = delete;
++  WorkerPool& operator=(const WorkerPool&) = delete;
++
++  // Queues a job (waiting while the queue is long). False once one has failed.
++  bool Add(Job job) {
++    std::unique_lock lock(mutex_);
++    room_.wait(lock, [this] { return queue_.size() < kMaxQueued || failed_; });
++    if (failed_) return false;
++    queue_.push_back(std::move(job));
++    work_.notify_one();
++    return true;
++  }
++
++  // Waits for every queued job. False, with the first error, if one failed.
++  bool Wait(std::string& error) {
++    std::unique_lock lock(mutex_);
++    idle_.wait(lock, [this] { return queue_.empty() && busy_ == 0; });
++    if (failed_) {
++      error = error_;
++      return false;
++    }
++    return true;
++  }
++
++  bool Failed() {
++    std::lock_guard lock(mutex_);
++    return failed_;
++  }
++
++ private:
++  static constexpr size_t kMaxQueued = 256;
++
++  void Run() {
++    Scratch scratch;
++    for (;;) {
++      Job job;
++      {
++        std::unique_lock lock(mutex_);
++        work_.wait(lock, [this] { return quit_ || !queue_.empty(); });
++        if (queue_.empty()) return;
++        job = std::move(queue_.front());
++        queue_.pop_front();
++        ++busy_;
++        room_.notify_one();
++      }
++      std::string error;
++      bool ok = false;
++      try {
++        ok = job(scratch, error);
++      } catch (const std::exception& exception) {
++        error = exception.what();
++      } catch (...) {
++        error = "A file could not be installed.";
++      }
++      {
++        std::lock_guard lock(mutex_);
++        --busy_;
++        if (!ok && !failed_) {
++          failed_ = true;
++          error_ = error.empty() ? "A file could not be installed." : std::move(error);
++          queue_.clear();
++          room_.notify_all();
++        }
++        if (queue_.empty() && busy_ == 0) idle_.notify_all();
++      }
++    }
++  }
++
++  std::mutex mutex_;
++  std::condition_variable work_, room_, idle_;
++  std::deque<Job> queue_;
++  std::vector<std::thread> threads_;
++  int busy_ = 0;
++  bool quit_ = false, failed_ = false;
++  std::string error_;
++};
++
++// How many files are copied at once.
++constexpr int kCopyThreads = 3;
 +
 +}  // namespace gta4::install::io
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
-index 84a1723..3c13d5a 100644
+index 84a1723..d8c770a 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
 @@ -31,7 +31,10 @@
@@ -501,7 +676,17 @@ index 84a1723..3c13d5a 100644
  constexpr size_t kMaximumTreeEntries = 500000;
  
  struct FileDestroyer {
-@@ -469,8 +472,8 @@ bool CopyFileEntry(rex::filesystem::Entry* entry, const std::filesystem::path& d
+@@ -452,7 +455,8 @@ bool TreeSize(rex::filesystem::Entry* root, uint64_t& total, std::string& error)
+ }
+ 
+ bool CopyFileEntry(rex::filesystem::Entry* entry, const std::filesystem::path& destination,
+-                   Progress& progress, std::string& error) {
++                   Progress& progress, std::vector<uint8_t>& buffer, std::string& error) {
++  const uint64_t started = io::detail::NowNs();
+   std::error_code fs_error;
+   std::filesystem::create_directories(destination.parent_path(), fs_error);
+   if (fs_error) {
+@@ -469,13 +473,16 @@ bool CopyFileEntry(rex::filesystem::Entry* entry, const std::filesystem::path& d
      return false;
    }
  
@@ -512,7 +697,16 @@ index 84a1723..3c13d5a 100644
      error = "Could not create " + destination.string() + ".";
      return false;
    }
-@@ -485,22 +488,23 @@ bool CopyFileEntry(rex::filesystem::Entry* entry, const std::filesystem::path& d
+ 
+-  std::vector<uint8_t> buffer(kCopyBufferSize);
++  // (the caller's buffer, kept between files)
++  if (buffer.size() < kCopyBufferSize) {
++    buffer.resize(kCopyBufferSize);
++  }
+   size_t offset = 0;
+   while (offset < entry->size()) {
+     if (progress.cancel_requested.load(std::memory_order_relaxed)) {
+@@ -485,30 +492,57 @@ bool CopyFileEntry(rex::filesystem::Entry* entry, const std::filesystem::path& d
      const size_t remaining = entry->size() - offset;
      const size_t request = std::min(remaining, buffer.size());
      size_t bytes_read = 0;
@@ -540,7 +734,91 @@ index 84a1723..3c13d5a 100644
      error = "Failed while flushing " + destination.string() + ".";
      return false;
    }
-@@ -571,35 +575,35 @@ bool CopyHostFile(const std::filesystem::path& source, const std::filesystem::pa
++  const double seconds = double(io::detail::NowNs() - started) / 1e9;
++  if (seconds > 5) {  // (a slow file, for the log)
++    REXLOG_INFO("Installer: {} ({} MB) took {:.1f} s", entry->path(), entry->size() >> 20, seconds);
++  }
+   return true;
+ }
+ 
++// How many files of a source can be copied at once: one for an Xbox content
++// package (its reads share one file position), more for a disc image or a
++// folder.
++int CopyThreadsFor(rex::filesystem::Device* device) {
++  if (dynamic_cast<rex::filesystem::DiscImageDevice*>(device) ||
++      dynamic_cast<rex::filesystem::HostPathDevice*>(device)) {
++    return io::kCopyThreads;
++  }
++  return 1;
++}
++
+ bool CopyTree(rex::filesystem::Entry* root, const std::filesystem::path& destination,
+               Progress& progress, std::string& error) {
++  // The folders are made here, in order; the files are copied by the pool,
++  // several at once.
++  io::WorkerPool pool(CopyThreadsFor(root->device()));
++  auto finish = [&](bool ok) {
++    std::string job_error;
++    const bool jobs_ok = pool.Wait(job_error);
++    if (ok && !jobs_ok) {
++      error = std::move(job_error);
++    }
++    return ok && jobs_ok;
++  };
+   struct Pending {
+     rex::filesystem::Entry* entry;
+     std::filesystem::path relative_path;
+@@ -530,13 +564,13 @@ bool CopyTree(rex::filesystem::Entry* root, const std::filesystem::path& destina
+     pending.pop_back();
+     if (++visited > kMaximumTreeEntries) {
+       error = "The source contains an unexpectedly large directory tree.";
+-      return false;
++      return finish(false);
+     }
+ 
+     const std::string collision_key = Lowercase(current.relative_path.generic_string());
+     if (!destinations.insert(collision_key).second) {
+       error = "The source contains colliding case-insensitive paths.";
+-      return false;
++      return finish(false);
+     }
+ 
+     const auto output_path = destination / current.relative_path;
+@@ -545,21 +579,28 @@ bool CopyTree(rex::filesystem::Entry* root, const std::filesystem::path& destina
+       std::filesystem::create_directories(output_path, fs_error);
+       if (fs_error) {
+         error = "Could not create an installation directory: " + fs_error.message();
+-        return false;
++        return finish(false);
+       }
+       for (const auto& child : current.entry->children()) {
+         auto component = SafeComponent(child->name());
+         if (!component) {
+           error = "The source contains an unsafe path component.";
+-          return false;
++          return finish(false);
+         }
+         pending.push_back({child.get(), current.relative_path / *component});
+       }
+-    } else if (!CopyFileEntry(current.entry, output_path, progress, error)) {
+-      return false;
++    } else {
++      rex::filesystem::Entry* entry = current.entry;
++      const bool queued = pool.Add([entry, output_path, &progress](io::WorkerPool::Scratch& scratch,
++                                                                    std::string& job_error) {
++        return CopyFileEntry(entry, output_path, progress, scratch.read, job_error);
++      });
++      if (!queued) {
++        break;  // (a copy failed: finish() reports it)
++      }
+     }
+   }
+-  return true;
++  return finish(true);
+ }
+ 
+ bool CopyHostFile(const std::filesystem::path& source, const std::filesystem::path& destination,
+@@ -571,35 +612,35 @@ bool CopyHostFile(const std::filesystem::path& source, const std::filesystem::pa
      return false;
    }
  
@@ -574,11 +852,11 @@ index 84a1723..3c13d5a 100644
 +    if (!input.ReadAt(offset, buffer.data(), count)) {
 +      error = "Failed while reading " + source.string() + ".";
 +      return false;
-     }
++    }
 +    if (!output.Write(buffer.data(), count)) {
 +      error = "Failed while writing " + destination.string() + ".";
 +      return false;
-+    }
+     }
 +    offset += count;
 +    progress.copied_bytes.fetch_add(count, std::memory_order_relaxed);
    }
@@ -594,7 +872,7 @@ index 84a1723..3c13d5a 100644
  }
  
  std::optional<PreparedSource> PrepareGameSource(const std::filesystem::path& path,
-@@ -1026,8 +1030,15 @@ Result Install(const Selection& selection, const std::filesystem::path& install_
+@@ -1026,8 +1067,15 @@ Result Install(const Selection& selection, const std::filesystem::path& install_
      result.error = "Could not create the staging directory: " + fs_error.message();
      return result;
    }
@@ -611,11 +889,29 @@ index 84a1723..3c13d5a 100644
      result.error = fs_error
                         ? "Could not determine available installation space: " + fs_error.message()
                         : "There is not enough free space for the GTA IV installation.";
+@@ -1069,7 +1117,8 @@ Result Install(const Selection& selection, const std::filesystem::path& install_
+       if (!CopyHostFile(selection.update_source, sibling_patch, progress, result.error)) {
+         return fail(std::move(result.error));
+       }
+-    } else if (!CopyFileEntry(update->patch.entry, sibling_patch, progress, result.error)) {
++    } else if (std::vector<uint8_t> buffer;
++               !CopyFileEntry(update->patch.entry, sibling_patch, progress, buffer, result.error)) {
+       return fail(std::move(result.error));
+     }
+   }
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
-index 9854392..14a8d82 100644
+index 9854392..e4bc026 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
-@@ -17,6 +17,10 @@
+@@ -7,6 +7,7 @@
+ #include <cstring>
+ #include <fstream>
+ #include <limits>
++#include <mutex>
+ #include <optional>
+ #include <span>
+ #include <string_view>
+@@ -17,6 +18,10 @@
  
  #include <zlib.h>
  
@@ -626,7 +922,7 @@ index 9854392..14a8d82 100644
  extern "C" {
  #include <rijndael-alg-fst.h>
  }
-@@ -39,7 +43,7 @@ constexpr size_t kMaximumArchiveDepth = 32;
+@@ -39,7 +44,7 @@ constexpr size_t kMaximumArchiveDepth = 32;
  constexpr size_t kMaximumDirectoryDepth = 256;
  constexpr size_t kMaximumNestedArchiveCount = 100000;
  constexpr uint64_t kMaximumExtractedFileSize = 2147483648;
@@ -635,7 +931,7 @@ index 9854392..14a8d82 100644
  
  struct TocEntry {
    std::string name;
-@@ -157,9 +161,9 @@ std::optional<Archive> ParseArchive(const std::filesystem::path& path, std::span
+@@ -157,9 +162,9 @@ std::optional<Archive> ParseArchive(const std::filesystem::path& path, std::span
      return std::nullopt;
    }
  
@@ -647,7 +943,7 @@ index 9854392..14a8d82 100644
        ReadU32(header, 0) != kRpf2Magic) {
      error = "The selected game contains an invalid RPF2 archive: " + path.string();
      return std::nullopt;
-@@ -181,8 +185,7 @@ std::optional<Archive> ParseArchive(const std::filesystem::path& path, std::span
+@@ -181,8 +186,7 @@ std::optional<Archive> ParseArchive(const std::filesystem::path& path, std::span
    }
  
    std::vector<uint8_t> toc(toc_size);
@@ -657,7 +953,7 @@ index 9854392..14a8d82 100644
      error = "Could not read the RPF2 table of contents: " + path.string();
      return std::nullopt;
    }
-@@ -307,6 +310,12 @@ bool ValidateArchiveGraph(const Archive& archive, const std::filesystem::path& a
+@@ -307,6 +311,12 @@ bool ValidateArchiveGraph(const Archive& archive, const std::filesystem::path& a
  
  bool EnsureFreeSpace(const std::filesystem::path& destination, uint64_t required,
                       std::string& error) {
@@ -670,16 +966,16 @@ index 9854392..14a8d82 100644
    std::error_code fs_error;
    const auto space = std::filesystem::space(destination, fs_error);
    if (fs_error) {
-@@ -320,16 +329,15 @@ bool EnsureFreeSpace(const std::filesystem::path& destination, uint64_t required
+@@ -320,16 +330,16 @@ bool EnsureFreeSpace(const std::filesystem::path& destination, uint64_t required
    return true;
  }
  
 -bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry,
 -                const std::filesystem::path& output_path, const RpfExtractionProgress& progress,
--                std::string& error) {
 +bool WriteEntry(const std::filesystem::path& archive_path, io::InFile& input,
 +                const TocEntry& entry, const std::filesystem::path& output_path,
-+                const RpfExtractionProgress& progress, std::string& error) {
++                const RpfExtractionProgress& progress, io::WorkerPool::Scratch& scratch,
+                 std::string& error) {
    if (IsCancelled(progress)) {
      error = "Installation was cancelled.";
      return false;
@@ -692,29 +988,33 @@ index 9854392..14a8d82 100644
      error = "Could not read an RPF2 file entry from " + archive_path.string() + ".";
      return false;
    }
-@@ -345,14 +353,17 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
+@@ -345,14 +355,21 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
      error = "Could not create an RPF extraction directory: " + fs_error.message();
      return false;
    }
 -  std::ofstream destination(output_path, std::ios::binary | std::ios::trunc);
 -  if (!destination) {
 +  io::OutFile destination;
-+  if (!destination.Open(output_path)) {
++  if (!destination.Open(output_path, &scratch.gather)) {
      error = "Could not write an extracted RPF2 file: " + output_path.string();
      return false;
    }
  
 -  std::vector<uint8_t> input_buffer(kIoBufferSize);
 -  std::vector<uint8_t> output_buffer(kIoBufferSize);
-+  // (sized to the entry: most are small)
-+  std::vector<uint8_t> input_buffer(
-+      std::max<size_t>(1, std::min<uint64_t>(entry.archived_size, kIoBufferSize)));
-+  std::vector<uint8_t> output_buffer(
-+      std::max<size_t>(65536, std::min<uint64_t>(uint64_t(entry.size) + 1, kIoBufferSize)));
++  // (the worker's buffers, kept between files)
++  std::vector<uint8_t>& input_buffer = scratch.read;
++  std::vector<uint8_t>& output_buffer = scratch.write;
++  if (input_buffer.size() != kIoBufferSize) {
++    input_buffer.resize(kIoBufferSize);
++  }
++  if (output_buffer.size() != kIoBufferSize) {
++    output_buffer.resize(kIoBufferSize);
++  }
    uint64_t remaining = entry.archived_size;
    if (!entry.is_compressed) {
      while (remaining != 0) {
-@@ -361,12 +372,13 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
+@@ -361,12 +378,13 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
          return false;
        }
        const size_t chunk = static_cast<size_t>(std::min<uint64_t>(remaining, input_buffer.size()));
@@ -730,7 +1030,7 @@ index 9854392..14a8d82 100644
        if (progress.completed_bytes) {
          progress.completed_bytes->fetch_add(chunk, std::memory_order_relaxed);
        }
-@@ -388,12 +400,13 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
+@@ -388,12 +406,13 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
        if (stream.avail_in == 0 && remaining != 0) {
          const size_t chunk =
              static_cast<size_t>(std::min<uint64_t>(remaining, input_buffer.size()));
@@ -745,7 +1045,7 @@ index 9854392..14a8d82 100644
          stream.next_in = input_buffer.data();
          stream.avail_in = static_cast<uInt>(chunk);
        }
-@@ -404,7 +417,7 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
+@@ -404,7 +423,7 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
        const int status = inflate(&stream, flush);
        const size_t produced = output_buffer.size() - stream.avail_out;
        if (produced != 0) {
@@ -754,7 +1054,7 @@ index 9854392..14a8d82 100644
            inflateEnd(&stream);
            error = "Could not write a decompressed RPF2 file entry: " + output_path.string();
            return false;
-@@ -434,16 +447,15 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
+@@ -434,16 +453,16 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
        return false;
      }
    }
@@ -770,29 +1070,66 @@ index 9854392..14a8d82 100644
 -bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive& archive,
 -                      size_t index, const std::filesystem::path& output_root,
 +bool ExtractDirectory(const std::filesystem::path& archive_path, io::InFile& input,
++                      io::WorkerPool& pool, std::mutex& nested_mutex,
 +                      const Archive& archive, size_t index, const std::filesystem::path& output_root,
                        std::vector<bool>& active, std::vector<bool>& visited,
                        std::vector<std::filesystem::path>& nested_archives,
                        const RpfExtractionProgress& progress, size_t depth, std::string& error) {
-@@ -477,7 +489,7 @@ bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive&
+@@ -477,7 +496,8 @@ bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive&
      if (entry.is_directory) {
        std::error_code fs_error;
        std::filesystem::create_directories(output_path, fs_error);
 -      if (fs_error || !ExtractDirectory(archive_path, archive, child, output_path, active, visited,
-+      if (fs_error || !ExtractDirectory(archive_path, input, archive, child, output_path, active, visited,
++      if (fs_error || !ExtractDirectory(archive_path, input, pool, nested_mutex, archive, child,
++                                        output_path, active, visited,
                                          nested_archives, progress, depth + 1, error)) {
          if (error.empty()) {
            error = "Could not create an RPF extraction directory: " + fs_error.message();
-@@ -486,7 +498,7 @@ bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive&
+@@ -486,15 +506,26 @@ bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive&
        }
      } else {
        visited[child] = true;
 -      if (!WriteEntry(archive_path, entry, output_path, progress, error)) {
-+      if (!WriteEntry(archive_path, input, entry, output_path, progress, error)) {
++      // (written by the pool, several files at once)
++      const bool queued = pool.Add([&archive_path, &input, entry, output_path, &progress,
++                                    &nested_archives, &nested_mutex](
++                                       io::WorkerPool::Scratch& scratch, std::string& job_error) {
++        if (!WriteEntry(archive_path, input, entry, output_path, progress, scratch, job_error)) {
++          return false;
++        }
++        std::string extension = output_path.extension().string();
++        std::transform(extension.begin(), extension.end(), extension.begin(),
++                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++        if (extension == ".rpf") {
++          std::lock_guard lock(nested_mutex);
++          nested_archives.push_back(output_path);
++        }
++        return true;
++      });
++      if (!queued) {
++        error = "An RPF2 file entry could not be written.";
          return false;
        }
-       std::string extension = output_path.extension().string();
-@@ -530,9 +542,14 @@ bool ExtractOne(const std::filesystem::path& archive_path, const std::filesystem
+-      std::string extension = output_path.extension().string();
+-      std::transform(extension.begin(), extension.end(), extension.begin(),
+-                     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+-      if (extension == ".rpf") {
+-        nested_archives.push_back(output_path);
+-      }
+     }
+   }
+   active[index] = false;
+@@ -503,7 +534,8 @@ bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive&
+ 
+ bool ExtractOne(const std::filesystem::path& archive_path, const std::filesystem::path& output_root,
+                 std::span<const uint8_t> key, const RpfExtractionProgress& progress,
+-                std::vector<std::filesystem::path>& nested_archives, std::string& error) {
++                io::WorkerPool& pool, std::vector<std::filesystem::path>& nested_archives,
++                std::string& error) {
+   auto archive = ParseArchive(archive_path, key, error);
+   if (!archive) {
+     return false;
+@@ -530,10 +562,25 @@ bool ExtractOne(const std::filesystem::path& archive_path, const std::filesystem
      error = "Could not create an RPF extraction directory: " + fs_error.message();
      return false;
    }
@@ -804,10 +1141,39 @@ index 9854392..14a8d82 100644
    std::vector<bool> active(archive->entries.size());
    std::vector<bool> visited(archive->entries.size());
 -  if (!ExtractDirectory(archive_path, *archive, 0, output_root, active, visited, nested_archives,
-+  if (!ExtractDirectory(archive_path, input, *archive, 0, output_root, active, visited, nested_archives,
-                         progress, 0, error)) {
+-                        progress, 0, error)) {
++  std::mutex nested_mutex;
++  const bool walked = ExtractDirectory(archive_path, input, pool, nested_mutex, *archive, 0,
++                                       output_root, active, visited, nested_archives, progress, 0,
++                                       error);
++  // (the queued files read `input`: every one is done before it closes)
++  std::string job_error;
++  const bool written = pool.Wait(job_error);
++  if (!walked) {
++    return false;
++  }
++  if (!written) {
++    error = std::move(job_error);
      return false;
    }
+   return true;
+@@ -579,6 +626,7 @@ bool ExtractGameArchives(const std::filesystem::path& staged_game_root,
+ 
+   std::unordered_set<std::string> extracted;
+   size_t archive_count = 0;
++  io::WorkerPool pool(io::kCopyThreads);
+   while (!pending.empty()) {
+     if (++archive_count > kMaximumNestedArchiveCount) {
+       error = "The GTA IV source contains too many nested RPF archives.";
+@@ -596,7 +644,7 @@ bool ExtractGameArchives(const std::filesystem::path& staged_game_root,
+       return false;
+     }
+     std::vector<std::filesystem::path> nested;
+-    if (!ExtractOne(archive_path, output_root, *key, progress, nested, error)) {
++    if (!ExtractOne(archive_path, output_root, *key, progress, pool, nested, error)) {
+       return false;
+     }
+     for (auto& child : nested) {
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.cpp
 new file mode 100644
 index 0000000..e5acf1c
@@ -20277,7 +20643,7 @@ index 0000000..a631ae4
 +*/
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
 new file mode 100644
-index 0000000..849df1f
+index 0000000..e595a9e
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
 @@ -0,0 +1,302 @@
@@ -20565,11 +20931,11 @@ index 0000000..849df1f
 +    j.logged_at = now;
 +    const auto& io = gta4::install::io::GetStats();
 +    const double rs = double(io.read_ns.load()) / 1e9, ws = double(io.write_ns.load()) / 1e9;
-+    REXLOG_INFO("PS5 installer: step {} {:.1f}% {} of {} in {:.0f} s; read {} in {:.1f} s ({:.0f} MB/s), "
-+                "wrote {} in {:.1f} s ({:.0f} MB/s)",
-+                s.step, s.progress * 100, Bytes(done), Bytes(total), s.seconds, Bytes(io.read_bytes.load()), rs,
-+                rs > 0 ? double(io.read_bytes.load()) / rs / double(1 << 20) : 0.0, Bytes(io.write_bytes.load()), ws,
-+                ws > 0 ? double(io.write_bytes.load()) / ws / double(1 << 20) : 0.0);
++    REXLOG_INFO("PS5 installer: step {} {:.1f}% {} of {} in {:.0f} s ({:.0f} MB/s now); read {} in {:.1f} s, "
++                "wrote {} in {:.1f} s, {} flushes in {:.1f} s",
++                s.step, s.progress * 100, Bytes(done), Bytes(total), s.seconds, double(s.rate) / double(1 << 20),
++                Bytes(io.read_bytes.load()), rs, Bytes(io.write_bytes.load()), ws, io.syncs.load(),
++                double(io.sync_ns.load()) / 1e9);
 +  }
 +  // time left: what's still to write, at the speed of late (so a fast start
 +  // from the PS5's cache doesn't promise too much)
