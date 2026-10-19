@@ -330,6 +330,53 @@ void status_main()
     }
 }
 
+/* A folder and everything in it, as rm -rf does; `removed` counts what went. Not
+ * std::filesystem::remove_all: in the payload SDK's libc, the openat and unlinkat it is
+ * built on are bare system calls that hand back a failure's error number as if it were
+ * a result (a file handle, or success), so it misread an earlier install's folder and
+ * every reinstall stopped. These calls (the system's own) report errors properly. */
+bool remove_tree(const std::string &path, std::uint64_t &removed, std::string &error)
+{
+    struct stat st;
+    if (lstat(path.c_str(), &st) != 0)
+    {
+        if (errno == ENOENT)
+            return true;
+        error = path + ": " + std::strerror(errno);
+        return false;
+    }
+    if (S_ISDIR(st.st_mode))
+    {
+        /* (the names first, then the removing: nothing changes under readdir) */
+        std::vector<std::string> names;
+        DIR *d = opendir(path.c_str());
+        if (!d)
+        {
+            error = path + ": " + std::strerror(errno);
+            return false;
+        }
+        while (dirent *e = readdir(d))
+            if (std::strcmp(e->d_name, ".") != 0 && std::strcmp(e->d_name, "..") != 0)
+                names.push_back(e->d_name);
+        closedir(d);
+        for (const std::string &name : names)
+            if (!remove_tree(path + "/" + name, removed, error))
+                return false;
+        if (rmdir(path.c_str()) != 0)
+        {
+            error = path + ": " + std::strerror(errno);
+            return false;
+        }
+    }
+    else if (unlink(path.c_str()) != 0)
+    {
+        error = path + ": " + std::strerror(errno);
+        return false;
+    }
+    ++removed;
+    return true;
+}
+
 /* The end of a stopped or failed install: its files removed (`staging`, when it got
  * that far), then phase=stopped or failed. */
 int fail(std::string why, const std::string &staging = std::string())
@@ -343,10 +390,10 @@ int fail(std::string why, const std::string &staging = std::string())
     if (!staging.empty() && !g_superseded.load() && read_text(staging + "/.token", mark) && mark == g.token)
     {
         set_phase("cleaning");
-        std::error_code ec;
-        const auto removed = fs::remove_all(staging, ec);
-        if (ec)
-            log_line("couldn't remove %s: %s", staging.c_str(), ec.message().c_str());
+        std::uint64_t removed = 0;
+        std::string error;
+        if (!remove_tree(staging, removed, error))
+            log_line("couldn't remove %s: %s", staging.c_str(), error.c_str());
         else
             log_line("removed %s (%llu files and folders)", staging.c_str(), (unsigned long long)removed);
     }
@@ -956,10 +1003,14 @@ int install(const std::string &job)
     if (g_cancel.load())
         return fail("Stopped.");
     set_phase("clearing", 1);
-    std::error_code ec;
-    fs::remove_all(staging, ec);
-    if (ec)
-        return fail("The files of an earlier install couldn't be removed (" + ec.message() + ").");
+    {
+        std::uint64_t removed = 0;
+        std::string error;
+        if (!remove_tree(staging, removed, error))
+            return fail("The files of an earlier install couldn't be removed (" + error + ").");
+        if (removed)
+            log_line("removed an earlier install's %llu files and folders", (unsigned long long)removed);
+    }
     recomp::zip::make_dirs(game);
     {
         const std::string mark = staging + "/.token";
