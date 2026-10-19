@@ -108,6 +108,13 @@ cp -r "$repo/LibertyRecompLib/font_atlases" "$app/Resources/"
 cp -r "$repo/LibertyRecompLib/private/button_prompts/." "$app/Resources/button_prompts/"
 [[ -f "$repo/LibertyRecompLib/aes_key.bin" ]] && cp "$repo/LibertyRecompLib/aes_key.bin" "$app/Resources/"
 cp "$ps5dir/package/install/README.txt" "$app/install/README.txt"
+# FSR 3's motion-vector shaders (builds with FidelityFX on): the renderer looks
+# for them next to the executable.
+temporal=$build/glue/gta4-recomp/shaders/vulkan-temporal.bin
+if [[ -f $temporal ]]; then
+    mkdir -p "$app/shaders"
+    cp "$temporal" "$app/shaders/vulkan-temporal.bin"
+fi
 # The installer payload (ps5/payload/installer): the app sends it to the
 # console's payload loader on port 9021 to install the game at the drive's
 # full speed.

@@ -31,12 +31,22 @@ cmake -S ps5 -B out/ps5 -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DSDL_X11=OFF -DSDL_WAYLAND=OFF -DSDL_KMSDRM=OFF -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF \
   -DSDL_OSS=OFF -DSDL_ALSA=OFF -DSDL_PULSEAUDIO=OFF -DSDL_PIPEWIRE=OFF -DSDL_JACK=OFF \
   -DSDL_SNDIO=OFF -DSDL_HIDAPI=OFF -DSDL_DBUS=OFF -DSDL_IBUS=OFF -DSDL_LIBUDEV=OFF \
-  -DSDL_VULKAN=OFF -DSDL_DUMMYVIDEO=ON -DSDL_DUMMYAUDIO=ON -DSDL_OFFSCREEN=OFF
+  -DSDL_VULKAN=OFF -DSDL_DUMMYVIDEO=ON -DSDL_DUMMYAUDIO=ON -DSDL_OFFSCREEN=OFF \
+  -DREXGLUE_ENABLE_FIDELITYFX=ON -DGTA4_NATIVE_SPIRV_VAL=$(which spirv-val) \
+  -DGTA4_NATIVE_GLSLANG_VALIDATOR=$(which glslangValidator) \
+  -DGTA4_TEMPORAL_ZSTD_LIBRARY=/usr/lib/x86_64-linux-gnu/libzstd.so.1
 ninja -C out/ps5 gta4
+
 ps5/tools/ps5_package.sh out/ps5 ~/ps5-plume-triangle
 ```
 
 The app ends up in `out/ps5/ps5-app/PPSA94004`. Copy it to `/data/homebrew/` on the PS5.
+
+The FidelityFX lines add FSR 3 (the hub's Frame Generation option). They need Wine
+(`apt install wine64`) for AMD's shader compiler, plus spirv-tools and glslang. The
+first build compiles about 2,700 motion-vector shader variants, which takes a while.
+Leave those four lines out to build without FSR 3.
+
 
 ## On the PS5
 
