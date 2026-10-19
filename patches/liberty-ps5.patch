@@ -152,6 +152,33 @@ index 42ddaa34..f25b7a26 100644
  #define REX_PHYS_HOST_OFFSET(addr) (((u32)(addr) >= 0xE0000000u) ? 0x1000u : 0u)
  #else
  #define REX_PHYS_HOST_OFFSET(addr) 0u
+diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/android/android_frame_wait_hook.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/android/android_frame_wait_hook.cpp
+index 380838a7..1697730e 100644
+--- a/glue/rexglue-sdk-main/gta4-recomp/src/android/android_frame_wait_hook.cpp
++++ b/glue/rexglue-sdk-main/gta4-recomp/src/android/android_frame_wait_hook.cpp
+@@ -15,6 +15,9 @@
+ #include <rex/cvar.h>
+ 
+ #include "gta4_init.h"
++#if REX_PLATFORM_PS5
++#include <rex/frame_stats.h>
++#endif
+ 
+ // No frame rate change, but the spin held the main game thread at ~97% of a
+ // big core while it waited (17% with the sleep): the whole process used 2.16
+@@ -41,6 +44,12 @@ extern "C" void sub_82A46D70(PPCContext& ctx, uint8_t* base) {
+   }
+   if (pending >= 2 && REXCVAR_GET(gta4_frame_wait_sleep)) {
+     const timespec delay{0, 250 * 1000};
++#if REX_PLATFORM_PS5
++    const int64_t begin_ns = rex::frame_stats::NowNs();
+     nanosleep(&delay, nullptr);
++    rex::frame_stats::NoteTitleSlotWait(uint64_t(rex::frame_stats::NowNs() - begin_ns) / 1000);
++#else
++    nanosleep(&delay, nullptr);
++#endif
+   }
+ }
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
 index 68d694b9..a0cf1b5f 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
@@ -31361,10 +31388,10 @@ index 00000000..87e2fd2e
 +#endif  // !_WIN32
 diff --git a/glue/rexglue-sdk-main/include/rex/frame_stats.h b/glue/rexglue-sdk-main/include/rex/frame_stats.h
 new file mode 100644
-index 00000000..79bf93a4
+index 00000000..80b2d4d0
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/frame_stats.h
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,67 @@
 +// [ps5 port] The guest's presented frames, for the PS5 build's frame rate
 +// counter and frame time capture: the renderer notes each present.
 +#pragma once
@@ -31404,12 +31431,28 @@ index 00000000..79bf93a4
 +  }
 +}
 +
++// Where a frame's time went, for the 10 s timing line and the hitch log.
++// The title (game) thread's waits for a free frame slot (the renderer behind
++// it), summed for the timing line and for its current frame.
++inline std::atomic<uint64_t> g_title_slot_wait_us{0}, g_title_frame_slot_wait_us{0};
++inline std::atomic<uint32_t> g_title_last_slot_wait_us{0};
++inline void NoteTitleSlotWait(uint64_t us) {
++  g_title_slot_wait_us.fetch_add(us, std::memory_order_relaxed);
++  g_title_frame_slot_wait_us.fetch_add(us, std::memory_order_relaxed);
++}
++// The recorder holding a finished frame back for the frame limit (time that
++// is not work), summed and for its current frame; and its last frame's work.
++inline std::atomic<uint64_t> g_pacer_wait_us{0}, g_frame_pacer_us{0};
++inline std::atomic<uint32_t> g_last_recorder_busy_us{0};
++
 +// From the renderer, once per guest frame.
 +inline void NotePresent() {
 +  const int64_t now = NowNs();
 +  const int64_t last = g_last_present_ns.exchange(now, std::memory_order_acq_rel);
 +  const uint32_t us = last ? uint32_t((now - last) / 1000) : 0;
 +  if (last) g_last_frame_us.store(us, std::memory_order_relaxed);
++  g_title_last_slot_wait_us.store(uint32_t(g_title_frame_slot_wait_us.exchange(0, std::memory_order_relaxed)),
++                                  std::memory_order_relaxed);
 +  const uint64_t n = g_presents.load(std::memory_order_relaxed);
 +  g_history_us[n % kHistory].store(us, std::memory_order_relaxed);
 +  g_presents.store(n + 1, std::memory_order_release);
@@ -35933,10 +35976,10 @@ index d639924c..7f325c0c 100644
  }  // namespace rex::thread
 diff --git a/glue/rexglue-sdk-main/src/core/ps5_diag.cpp b/glue/rexglue-sdk-main/src/core/ps5_diag.cpp
 new file mode 100644
-index 00000000..acac06d8
+index 00000000..618ecf86
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/src/core/ps5_diag.cpp
-@@ -0,0 +1,259 @@
+@@ -0,0 +1,263 @@
 +// [ps5 port] see rex/ps5_diag.h
 +#include <rex/ps5_diag.h>
 +
@@ -36018,9 +36061,11 @@ index 00000000..acac06d8
 +  auto* gregs = reinterpret_cast<uint64_t*>(reinterpret_cast<uint8_t*>(uc) + 64);
 +  if (!e->want_stack.load(std::memory_order_acquire)) {
 +    // a profiler sample: where the thread is, nothing else
++    // (The eboot loads low on the PS5, below kNear: anchor - kNear would
++    // wrap and drop every sample.)
 +    const uintptr_t rip = gregs[20], anchor = Anchor();
-+    const uint32_t rel = rip > anchor - kNear && rip < anchor + kNear
-+                             ? uint32_t(rip - anchor + 0x10000000) : 0;
++    const uintptr_t lo = anchor > kNear ? anchor - kNear : 0x10000;
++    const uint32_t rel = rip > lo && rip < anchor + kNear ? uint32_t(rip - anchor + 0x10000000) : 0;
 +    const uint32_t n = e->profile_count.load(std::memory_order_relaxed);
 +    e->profile[n % ThreadEntry::kProfileSamples] = rel;
 +    e->profile_count.store(n + 1, std::memory_order_release);
@@ -36170,6 +36215,8 @@ index 00000000..acac06d8
 +}
 +
 +void SampleAllThreads() {
++  static std::mutex sampling;  // the stall watcher and the hang monitor
++  std::lock_guard<std::mutex> one_at_a_time(sampling);
 +  InstallSampleHandler();
 +  REXLOG_INFO("ps5 stack: anchor {:X}", Anchor());
 +  int count = next_thread.load();
@@ -37055,7 +37102,7 @@ index 1d5402e9..1adeb3c1 100644
    if (command_processor_) {
      command_processor_->increment_counter();
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
-index 581a9d20..195ffdf0 100644
+index 581a9d20..62226504 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 @@ -1,3 +1,7 @@
@@ -37082,7 +37129,7 @@ index 581a9d20..195ffdf0 100644
 +// the lights' ARGB textures come out with red and blue swapped (yellow light
 +// drawn blue).
 +static std::atomic<uint64_t> g_ps5_texture_evictions{0};
-+REXCVAR_DEFINE_BOOL(ps5_hud_trace, true, "PS5",
++REXCVAR_DEFINE_BOOL(ps5_hud_trace, false, "PS5",
 +                    "Log the radar's draws, triangle fans, and dropped draws (bounded)");
 +REXCVAR_DEFINE_BOOL(gta4_native_guest_texture_swizzle, !(REX_PLATFORM_ANDROID || REX_PLATFORM_PS5),
 +                    "GTA IV/Graphics/Native Renderer",
@@ -37151,15 +37198,51 @@ index 581a9d20..195ffdf0 100644
      return UINT64_MAX;
    }
    return counter.fetch_add(1, std::memory_order_relaxed) + 1;
-@@ -4743,6 +4779,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
+@@ -4033,10 +4069,17 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
+     std::unique_lock lock = LockWithSpin(render_mutex_);
+     const uint64_t queue_lock_end = profile_transport ? profile::CpuTick() : 0;
+     producer_waiting_ = render_queue_.size() >= kMaximumQueuedCommands || queued_title_presents_ >= MaxQueuedTitlePresents();
++#if REX_PLATFORM_PS5
++    const int64_t producer_wait_begin_ns = producer_waiting_ ? rex::frame_stats::NowNs() : 0;
++#endif
+     render_condition_.wait(lock, [this]() {
+       return !render_worker_running_ ||
+              (render_queue_.size() < kMaximumQueuedCommands && queued_title_presents_ < MaxQueuedTitlePresents());
+     });
++#if REX_PLATFORM_PS5
++    if (producer_wait_begin_ns)  // the game held up by the renderer (a full queue)
++      rex::frame_stats::NoteTitleSlotWait(uint64_t(rex::frame_stats::NowNs() - producer_wait_begin_ns) / 1000);
++#endif
+     const uint64_t backpressure_end = profile_transport ? profile::CpuTick() : 0;
+     producer_waiting_ = false;
+     if (!render_worker_running_) {
+@@ -4743,6 +4786,25 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
    if (header.type == CommandType::kPresent) {
      const auto& present = *static_cast<const PresentCommand*>(command);
      MarkFrameTimeline(present.submitted_frame, kTimelineGuestPresent);
 +    rex::frame_stats::NotePresent();  // [ps5 port] the frame rate counter
++#if REX_PLATFORM_PS5
++    {
++      // A frame over 100 ms in play: whether the game itself was slow or
++      // waited for the renderer (at most one line a second).
++      static int64_t last_hitch_log_ns = 0;
++      const uint32_t frame_us = rex::frame_stats::g_last_frame_us.load(std::memory_order_relaxed);
++      const int64_t now_ns = rex::frame_stats::NowNs();
++      if (frame_us > 100000 && rex::frame_stats::g_presents.load(std::memory_order_relaxed) > 600 &&
++          now_ns - last_hitch_log_ns > 1000000000) {
++        last_hitch_log_ns = now_ns;
++        REXLOG_INFO("ps5 hitch: frame {} took {:.0f} ms (the game waited {:.0f} ms of it for the "
++                    "renderer); recorder's last frame {:.1f} ms of work",
++                    present.submitted_frame, frame_us / 1000.0,
++                    rex::frame_stats::g_title_last_slot_wait_us.load(std::memory_order_relaxed) / 1000.0,
++                    rex::frame_stats::g_last_recorder_busy_us.load(std::memory_order_relaxed) / 1000.0);
++      }
++    }
++#endif
      const auto frontbuffer_fetch =
          std::bit_cast<xenos::xe_gpu_texture_fetch_t>(present.frontbuffer_fetch);
      auto fetch_matches = [&frontbuffer_fetch](const NativeTextureResource& resource) {
-@@ -6314,6 +6351,9 @@ void Gta4NativeGraphicsSystem::TraceModernShaderDraw(
+@@ -6314,6 +6376,9 @@ void Gta4NativeGraphicsSystem::TraceModernShaderDraw(
  }
  
  void Gta4NativeGraphicsSystem::RenderWorkerMain() {
@@ -37169,7 +37252,7 @@ index 581a9d20..195ffdf0 100644
    std::vector<std::pair<RenderPhase, uint32_t>> render_phase_stack;
    uint64_t startup_texture_lock_count = 0;
    bool startup_present_follows_texture_lock_flush = false;
-@@ -6479,7 +6519,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -6479,7 +6544,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
            bound.read_epoch = read_epoch;
            const auto mark_read = [read_epoch](const NativeTextureResource* resource) {
              if (resource)
@@ -37178,7 +37261,7 @@ index 581a9d20..195ffdf0 100644
            };
            for (const auto& texture : assembled.textures) {
              if (!texture) continue;
-@@ -6976,7 +7016,10 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -6976,7 +7041,10 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
            // Hand the assembled frame to the recorder and start on the next.
            MarkFrameTimeline(present.submitted_frame, kTimelineWorkerPresent);
            const uint64_t handoff_wait_begin = profile::CpuTick();
@@ -37189,7 +37272,7 @@ index 581a9d20..195ffdf0 100644
            pipeline_present_wait_ticks_ += profile::CpuTick() - handoff_wait_begin;
            MarkFrameTimeline(present.submitted_frame, kTimelineWorkerHandoff);
            SwapAssemblyFrame();
-@@ -6984,7 +7027,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -6984,7 +7052,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
            recording_environmental_data_by_device_ = environmental_data_by_device_;
            assembly_modern_frame_pending_ = false;
            log_frame_batch("present", command, present.submitted_frame, queued_after_pop);
@@ -37198,7 +37281,7 @@ index 581a9d20..195ffdf0 100644
            // TEMP: pipeline stall telemetry (perf investigation).
            if (++pipeline_report_frames_ == 120) {
              const double ms_per_tick = 1000.0 / double(rex::chrono::Clock::QueryHostTickFrequency());
-@@ -6993,7 +7036,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -6993,7 +7061,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                if (pipeline_sync_type_counts_[i])
                  types += fmt::format(" {}={}", CommandTypeName(CommandType(i)),
                                       pipeline_sync_type_counts_[i]);
@@ -37207,7 +37290,7 @@ index 581a9d20..195ffdf0 100644
                                  "pipeline: 120 frames sync-waits=%llu sync-wait=%.1fms/f "
                                  "handoff-wait=%.1fms/f dd-factor=%.2f ring=%.0f/%.0f "
                                  "ring-check=%llu/%llu types:%s",
-@@ -7005,7 +7048,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7005,7 +7073,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                                  g_worker_ring_fallbacks.exchange(0) / 120.0,
                                  (unsigned long long)g_worker_ring_mismatches.exchange(0),
                                  (unsigned long long)g_worker_ring_checked.exchange(0), types.c_str());
@@ -37216,7 +37299,7 @@ index 581a9d20..195ffdf0 100644
                                  "vk: %s ubo-shaders=%u ubo-loads=%llu legacy-mul=%llu",
                                  ui::vulkan::ConsumeCommandCounters(120).c_str(), ubo_rewritten_shaders_,
                                  (unsigned long long)ubo_rewritten_loads_,
-@@ -7016,7 +7059,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7016,7 +7084,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                while (begin < report.size()) {
                  size_t end = report.find('\n', begin);
                  if (end == std::string::npos) end = report.size();
@@ -37225,7 +37308,7 @@ index 581a9d20..195ffdf0 100644
                                      report.substr(begin, std::min<size_t>(end - begin, 1000)).c_str());
                  begin = end + 1;
                }
-@@ -7024,7 +7067,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7024,7 +7092,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
              if (gpu_counters_.ready()) {
                const std::string report = gpu_counters_.Report();
                for (size_t offset = 0; offset < report.size(); offset += 900)
@@ -37234,7 +37317,7 @@ index 581a9d20..195ffdf0 100644
                                      report.substr(offset, 900).c_str());
              }
              {
-@@ -7035,7 +7078,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7035,7 +7103,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                std::string top;
                for (size_t i = 0; i < sites.size() && i < 12; ++i)
                  top += fmt::format(" L{}={:.0f}", sites[i].second, sites[i].first / 120.0);
@@ -37243,7 +37326,7 @@ index 581a9d20..195ffdf0 100644
              }
              {
                std::vector<std::pair<uint32_t, uint32_t>> sites;
-@@ -7045,7 +7088,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7045,7 +7113,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                std::string top;
                for (size_t i = 0; i < sites.size() && i < 12; ++i)
                  top += fmt::format(" L{}={:.0f}", sites[i].second, sites[i].first / 120.0);
@@ -37252,7 +37335,7 @@ index 581a9d20..195ffdf0 100644
              }
              {
                std::vector<std::pair<uint32_t, uint32_t>> sites;
-@@ -7065,10 +7108,10 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7065,10 +7133,10 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                  for (const auto& [key, n] : kinds)
                    if (n >= 60) line += fmt::format(" [{}]={:.1f}", key, n / 120.0);
                  for (size_t offset = 0; offset < line.size(); offset += 900)
@@ -37265,7 +37348,7 @@ index 581a9d20..195ffdf0 100644
                                    "skips/frame: invisible-draws=%.1f repeated-clears=%.1f "
                                    "water-reflection=%.2f water-culled=%.1f shadow-culled=%.1f "
                                    "lazy-resolves=%.1f "
-@@ -7101,11 +7144,11 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7101,11 +7169,11 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                    if (const uint32_t n = g_present_surface_rejects[i].exchange(0))
                      a11 += fmt::format(" r{}={:.2f}", i, n / 120.0);
                  }
@@ -37279,7 +37362,7 @@ index 581a9d20..195ffdf0 100644
                                    "vertex-cache/frame: eligible draws=%.0f indices=%.0f rejected draws=%.0f indices=%.0f "
                                    "reordered draws=%.0f",
                                    g_vertex_cache_draws[1].exchange(0) / 120.0,
-@@ -7113,7 +7156,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7113,7 +7181,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                                    g_vertex_cache_draws[0].exchange(0) / 120.0,
                                    g_vertex_cache_indices[0].exchange(0) / 120.0,
                                    g_vertex_cache_reordered_draws.exchange(0) / 120.0);
@@ -37288,7 +37371,7 @@ index 581a9d20..195ffdf0 100644
                                    "resolves/frame:%s reuse=%.1f/%.1f", top.c_str(),
                                    g_resolve_reuse_hits.exchange(0) / 120.0,
                                    g_resolve_reuse_candidates.exchange(0) / 120.0);
-@@ -7126,13 +7169,13 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -7126,13 +7194,13 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                std::string top;
                for (size_t i = 0; i < reasons.size() && i < 10; ++i)
                  top += fmt::format(" {:03X}={:.0f}", reasons[i].second, reasons[i].first / 120.0);
@@ -37304,7 +37387,7 @@ index 581a9d20..195ffdf0 100644
              }
              pipeline_report_frames_ = 0;
              pipelined_sync_waits_ = 0;
-@@ -7444,6 +7487,9 @@ void Gta4NativeGraphicsSystem::SignalGuestFrameComplete(uint32_t device, uint32_
+@@ -7444,6 +7512,9 @@ void Gta4NativeGraphicsSystem::SignalGuestFrameComplete(uint32_t device, uint32_
  void Gta4NativeGraphicsSystem::FrameRecorderMain() {
  #if REX_PLATFORM_ANDROID
    pthread_setname_np(pthread_self(), "GtaRecorder");
@@ -37314,19 +37397,27 @@ index 581a9d20..195ffdf0 100644
  #endif
    while (true) {
      std::optional<NativeRecorderJob> job;
-@@ -7458,9 +7504,11 @@ void Gta4NativeGraphicsSystem::FrameRecorderMain() {
+@@ -7458,9 +7529,19 @@ void Gta4NativeGraphicsSystem::FrameRecorderMain() {
      const uint32_t timeline_frame = job->present.submitted_frame;
      recording_ring_serial_ = job->ring_serial;
      MarkFrameTimeline(timeline_frame, kTimelineRecorderStart);
 +    const int64_t recorder_begin_ns = rex::frame_stats::NowNs();
++    rex::frame_stats::g_frame_pacer_us.store(0, std::memory_order_relaxed);
      RunReleaseEffects(recording_release_effects_);
      BeginModernShaderFrame();
      FinishPresent(*job->present_command, job->present);
-+    rex::frame_stats::NoteRecorderFrame(uint64_t(rex::frame_stats::NowNs() - recorder_begin_ns) / 1000);
++    {
++      // Its work: the frame's time less the frame limit's hold (presenter).
++      const uint64_t total_us = uint64_t(rex::frame_stats::NowNs() - recorder_begin_ns) / 1000;
++      const uint64_t paced_us = rex::frame_stats::g_frame_pacer_us.load(std::memory_order_relaxed);
++      const uint64_t busy_us = total_us > paced_us ? total_us - paced_us : 0;
++      rex::frame_stats::g_last_recorder_busy_us.store(uint32_t(busy_us), std::memory_order_relaxed);
++      rex::frame_stats::NoteRecorderFrame(busy_us);
++    }
      MarkFrameTimeline(timeline_frame, kTimelinePublishEnd);
      LogFrameTimeline(timeline_frame);
      job.reset();
-@@ -9911,7 +9959,10 @@ bool Gta4NativeGraphicsSystem::CompleteNativeFrameSlot(uint32_t slot, uint64_t s
+@@ -9911,7 +9992,10 @@ bool Gta4NativeGraphicsSystem::CompleteNativeFrameSlot(uint32_t slot, uint64_t s
  
    gpu_flight::Record("native.slot-wait-begin", slot, submission, active_texture_frame_);
    const uint64_t wait_begin = actual_wait_ticks ? rex::chrono::Clock::QueryHostTickCount() : 0;
@@ -37337,7 +37428,7 @@ index 581a9d20..195ffdf0 100644
    if (actual_wait_ticks) {
      *actual_wait_ticks += rex::chrono::Clock::QueryHostTickCount() - wait_begin;
    }
-@@ -18714,12 +18765,14 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
+@@ -18714,12 +18798,14 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
      view_info.components.b = VK_COMPONENT_SWIZZLE_ONE;
      view_info.components.a = VK_COMPONENT_SWIZZLE_R;
    } else if (vulkan_device->properties().portabilitySubset ||
@@ -37356,7 +37447,37 @@ index 581a9d20..195ffdf0 100644
      host_swizzle = xenos::XE_GPU_TEXTURE_SWIZZLE_RGBA;
      view_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
                              VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
-@@ -20509,6 +20562,7 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+@@ -20419,13 +20505,19 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+     texture_budget_pressure_active_ = pressure_after_poll;
+   }
+ 
++  // [ps5 port] The PS5 has room to spare (a 2.5 GB cache in a 5.5 GB budget
++  // in play): an unused texture stays 90 s instead of 20 s unless memory runs
++  // short, so looking around or driving back doesn't upload it again.
++  auto retention = [](bool pressure) -> uint32_t {
++    return REX_PLATFORM_PS5 && !pressure ? 2700 : kNativeTextureCacheRetentionFrames;
++  };
+   std::vector<Candidate> candidates;
+   auto consider = [&](uint64_t generation, const NativeTextureImage* image) {
+     if (!image || !image->source ||
+         !CanDiscardNativeTextureImageContents(image->source->gpu_produced, !image->source->payload.empty()) ||
+         protected_texture_generations_.contains(generation)) return;
+     if (!allocation_recovery && !ShouldEvictNativeTextureCandidate(false, true, submitted_frame,
+-          image->last_used_frame, kNativeTextureCacheRetentionFrames)) return;
++          image->last_used_frame, retention(texture_budget_pressure_active_))) return;
+     candidates.push_back({{image->last_use_serial, generation}, image->memory_heap, image->allocation_size});
+   };
+   if (allocation_recovery) {
+@@ -20489,7 +20581,7 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
+       if (!allocation_recovery &&
+           !ShouldEvictNativeTextureCandidate(false, budget_pressure, submitted_frame,
+                                              image->second->last_used_frame,
+-                                             kNativeTextureCacheRetentionFrames)) {
++                                             retention(budget_pressure))) {
+         continue;
+       }
+ 
+@@ -20509,6 +20601,7 @@ void Gta4NativeGraphicsSystem::EvictNativeTextureImages(uint32_t submitted_frame
                  configured_limit_bytes, candidates.size(), render_queue_.size()));
        }
        evicted_images.push_back(std::move(image->second));
@@ -37364,13 +37485,13 @@ index 581a9d20..195ffdf0 100644
        const NativeTextureImage* evicted = evicted_images.back().get();
        RecordNativeMemoryLifecycle(
            memory::ResourceKind::kTextureImage, memory::LifecycleAction::kEvict,
-@@ -20622,6 +20676,17 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedTextureImages(
+@@ -20622,6 +20715,17 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedTextureImages(
      CollectProtectedTextureGenerations(present_source, protected_texture_generations_);
      EvictNativeTextureImages(submitted_frame, false);
    }
 +#if REX_PLATFORM_PS5
 +  // [ps5 port] Texture memory every ~20 s: textures come and go on the PS5.
-+  if (submitted_frame % 600 == 0 && REXCVAR_GET(ps5_hud_trace)) {
++  if (submitted_frame % 600 == 0) {  // one line every ~20 s
 +    REXLOG_INFO("ps5 textures: frame={} images={} heap-usage={} MB heap-budget={} MB pressure={} "
 +                "alloc-retries={} alloc-failures={} pool-reuses={} evictions={}",
 +                submitted_frame, native_texture_images_.size(), texture_heap_usage_ >> 20,
@@ -37382,7 +37503,7 @@ index 581a9d20..195ffdf0 100644
  }
  
  void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_frame) {
-@@ -31231,7 +31296,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -31231,7 +31335,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
        if (pipelined_recording_ && frame_constant_bound_.valid && frame_constant_bound_.read_epoch &&
            REXCVAR_GET(gta4_native_assembled_frame_scans)) {
          // A later frame's stamp only makes this conservative (an extra resolve).
@@ -37391,7 +37512,7 @@ index 581a9d20..195ffdf0 100644
                 frame_constant_bound_.read_epoch;
        } else for (const NativeCommand& scan : current_frame_) {
          for (const auto& texture : scan.textures) {
-@@ -31542,6 +31607,35 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -31542,6 +31646,35 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
      }
  
      const NativeCommand& command = *command_pointer;
@@ -37427,7 +37548,7 @@ index 581a9d20..195ffdf0 100644
      const bool descriptor_draw = command.type == CommandType::kDrawPrimitive ||
                                   command.type == CommandType::kDrawPrimitiveUp ||
                                   command.type == CommandType::kDrawIndexedPrimitive;
-@@ -33478,6 +33572,119 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -33478,6 +33611,119 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
        }
        std::fflush(stderr);
      }
@@ -39601,6 +39722,34 @@ index 377172d5..6a0c90e6 100644
      find_package(PkgConfig REQUIRED)
      pkg_check_modules(X11_XCB REQUIRED x11-xcb)
  
+diff --git a/glue/rexglue-sdk-main/src/ui/presenter.cpp b/glue/rexglue-sdk-main/src/ui/presenter.cpp
+index c81f558b..d34c6560 100644
+--- a/glue/rexglue-sdk-main/src/ui/presenter.cpp
++++ b/glue/rexglue-sdk-main/src/ui/presenter.cpp
+@@ -20,6 +20,9 @@
+ #include <rex/diagnostics/policy.h>
+ #include <rex/logging.h>
+ #include <rex/platform.h>
++#if REX_PLATFORM_PS5
++#include <rex/frame_stats.h>
++#endif
+ #include <rex/ui/presenter.h>
+ #include <rex/ui/window.h>
+ 
+@@ -875,6 +878,13 @@ bool Presenter::RefreshGuestOutput(
+       paint_result != PaintResult::kGpuLostExternally) {
+     const uint64_t begin = FramePacerNowNs();
+     const bool accepted = frame_publication_gate_.Wait(publication_serial);
++#if REX_PLATFORM_PS5
++    {
++      const uint64_t waited_us = (FramePacerNowNs() - begin) / 1000;
++      rex::frame_stats::g_pacer_wait_us.fetch_add(waited_us, std::memory_order_relaxed);
++      rex::frame_stats::g_frame_pacer_us.fetch_add(waited_us, std::memory_order_relaxed);
++    }
++#endif
+     if (rex::diagnostics::IsEnabled(rex::diagnostics::Category::kPresenter)) {
+       REXLOG_INFO("FramePacer point=handoff serial={} frame={} released={} wait-ns={}",
+                   publication_serial, provenance.submitted_frame, accepted, FramePacerNowNs()-begin);
 diff --git a/glue/rexglue-sdk-main/src/ui/rex_app.cpp b/glue/rexglue-sdk-main/src/ui/rex_app.cpp
 index 0f7c5043..6b5ae05e 100644
 --- a/glue/rexglue-sdk-main/src/ui/rex_app.cpp
@@ -40004,7 +40153,7 @@ index 87f97744..5acee304 100644
    if (allowed_types & Surface::kTypeFlag_AndroidNativeWindow) {
      auto* native_window = static_cast<ANativeWindow*>(GetNativeWindowHandle());
 diff --git a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
-index ac2d8dc4..1050dd71 100644
+index ac2d8dc4..fe87a3a8 100644
 --- a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 @@ -11,6 +11,7 @@
@@ -40100,7 +40249,7 @@ index ac2d8dc4..1050dd71 100644
  
      app->InvokeOnDestroy();
    }
-@@ -161,8 +203,258 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
+@@ -161,8 +203,290 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
  #include <SDL3/SDL_main.h>
  #endif
  
@@ -40191,6 +40340,26 @@ index ac2d8dc4..1050dd71 100644
 +}
 +REXCVAR_DEFINE_BOOL(ps5_hang_reports, true, "PS5",
 +                    "When the game stops drawing for a few seconds, log where every thread is");
++// A stall in play (no new frame for 300 ms after the game has been running):
++// where every thread is while it lasts, at most once every 20 s.
++static void Ps5HitchWatch() {
++  using namespace rex::frame_stats;
++  uint64_t sampled_at_frame = 0;
++  int64_t last_sample_ns = 0;
++  for (;;) {
++    std::this_thread::sleep_for(std::chrono::milliseconds(20));
++    const uint64_t frames = g_presents.load(std::memory_order_acquire);
++    const int64_t last = g_last_present_ns.load(std::memory_order_acquire), now = NowNs();
++    if (frames < 900 || frames == sampled_at_frame || !last || now - last < 300000000 ||
++        now - last_sample_ns < 20000000000ll || !REXCVAR_GET(ps5_hang_reports))
++      continue;
++    sampled_at_frame = frames;
++    last_sample_ns = now;
++    REXLOG_INFO("ps5 hitch: no new frame for {} ms after frame {}; where the threads are:",
++                (now - last) / 1000000, frames);
++    rex::ps5diag::SampleAllThreads();
++  }
++}
 +static void Ps5DiagMonitor() {
 +  using namespace rex::ps5diag;
 +  for (int tick = 1;; ++tick) {
@@ -40229,16 +40398,24 @@ index ac2d8dc4..1050dd71 100644
 +      const uint64_t rec_us = g_recorder_us.exchange(0), rec_n = g_recorder_frames.exchange(0);
 +      const uint64_t rec_max = g_recorder_max_us.exchange(0), wait_us = g_handoff_wait_us.exchange(0);
 +      const uint64_t gpu_wait_us = g_gpu_wait_us.exchange(0);
++      const uint64_t slot_wait_us = g_title_slot_wait_us.exchange(0), pacer_us = g_pacer_wait_us.exchange(0);
 +      if (last_ns) {
 +        const double real = double(now_ns - last_ns) / 1e9;
 +        const double guest_s = double(guest - last_guest) / double(rex::chrono::Clock::guest_tick_frequency());
 +        const uint64_t frames = presents - last_presents;
-+        REXLOG_INFO("ps5 timing: real {:.2f}s, guest clock {:.2f}s, game step {:.1f} ms, frame {:.1f} ms, "
-+                    "recorder {:.1f} ms (worst {:.1f}, waiting for the GPU {:.1f}), worker waiting on it {:.1f} ms",
-+                    real, guest_s, step * 1000.0, frames ? real * 1000.0 / double(frames) : 0.0,
++        auto per_frame = [frames](uint64_t us) { return frames ? double(us) / 1000.0 / double(frames) : 0.0; };
++        const double frame_ms = frames ? real * 1000.0 / double(frames) : 0.0;
++        // The game's own work per frame is its frame time less its waits for
++        // the renderer; the recorder's is its time less the frame limit's hold.
++        REXLOG_INFO("ps5 timing: real {:.2f}s, guest clock {:.2f}s, game step {:.1f} ms, frame {:.1f} ms; "
++                    "game {:.1f} ms (+{:.1f} waiting for the renderer), recorder {:.1f} ms (worst {:.1f}, "
++                    "waiting for the GPU {:.1f}), held for the frame limit {:.1f} ms, worker waiting on the "
++                    "recorder {:.1f} ms",
++                    real, guest_s, step * 1000.0, frame_ms,
++                    std::max(0.0, frame_ms - per_frame(slot_wait_us)), per_frame(slot_wait_us),
 +                    rec_n ? double(rec_us) / 1000.0 / double(rec_n) : 0.0, double(rec_max) / 1000.0,
-+                    rec_n ? double(gpu_wait_us) / 1000.0 / double(rec_n) : 0.0,
-+                    frames ? double(wait_us) / 1000.0 / double(frames) : 0.0);
++                    rec_n ? double(gpu_wait_us) / 1000.0 / double(rec_n) : 0.0, per_frame(pacer_us),
++                    per_frame(wait_us));
 +      }
 +      last_guest = guest;
 +      last_presents = presents;
@@ -40251,9 +40428,17 @@ index ac2d8dc4..1050dd71 100644
 +        counters[kWatchFaults].load(), counters[kUnhandledFaults].load(), counters[kVblanks].load(),
 +        counters[kInterrupts].load(), counters[kWritePointer].load(),
 +        counters[kPrimaryBuffers].load());
-+    // Guest threads stuck in one kernel wait for over 5 s.
++    // The game stopped presenting frames (the native renderer doesn't use the
++    // GPU ring, so frames are what show it): guest threads stuck in one kernel
++    // wait for over 5 s, and where every thread is. In play, threads waiting
++    // on idle job queues are normal and not listed.
++    static uint64_t last_presents_seen = 0, stuck_ticks = 0, samples = 0;
++    const uint64_t presents_now = rex::frame_stats::g_presents.load();
++    stuck_ticks = presents_now == last_presents_seen ? stuck_ticks + 1 : 0;
++    last_presents_seen = presents_now;
 +    const uint64_t now = NowMs();
 +    for (WaitSlot& w : wait_slots) {
++      if (!stuck_ticks) break;
 +      uint64_t since = w.since_ms.load(std::memory_order_acquire);
 +      if (since && since < now && now - since > 5000) {
 +        REXLOG_INFO("ps5 diag:   guest thread {:X} waiting {}s on {} {} handle {:08X}{} from game code {:08X}",
@@ -40304,11 +40489,6 @@ index ac2d8dc4..1050dd71 100644
 +        }
 +      }
 +    }
-+    // The game stopped submitting GPU work: show where every thread is, twice.
-+    static uint64_t last_writes = 0, stuck_ticks = 0, samples = 0;
-+    uint64_t writes = counters[kWritePointer].load();
-+    stuck_ticks = writes == last_writes ? stuck_ticks + 1 : 0;
-+    last_writes = writes;
 +    if ((stuck_ticks == 3 || stuck_ticks == 6) && samples < 2 && REXCVAR_GET(ps5_hang_reports)) {
 +      ++samples;
 +      SampleAllThreads();
@@ -40341,6 +40521,7 @@ index ac2d8dc4..1050dd71 100644
 +  std::set_terminate(Ps5Terminate);
 +  std::thread(Ps5DiagMonitor).detach();
 +  std::thread(Ps5Profiler).detach();
++  std::thread(Ps5HitchWatch).detach();
 +  int result = RunWindowedApp(argc, argv);
 +  if (result != 0) {
 +    Ps5Notify("Stopped with an error - see /app0/logs");
