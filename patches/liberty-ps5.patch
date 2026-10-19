@@ -1,5 +1,5 @@
 diff --git a/glue/rexglue-sdk-main/CMakeLists.txt b/glue/rexglue-sdk-main/CMakeLists.txt
-index fef3fea..b72d4da 100644
+index fef3fea0..b72d4da7 100644
 --- a/glue/rexglue-sdk-main/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/CMakeLists.txt
 @@ -120,10 +120,10 @@ endif()
@@ -30,7 +30,7 @@ index fef3fea..b72d4da 100644
      if(REX_TARGET_PROCESSOR MATCHES "AMD64|x86_64")
          set(REX_PLATFORM "mac-amd64")
 diff --git a/glue/rexglue-sdk-main/cmake/rexglue_helpers.cmake b/glue/rexglue-sdk-main/cmake/rexglue_helpers.cmake
-index 9ffeffd..1f19e16 100644
+index 9ffeffdf..1f19e16d 100644
 --- a/glue/rexglue-sdk-main/cmake/rexglue_helpers.cmake
 +++ b/glue/rexglue-sdk-main/cmake/rexglue_helpers.cmake
 @@ -151,13 +151,21 @@ function(rexglue_apply_target_settings target_name)
@@ -57,7 +57,7 @@ index 9ffeffd..1f19e16 100644
      endif()
  
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
-index 3b03306..2eb0a27 100644
+index 3b033069..2eb0a272 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
 @@ -443,6 +443,75 @@ elseif(ANDROID)
@@ -137,7 +137,7 @@ index 3b03306..2eb0a27 100644
      add_library(gta4_recomp INTERFACE)
      target_include_directories(gta4_recomp INTERFACE
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/generated/gta4_init.h b/glue/rexglue-sdk-main/gta4-recomp/generated/gta4_init.h
-index 42ddaa3..f25b7a2 100644
+index 42ddaa34..f25b7a26 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/generated/gta4_init.h
 +++ b/glue/rexglue-sdk-main/gta4-recomp/generated/gta4_init.h
 @@ -146,7 +146,7 @@ extern PPCFuncMapping PPCFuncMappings[];
@@ -150,7 +150,7 @@ index 42ddaa3..f25b7a2 100644
  #else
  #define REX_PHYS_HOST_OFFSET(addr) 0u
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
-index 68d694b..efe7e1a 100644
+index 68d694b9..a0cf1b5f 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
 @@ -1,4 +1,7 @@
@@ -170,6 +170,20 @@ index 68d694b..efe7e1a 100644
                        "Maximum game and host presentation rate: 0 is unlocked; caps are 30, 40, 60, and "
                        "120 FPS")
      .allowed({"0", "30", "40", "60", "120"});
+@@ -150,11 +153,11 @@ REXCVAR_DEFINE_UINT32(gta4_shadow_map_base_size, REX_PLATFORM_ANDROID ? 256 : 51
+ REXCVAR_DEFINE_DOUBLE(gta4_shadow_distance_guard_factor, 1.0, "GTA IV/Graphics/Shadows",
+                       "Multiplier on the shadow distance owned by the 30 FPS guard")
+     .range(0.1, 1.0);
+-REXCVAR_DEFINE_DOUBLE(gta4_shadow_distance_scale, 2.0, "GTA IV/Graphics/Shadows",
++REXCVAR_DEFINE_DOUBLE(gta4_shadow_distance_scale, REX_PLATFORM_PS5 ? 1.0 : 2.0, "GTA IV/Graphics/Shadows",
+                       "Multiplier applied to GTA IV's directional shadow range")
+     .range(0.1, 4.0)
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+-REXCVAR_DEFINE_STRING(gta4_reflection_resolution, REX_PLATFORM_ANDROID ? "original" : "1080p",
++REXCVAR_DEFINE_STRING(gta4_reflection_resolution, REX_PLATFORM_ANDROID || REX_PLATFORM_PS5 ? "original" : "1080p",
+                       "GTA IV/Graphics/Reflections",
+                       "Reflection resolution preset: original, 1080p, or full")
+     .allowed({"original", "1080p", "full"})
 @@ -188,7 +191,7 @@ REXCVAR_DEFINE_STRING(gta4_reflection_capture_distance, "original",
                        "Exterior environment capture distance: near (20), original (40), extended (60), or "
                        "far (80)")
@@ -257,7 +271,7 @@ index 68d694b..efe7e1a 100644
    StartLiveCvarWatcher(rex::filesystem::GetUserFolder() / "live_cvars.txt");
    StartHotThreadPinning();
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.h b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.h
-index 22adcbd..7c5f221 100644
+index 22adcbd5..7c5f2215 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.h
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.h
 @@ -45,6 +45,15 @@ class GTA4App final : public rex::ReXApp {
@@ -276,8 +290,54 @@ index 22adcbd..7c5f221 100644
    void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override;
    bool RequiresSynchronizedInitialThreadResume() const override;
    void OnShutdown() override;
+diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_loading_parallax_fix.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_loading_parallax_fix.cpp
+index c1faf846..f07d3c44 100644
+--- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_loading_parallax_fix.cpp
++++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_loading_parallax_fix.cpp
+@@ -1,12 +1,16 @@
+ #include "gta4_loading_parallax_fix.h"
+ 
+ #include <array>
++#include <chrono>
+ #include <bit>
+ #include <cstdint>
+ 
+ #include "gta4_init.h"
+ #include "gta4_aspect_hooks.h"
+ 
++#include <rex/logging.h>
++#include <rex/platform.h>
++
+ namespace {
+ 
+ // Layout and limits are taken from the generated sub_82143DC8 animator and
+@@ -59,6 +63,24 @@ extern "C" void sub_82143DC8(PPCContext& ctx, uint8_t* base) {
+ 
+   const float cumulative_elapsed = LoadGuestFloat(base, kCumulativeElapsedGlobal);
+   const float frame_delta = LoadGuestFloat(base, kFrameDeltaGlobal);
++#if REX_PLATFORM_PS5
++  // [ps5 port] Each loading screen once: how long it was meant to show, how
++  // long the previous one really showed, and the game's clock, to compare.
++  {
++    static uint32_t logged_screen = ~0u;
++    static auto shown_at = std::chrono::steady_clock::now();
++    if (screen != logged_screen) {
++      const auto now = std::chrono::steady_clock::now();
++      REXLOG_INFO("gta4-loading: screen {} duration {} (previous screen showed {} ms) elapsed {:.3f} "
++                  "delta {:.4f}",
++                  screen, LoadGuestFloat(base, screen_base),
++                  std::chrono::duration_cast<std::chrono::milliseconds>(now - shown_at).count(),
++                  cumulative_elapsed, frame_delta);
++      logged_screen = screen;
++      shown_at = now;
++    }
++  }
++#endif
+   const bool advance_animation = animation_clock.Observe(cumulative_elapsed, frame_delta);
+   std::array<LayerSnapshot, kLayersPerScreen> snapshots = {};
+   for (uint32_t layer = 0; layer < layer_count; ++layer) {
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_multiplayer_64_hooks.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_multiplayer_64_hooks.cpp
-index bb44175..1b222e3 100644
+index bb44175b..1b222e35 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_multiplayer_64_hooks.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_multiplayer_64_hooks.cpp
 @@ -173,7 +173,13 @@ struct NearestNetworkDecisionContext {
@@ -297,7 +357,7 @@ index bb44175..1b222e3 100644
    bool active = false;
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h
 new file mode 100644
-index 0000000..c60abf2
+index 00000000..c60abf22
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_install_io.h
 @@ -0,0 +1,486 @@
@@ -788,7 +848,7 @@ index 0000000..c60abf2
 +
 +}  // namespace gta4::install::io
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
-index 84a1723..7a35fee 100644
+index 84a17237..7a35fee6 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.cpp
 @@ -31,7 +31,10 @@
@@ -1205,7 +1265,7 @@ index 84a1723..7a35fee 100644
 +
  }  // namespace gta4::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.h b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.h
-index 7e9c391..fc7d2d7 100644
+index 7e9c3911..fc7d2d7e 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.h
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_installer.h
 @@ -1,6 +1,7 @@
@@ -1243,7 +1303,7 @@ index 7e9c391..fc7d2d7 100644
  
  }  // namespace gta4::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
-index 9854392..55fc045 100644
+index 98543925..55fc045d 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/install/gta4_rpf_extractor.cpp
 @@ -7,6 +7,7 @@
@@ -1517,10 +1577,10 @@ index 9854392..55fc045 100644
      for (auto& child : nested) {
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.cpp
 new file mode 100644
-index 0000000..dd53f53
+index 00000000..0c407575
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.cpp
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,180 @@
 +// GTA IV PS5 - the frame rate counter, the watermark and the frame time
 +// capture (see ps5_overlay.h).
 +#include "ps5_overlay.h"
@@ -1641,10 +1701,12 @@ index 0000000..dd53f53
 +  ImFont* body = fonts.body ? fonts.body : ImGui::GetFont();
 +  auto P = [&](float x, float y) { return ImVec2(x * s, y * s); };
 +
-+  // ---- the counter, top left: frames a second, frame time, the slow frames and a graph
-+  const float x = 28, y = 24, w = 330, pad = 16;
-+  const float graph_h = 64, h = pad + 44 + 26 + 12 + graph_h + pad;
-+  dl->AddRectFilled(P(x, y), P(x + w, y + h), IM_COL32(0, 0, 0, 180), 10 * s);
++  // ---- the counter, on the left edge halfway down (the game's own HUD uses
++  // the corners): frames a second, frame time, the slow frames and a graph
++  const float w = 264, pad = 12;
++  const float graph_h = 48, h = pad + 36 + 20 + 10 + graph_h + pad;
++  const float x = 12, y = (size.y / s - h) * 0.5f;
++  dl->AddRectFilled(P(x, y), P(x + w, y + h), IM_COL32(0, 0, 0, 170), 8 * s);
 +  char big[16], unit[] = "FPS", ms[32], small[96];
 +  if (fps_ > 0) {
 +    std::snprintf(big, sizeof(big), "%.0f", fps_);
@@ -1655,20 +1717,20 @@ index 0000000..dd53f53
 +    ms[0] = small[0] = 0;
 +  }
 +  const ImU32 col = fps_ > 0 ? RateColor(ms_) : IM_COL32(244, 245, 247, 255);
-+  const float big_size = 44 * s;
++  const float big_size = 36 * s;
 +  const ImVec2 bsz = bold->CalcTextSizeA(big_size, 1e9f, 0, big);
-+  dl->AddText(bold, big_size, P(x + pad, y + pad - 6), col, big);
-+  dl->AddText(bold, 18 * s, ImVec2((x + pad) * s + bsz.x + 8 * s, (y + pad + 17) * s), IM_COL32(255, 255, 255, 170), unit);
-+  const ImVec2 msz = bold->CalcTextSizeA(24 * s, 1e9f, 0, ms);
-+  dl->AddText(bold, 24 * s, ImVec2((x + w - pad) * s - msz.x, (y + pad + 10) * s), IM_COL32(244, 245, 247, 255), ms);
-+  dl->AddText(body, 17 * s, P(x + pad, y + pad + 46), IM_COL32(255, 255, 255, 175), small);
++  dl->AddText(bold, big_size, P(x + pad, y + pad - 5), col, big);
++  dl->AddText(bold, 15 * s, ImVec2((x + pad) * s + bsz.x + 6 * s, (y + pad + 13) * s), IM_COL32(255, 255, 255, 170), unit);
++  const ImVec2 msz = bold->CalcTextSizeA(20 * s, 1e9f, 0, ms);
++  dl->AddText(bold, 20 * s, ImVec2((x + w - pad) * s - msz.x, (y + pad + 8) * s), IM_COL32(244, 245, 247, 255), ms);
++  dl->AddText(body, 14 * s, P(x + pad, y + pad + 37), IM_COL32(255, 255, 255, 175), small);
 +
 +  // the graph: one bar a frame, newest on the right, 0 to 66 ms (15 FPS) tall
-+  const float gx = x + pad, gy = y + pad + 44 + 26 + 12, gw = w - pad * 2;
++  const float gx = x + pad, gy = y + pad + 36 + 20 + 10, gw = w - pad * 2;
 +  dl->AddRectFilled(P(gx, gy), P(gx + gw, gy + graph_h), IM_COL32(255, 255, 255, 18), 4 * s);
 +  constexpr float kTopMs = 66.7f;
 +  const uint64_t frames = rex::frame_stats::g_presents.load(std::memory_order_acquire);
-+  constexpr int kBars = 149;
++  constexpr int kBars = 120;
 +  const float bar = gw / float(kBars);
 +  for (int i = 0; i < kBars && uint64_t(i) + 1 < frames; ++i) {
 +    const uint32_t us =
@@ -1685,8 +1747,8 @@ index 0000000..dd53f53
 +    dl->AddLine(P(gx, ly), P(gx + gw, ly), IM_COL32(0, 0, 0, 140), 2 * s);
 +    dl->AddLine(P(gx, ly), P(gx + gw, ly), IM_COL32(255, 255, 255, 90), 1 * s);
 +    const char* label = line_ms < 20 ? "60" : "30";
-+    dl->AddText(bold, 13 * s, P(gx + 4 + 1, ly - 16 + 1), IM_COL32(0, 0, 0, 200), label);
-+    dl->AddText(bold, 13 * s, P(gx + 4, ly - 16), IM_COL32(255, 255, 255, 200), label);
++    dl->AddText(bold, 11 * s, P(gx + 3 + 1, ly - 13 + 1), IM_COL32(0, 0, 0, 200), label);
++    dl->AddText(bold, 11 * s, P(gx + 3, ly - 13), IM_COL32(255, 255, 255, 200), label);
 +  }
 +
 +  // ---- the watermark, along the bottom
@@ -1701,12 +1763,12 @@ index 0000000..dd53f53
 +}  // namespace gta4ps5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.h
 new file mode 100644
-index 0000000..b9be5b5
+index 00000000..be687112
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.h
 @@ -0,0 +1,42 @@
 +// GTA IV PS5 - what the PS5 build draws over the game: the frame rate counter
-+// (always on, top left: frames a second, the frame time, the slowest frames
++// (always on, on the left edge: frames a second, the frame time, the slowest frames
 +// and a graph of the last frames), the beta build's
 +// watermark along the bottom, and, when it's on in the hub's Debug settings,
 +// a frame time capture to /app0/logs.
@@ -1749,7 +1811,7 @@ index 0000000..b9be5b5
 +}  // namespace gta4ps5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/save_import.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/save_import.cpp
 new file mode 100644
-index 0000000..4e2ec4b
+index 00000000..4e2ec4be
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/save_import.cpp
 @@ -0,0 +1,162 @@
@@ -1917,7 +1979,7 @@ index 0000000..4e2ec4b
 +}  // namespace gta4ps5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/save_import.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/save_import.h
 new file mode 100644
-index 0000000..83297a9
+index 00000000..83297a9d
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/save_import.h
 @@ -0,0 +1,28 @@
@@ -1951,7 +2013,7 @@ index 0000000..83297a9
 +}  // namespace gta4ps5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/sound.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/sound.cpp
 new file mode 100644
-index 0000000..786c5fc
+index 00000000..786c5fc6
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/sound.cpp
 @@ -0,0 +1,443 @@
@@ -2400,7 +2462,7 @@ index 0000000..786c5fc
 +}  // namespace gta4ps5::sound
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/sound.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/sound.h
 new file mode 100644
-index 0000000..f037948
+index 00000000..f0379480
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/sound.h
 @@ -0,0 +1,78 @@
@@ -2484,7 +2546,7 @@ index 0000000..f037948
 +}  // namespace gta4ps5::sound
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/trophies_game.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/trophies_game.cpp
 new file mode 100644
-index 0000000..30a115f
+index 00000000..30a115f3
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/trophies_game.cpp
 @@ -0,0 +1,173 @@
@@ -2663,7 +2725,7 @@ index 0000000..30a115f
 +}  // namespace gta4ps5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/trophies_game.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/trophies_game.h
 new file mode 100644
-index 0000000..18a0d8a
+index 00000000..18a0d8a1
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/trophies_game.h
 @@ -0,0 +1,63 @@
@@ -2732,7 +2794,7 @@ index 0000000..18a0d8a
 +}  // namespace gta4ps5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp
 new file mode 100644
-index 0000000..05d0f08
+index 00000000..05d0f08c
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp
 @@ -0,0 +1,75 @@
@@ -2813,7 +2875,7 @@ index 0000000..05d0f08
 +#endif  // REX_PLATFORM_PS5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.h
 new file mode 100644
-index 0000000..f357bee
+index 00000000..f357bee2
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.h
 @@ -0,0 +1,23 @@
@@ -2842,7 +2904,7 @@ index 0000000..f357bee
 +#endif
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/dr_flac.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/dr_flac.h
 new file mode 100644
-index 0000000..051f37c
+index 00000000..051f37c6
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/dr_flac.h
 @@ -0,0 +1,12760 @@
@@ -15608,7 +15670,7 @@ index 0000000..051f37c
 +*/
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/dr_mp3.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/dr_mp3.h
 new file mode 100644
-index 0000000..a631ae4
+index 00000000..a631ae40
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/dr_mp3.h
 @@ -0,0 +1,5430 @@
@@ -21044,7 +21106,7 @@ index 0000000..a631ae4
 +*/
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
 new file mode 100644
-index 0000000..ae4d537
+index 00000000..ae4d537a
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
 @@ -0,0 +1,954 @@
@@ -22004,7 +22066,7 @@ index 0000000..ae4d537
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h
 new file mode 100644
-index 0000000..07ec1bb
+index 00000000..07ec1bbe
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h
 @@ -0,0 +1,118 @@
@@ -22128,7 +22190,7 @@ index 0000000..07ec1bb
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
 new file mode 100644
-index 0000000..1f433f7
+index 00000000..1f433f7b
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
 @@ -0,0 +1,343 @@
@@ -22477,7 +22539,7 @@ index 0000000..1f433f7
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.cpp
 new file mode 100644
-index 0000000..4276bd7
+index 00000000..4276bd77
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.cpp
 @@ -0,0 +1,176 @@
@@ -22659,7 +22721,7 @@ index 0000000..4276bd7
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.h
 new file mode 100644
-index 0000000..4f4ac5e
+index 00000000..4f4ac5e2
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.h
 @@ -0,0 +1,18 @@
@@ -22683,7 +22745,7 @@ index 0000000..4f4ac5e
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_style.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_style.h
 new file mode 100644
-index 0000000..c04ee96
+index 00000000..c04ee963
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_style.h
 @@ -0,0 +1,71 @@
@@ -22760,7 +22822,7 @@ index 0000000..c04ee96
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies.cpp
 new file mode 100644
-index 0000000..b002483
+index 00000000..b002483c
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies.cpp
 @@ -0,0 +1,344 @@
@@ -23110,7 +23172,7 @@ index 0000000..b002483
 +}  // namespace gta4ps5::trophies
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies.h
 new file mode 100644
-index 0000000..26b2286
+index 00000000..26b22864
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies.h
 @@ -0,0 +1,85 @@
@@ -23201,7 +23263,7 @@ index 0000000..26b2286
 +}  // namespace gta4ps5::trophies
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies_page.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies_page.cpp
 new file mode 100644
-index 0000000..7d075b4
+index 00000000..7d075b44
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies_page.cpp
 @@ -0,0 +1,199 @@
@@ -23406,10 +23468,10 @@ index 0000000..7d075b4
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 0000000..18570a4
+index 00000000..c4f0166a
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1166 @@
+@@ -0,0 +1,1178 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -23542,6 +23604,14 @@ index 0000000..18570a4
 +       {"off", "fxaa", "smaa"}, {"Off", "FXAA", "SMAA"}, "fxaa"},
 +      {"DISPLAY", "gta4_motion_blur", "Motion Blur", nullptr, "The blur when driving fast or turning quickly.",
 +       false, {"false", "true"}, {"Off", "On"}, "true"},
++      {"DISPLAY", "gta4_reflection_resolution", "Reflections", nullptr,
++       "How sharp water, mirror and car reflections are. Original is the Xbox 360's; 1080p is cleaner "
++       "but costs frame rate.",
++       true, {"original", "1080p"}, {"Original", "1080p"}, "original"},
++      {"DISPLAY", "gta4_shadow_distance_scale", "Shadow Distance", nullptr,
++       "How far out shadows are drawn. Original is the Xbox 360's; 2x reaches further but costs frame "
++       "rate in the city.",
++       false, {"1.0", "2.0"}, {"Original", "2x"}, "1.0"},
 +      {"GAME", "gta4_skip_intro", "Skip Intro", nullptr,
 +       "Goes straight to the game's start screen, past the logos and the legal screens.", false,
 +       {"false", "true"}, {"Off", "On"}, "false"},
@@ -23569,6 +23639,10 @@ index 0000000..18570a4
 +      {"DEBUG", "ps5_hang_reports", "Freeze Reports", nullptr,
 +       "When the game stops drawing for a few seconds, writes where every thread is to the log.", false,
 +       {"false", "true"}, {"Off", "On"}, "true"},
++      {"DEBUG", "gta4_native_frame_timeline", "Frame Timeline", nullptr,
++       "Logs when each stage of every frame finished, to find what holds the frame rate back. The log "
++       "grows quickly with it on.",
++       false, {"false", "true"}, {"Off", "On"}, "false"},
 +  };
 +  return rows;
 +}
@@ -24578,7 +24652,7 @@ index 0000000..18570a4
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
 new file mode 100644
-index 0000000..dabbc58
+index 00000000..dabbc582
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
 @@ -0,0 +1,303 @@
@@ -24887,7 +24961,7 @@ index 0000000..dabbc58
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
 new file mode 100644
-index 0000000..2dd1c66
+index 00000000..2dd1c661
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
 @@ -0,0 +1,394 @@
@@ -25287,7 +25361,7 @@ index 0000000..2dd1c66
 +#endif  // __PROSPERO__
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.h
 new file mode 100644
-index 0000000..dbf963f
+index 00000000..dbf963f7
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.h
 @@ -0,0 +1,28 @@
@@ -25321,7 +25395,7 @@ index 0000000..dbf963f
 +#endif
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/stb_vorbis.c b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/stb_vorbis.c
 new file mode 100644
-index 0000000..3e5c250
+index 00000000..3e5c2504
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/stb_vorbis.c
 @@ -0,0 +1,5584 @@
@@ -30910,7 +30984,7 @@ index 0000000..3e5c250
 +------------------------------------------------------------------------------
 +*/
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/rpf_button_prompts.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/rpf_button_prompts.cpp
-index 56e95ed..377e504 100644
+index 56e95edb..377e5048 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/rpf_button_prompts.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/rpf_button_prompts.cpp
 @@ -403,6 +403,11 @@ std::string Lowercase(std::string_view value) {
@@ -30927,7 +31001,7 @@ index 56e95ed..377e504 100644
    SDL_JoystickID* gamepads = SDL_GetGamepads(&count);
 diff --git a/glue/rexglue-sdk-main/include/rex/audio/ps5/ps5_audio_driver.h b/glue/rexglue-sdk-main/include/rex/audio/ps5/ps5_audio_driver.h
 new file mode 100644
-index 0000000..1d95637
+index 00000000..1d956373
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/audio/ps5/ps5_audio_driver.h
 @@ -0,0 +1,46 @@
@@ -30978,7 +31052,7 @@ index 0000000..1d95637
 +
 +}  // namespace rex::audio::ps5
 diff --git a/glue/rexglue-sdk-main/include/rex/chrono/chrono.h b/glue/rexglue-sdk-main/include/rex/chrono/chrono.h
-index 6f4b3f0..0744c00 100644
+index 6f4b3f0a..0744c006 100644
 --- a/glue/rexglue-sdk-main/include/rex/chrono/chrono.h
 +++ b/glue/rexglue-sdk-main/include/rex/chrono/chrono.h
 @@ -17,6 +17,21 @@
@@ -31004,7 +31078,7 @@ index 6f4b3f0..0744c00 100644
  using hundrednano = std::ratio<1, 10000000>;
  
 diff --git a/glue/rexglue-sdk-main/include/rex/filesystem/devices/disc_image_device.h b/glue/rexglue-sdk-main/include/rex/filesystem/devices/disc_image_device.h
-index f97559e..5c77308 100644
+index f97559e9..5c773086 100644
 --- a/glue/rexglue-sdk-main/include/rex/filesystem/devices/disc_image_device.h
 +++ b/glue/rexglue-sdk-main/include/rex/filesystem/devices/disc_image_device.h
 @@ -20,6 +20,9 @@
@@ -31046,7 +31120,7 @@ index f97559e..5c77308 100644
    uint64_t total_file_size_ = 0;
 diff --git a/glue/rexglue-sdk-main/include/rex/filesystem/direct_io.h b/glue/rexglue-sdk-main/include/rex/filesystem/direct_io.h
 new file mode 100644
-index 0000000..87e2fd2
+index 00000000..87e2fd2e
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/filesystem/direct_io.h
 @@ -0,0 +1,182 @@
@@ -31234,7 +31308,7 @@ index 0000000..87e2fd2
 +#endif  // !_WIN32
 diff --git a/glue/rexglue-sdk-main/include/rex/frame_stats.h b/glue/rexglue-sdk-main/include/rex/frame_stats.h
 new file mode 100644
-index 0000000..c7555ba
+index 00000000..c7555bac
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/frame_stats.h
 @@ -0,0 +1,35 @@
@@ -31274,7 +31348,7 @@ index 0000000..c7555ba
 +
 +}  // namespace rex::frame_stats
 diff --git a/glue/rexglue-sdk-main/include/rex/graphics/pipeline/texture/cache.h b/glue/rexglue-sdk-main/include/rex/graphics/pipeline/texture/cache.h
-index d1580fc..a73a2ea 100644
+index d1580fca..a73a2ea1 100644
 --- a/glue/rexglue-sdk-main/include/rex/graphics/pipeline/texture/cache.h
 +++ b/glue/rexglue-sdk-main/include/rex/graphics/pipeline/texture/cache.h
 @@ -66,6 +66,13 @@ class TextureCache {
@@ -31333,7 +31407,7 @@ index d1580fc..a73a2ea 100644
                                          bool invalidated_by_gpu);
  
 diff --git a/glue/rexglue-sdk-main/include/rex/graphics/shared_memory.h b/glue/rexglue-sdk-main/include/rex/graphics/shared_memory.h
-index b05df6a..a00e62d 100644
+index b05df6aa..a00e62df 100644
 --- a/glue/rexglue-sdk-main/include/rex/graphics/shared_memory.h
 +++ b/glue/rexglue-sdk-main/include/rex/graphics/shared_memory.h
 @@ -35,7 +35,7 @@ class SharedMemory {
@@ -31392,7 +31466,7 @@ index b05df6a..a00e62d 100644
    // persistently allocated vector).
    std::vector<std::pair<uint32_t, uint32_t>> upload_ranges_;
 diff --git a/glue/rexglue-sdk-main/include/rex/input/input_driver.h b/glue/rexglue-sdk-main/include/rex/input/input_driver.h
-index 77a963b..ab187d9 100644
+index 77a963b9..ab187d90 100644
 --- a/glue/rexglue-sdk-main/include/rex/input/input_driver.h
 +++ b/glue/rexglue-sdk-main/include/rex/input/input_driver.h
 @@ -36,6 +36,11 @@ class InputDriver {
@@ -31408,7 +31482,7 @@ index 77a963b..ab187d9 100644
    virtual X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags,
                                  X_INPUT_KEYSTROKE* out_keystroke) = 0;
 diff --git a/glue/rexglue-sdk-main/include/rex/input/input_system.h b/glue/rexglue-sdk-main/include/rex/input/input_system.h
-index dd57db4..10f767b 100644
+index dd57db44..10f767bb 100644
 --- a/glue/rexglue-sdk-main/include/rex/input/input_system.h
 +++ b/glue/rexglue-sdk-main/include/rex/input/input_system.h
 @@ -42,6 +42,8 @@ class InputSystem : public system::IInputSystem {
@@ -31422,7 +31496,7 @@ index dd57db4..10f767b 100644
    // deterministic guest poll boundary without consuming transient input a
 diff --git a/glue/rexglue-sdk-main/include/rex/input/ps5/ps5_input_driver.h b/glue/rexglue-sdk-main/include/rex/input/ps5/ps5_input_driver.h
 new file mode 100644
-index 0000000..d735d1d
+index 00000000..d735d1d5
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/input/ps5/ps5_input_driver.h
 @@ -0,0 +1,47 @@
@@ -31474,7 +31548,7 @@ index 0000000..d735d1d
 +
 +}  // namespace rex::input::ps5
 diff --git a/glue/rexglue-sdk-main/include/rex/platform.h b/glue/rexglue-sdk-main/include/rex/platform.h
-index fd32c51..068e0a5 100644
+index fd32c512..068e0a55 100644
 --- a/glue/rexglue-sdk-main/include/rex/platform.h
 +++ b/glue/rexglue-sdk-main/include/rex/platform.h
 @@ -49,6 +49,11 @@
@@ -31501,7 +31575,7 @@ index fd32c51..068e0a5 100644
  #define REX_COMPILER_CLANG 1
 diff --git a/glue/rexglue-sdk-main/include/rex/ps5_compat.h b/glue/rexglue-sdk-main/include/rex/ps5_compat.h
 new file mode 100644
-index 0000000..85c3c3c
+index 00000000..85c3c3ca
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/ps5_compat.h
 @@ -0,0 +1,33 @@
@@ -31540,7 +31614,7 @@ index 0000000..85c3c3c
 +#endif  // __PROSPERO__
 diff --git a/glue/rexglue-sdk-main/include/rex/ps5_diag.h b/glue/rexglue-sdk-main/include/rex/ps5_diag.h
 new file mode 100644
-index 0000000..6c9fb6a
+index 00000000..6c9fb6ad
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/ps5_diag.h
 @@ -0,0 +1,70 @@
@@ -31615,7 +31689,7 @@ index 0000000..6c9fb6a
 +uint32_t CriticalSectionInitBy(uint32_t guest);  // 0: never seen
 +}  // namespace rex::ps5diag
 diff --git a/glue/rexglue-sdk-main/include/rex/string/numeric.h b/glue/rexglue-sdk-main/include/rex/string/numeric.h
-index 8fb3d97..0aaf689 100644
+index 8fb3d978..0aaf689b 100644
 --- a/glue/rexglue-sdk-main/include/rex/string/numeric.h
 +++ b/glue/rexglue-sdk-main/include/rex/string/numeric.h
 @@ -11,6 +11,9 @@
@@ -31673,7 +31747,7 @@ index 8fb3d97..0aaf689 100644
          assert_always();
          return vec128_t();
 diff --git a/glue/rexglue-sdk-main/include/rex/system/mmio_handler.h b/glue/rexglue-sdk-main/include/rex/system/mmio_handler.h
-index 7ae42a8..c9c3115 100644
+index 7ae42a89..c9c3115b 100644
 --- a/glue/rexglue-sdk-main/include/rex/system/mmio_handler.h
 +++ b/glue/rexglue-sdk-main/include/rex/system/mmio_handler.h
 @@ -45,7 +45,7 @@ class MMIOHandler {
@@ -31686,7 +31760,7 @@ index 7ae42a8..c9c3115 100644
  
    // access_violation_callback is called with global_critical_region locked once
 diff --git a/glue/rexglue-sdk-main/include/rex/system/xmemory.h b/glue/rexglue-sdk-main/include/rex/system/xmemory.h
-index 72613f7..ab30c7c 100644
+index 72613f7f..ab30c7c5 100644
 --- a/glue/rexglue-sdk-main/include/rex/system/xmemory.h
 +++ b/glue/rexglue-sdk-main/include/rex/system/xmemory.h
 @@ -289,7 +289,7 @@ class PhysicalHeap : public BaseHeap {
@@ -31730,7 +31804,7 @@ index 72613f7..ab30c7c 100644
  
    std::filesystem::path file_name_;
 diff --git a/glue/rexglue-sdk-main/include/rex/system/xthread.h b/glue/rexglue-sdk-main/include/rex/system/xthread.h
-index 8fdfb27..336a347 100644
+index 8fdfb270..336a347c 100644
 --- a/glue/rexglue-sdk-main/include/rex/system/xthread.h
 +++ b/glue/rexglue-sdk-main/include/rex/system/xthread.h
 @@ -392,6 +392,10 @@ class XThread : public XObject {
@@ -31745,7 +31819,7 @@ index 8fdfb27..336a347 100644
    bool AllocateStack(uint32_t size);
    void FreeStack();
 diff --git a/glue/rexglue-sdk-main/include/rex/thread/fiber.h b/glue/rexglue-sdk-main/include/rex/thread/fiber.h
-index 953ab14..c986c40 100644
+index 953ab146..c986c402 100644
 --- a/glue/rexglue-sdk-main/include/rex/thread/fiber.h
 +++ b/glue/rexglue-sdk-main/include/rex/thread/fiber.h
 @@ -20,7 +20,9 @@
@@ -31771,7 +31845,7 @@ index 953ab14..c986c40 100644
    void (*entry_)(void*) = nullptr;
    void* arg_ = nullptr;
 diff --git a/glue/rexglue-sdk-main/include/rex/thread/mutex.h b/glue/rexglue-sdk-main/include/rex/thread/mutex.h
-index f02059b..774f445 100644
+index f02059b9..774f4458 100644
 --- a/glue/rexglue-sdk-main/include/rex/thread/mutex.h
 +++ b/glue/rexglue-sdk-main/include/rex/thread/mutex.h
 @@ -17,8 +17,78 @@
@@ -31908,7 +31982,7 @@ index f02059b..774f445 100644
  
 diff --git a/glue/rexglue-sdk-main/include/rex/ui/pad_dialog_style.h b/glue/rexglue-sdk-main/include/rex/ui/pad_dialog_style.h
 new file mode 100644
-index 0000000..8f4f184
+index 00000000..8f4f1848
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/ui/pad_dialog_style.h
 @@ -0,0 +1,36 @@
@@ -31949,7 +32023,7 @@ index 0000000..8f4f184
 +
 +}  // namespace rex::ui
 diff --git a/glue/rexglue-sdk-main/include/rex/ui/surface.h b/glue/rexglue-sdk-main/include/rex/ui/surface.h
-index a45e67b..1e0e983 100644
+index a45e67b2..1e0e9834 100644
 --- a/glue/rexglue-sdk-main/include/rex/ui/surface.h
 +++ b/glue/rexglue-sdk-main/include/rex/ui/surface.h
 @@ -35,6 +35,10 @@ class Surface {
@@ -31973,7 +32047,7 @@ index a45e67b..1e0e983 100644
    Surface(const Surface& surface) = delete;
 diff --git a/glue/rexglue-sdk-main/include/rex/ui/surface_ps5.h b/glue/rexglue-sdk-main/include/rex/ui/surface_ps5.h
 new file mode 100644
-index 0000000..61d8588
+index 00000000..61d85885
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/ui/surface_ps5.h
 @@ -0,0 +1,37 @@
@@ -32016,7 +32090,7 @@ index 0000000..61d8588
 +}  // namespace rex
 diff --git a/glue/rexglue-sdk-main/include/rex/ui/vulkan/functions/instance_khr_display.inc b/glue/rexglue-sdk-main/include/rex/ui/vulkan/functions/instance_khr_display.inc
 new file mode 100644
-index 0000000..4df17f0
+index 00000000..4df17f05
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/ui/vulkan/functions/instance_khr_display.inc
 @@ -0,0 +1,7 @@
@@ -32028,7 +32102,7 @@ index 0000000..4df17f0
 +XE_UI_VULKAN_FUNCTION(vkGetDisplayPlaneCapabilitiesKHR)
 +XE_UI_VULKAN_FUNCTION(vkCreateDisplayPlaneSurfaceKHR)
 diff --git a/glue/rexglue-sdk-main/include/rex/ui/vulkan/instance.h b/glue/rexglue-sdk-main/include/rex/ui/vulkan/instance.h
-index 1b560bd..2978b54 100644
+index 1b560bd3..2978b54d 100644
 --- a/glue/rexglue-sdk-main/include/rex/ui/vulkan/instance.h
 +++ b/glue/rexglue-sdk-main/include/rex/ui/vulkan/instance.h
 @@ -71,6 +71,10 @@ class VulkanInstance {
@@ -32054,7 +32128,7 @@ index 1b560bd..2978b54 100644
      bool ext_EXT_debug_utils = false;                          // #129
 diff --git a/glue/rexglue-sdk-main/patches/ffmpeg-ps5.patch b/glue/rexglue-sdk-main/patches/ffmpeg-ps5.patch
 new file mode 100644
-index 0000000..3a63d8d
+index 00000000..3a63d8d3
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/patches/ffmpeg-ps5.patch
 @@ -0,0 +1,2727 @@
@@ -34786,7 +34860,7 @@ index 0000000..3a63d8d
 ++#define CONFIG_LIBZMQ_PROTOCOL 0
 ++#endif /* FFMPEG_CONFIG_H */
 diff --git a/glue/rexglue-sdk-main/resources/templates/codegen/init_h.inja b/glue/rexglue-sdk-main/resources/templates/codegen/init_h.inja
-index 05ba317..120e3b2 100644
+index 05ba3178..120e3b20 100644
 --- a/glue/rexglue-sdk-main/resources/templates/codegen/init_h.inja
 +++ b/glue/rexglue-sdk-main/resources/templates/codegen/init_h.inja
 @@ -150,7 +150,7 @@ extern PPCFuncMapping PPCFuncMappings[];
@@ -34799,7 +34873,7 @@ index 05ba317..120e3b2 100644
  #else
  #define REX_PHYS_HOST_OFFSET(addr) 0u
 diff --git a/glue/rexglue-sdk-main/resources/templates/test/ppc_config_h.inja b/glue/rexglue-sdk-main/resources/templates/test/ppc_config_h.inja
-index f0b9caa..117293a 100644
+index f0b9caa7..117293ae 100644
 --- a/glue/rexglue-sdk-main/resources/templates/test/ppc_config_h.inja
 +++ b/glue/rexglue-sdk-main/resources/templates/test/ppc_config_h.inja
 @@ -72,7 +72,7 @@
@@ -34812,7 +34886,7 @@ index f0b9caa..117293a 100644
  #else
  #define REX_PHYS_HOST_OFFSET(addr) 0u
 diff --git a/glue/rexglue-sdk-main/src/audio/CMakeLists.txt b/glue/rexglue-sdk-main/src/audio/CMakeLists.txt
-index 9ece70b..24eb993 100644
+index 9ece70bb..24eb993b 100644
 --- a/glue/rexglue-sdk-main/src/audio/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/src/audio/CMakeLists.txt
 @@ -13,6 +13,7 @@ add_library(rexaudio OBJECT
@@ -34836,7 +34910,7 @@ index 9ece70b..24eb993 100644
 +endif()
 diff --git a/glue/rexglue-sdk-main/src/audio/ps5/ps5_audio_driver.cpp b/glue/rexglue-sdk-main/src/audio/ps5/ps5_audio_driver.cpp
 new file mode 100644
-index 0000000..c38a9f9
+index 00000000..c38a9f9f
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/src/audio/ps5/ps5_audio_driver.cpp
 @@ -0,0 +1,126 @@
@@ -34967,7 +35041,7 @@ index 0000000..c38a9f9
 +
 +}  // namespace rex::audio::ps5
 diff --git a/glue/rexglue-sdk-main/src/audio/sdl/sdl_audio_system.cpp b/glue/rexglue-sdk-main/src/audio/sdl/sdl_audio_system.cpp
-index 68da0cf..fe72177 100644
+index 68da0cf9..fe72177d 100644
 --- a/glue/rexglue-sdk-main/src/audio/sdl/sdl_audio_system.cpp
 +++ b/glue/rexglue-sdk-main/src/audio/sdl/sdl_audio_system.cpp
 @@ -11,6 +11,9 @@
@@ -35012,7 +35086,7 @@ index 68da0cf..fe72177 100644
    assert_not_null(sdldriver);
    sdldriver->Shutdown();
 diff --git a/glue/rexglue-sdk-main/src/core/CMakeLists.txt b/glue/rexglue-sdk-main/src/core/CMakeLists.txt
-index 86d57cf..d269751 100644
+index 86d57cff..d269751f 100644
 --- a/glue/rexglue-sdk-main/src/core/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/src/core/CMakeLists.txt
 @@ -132,7 +132,11 @@ if(REXGLUE_BUILD_TESTS)
@@ -35028,8 +35102,31 @@ index 86d57cf..d269751 100644
      target_link_libraries(rexcore PRIVATE pthread)
  elseif(ANDROID)
      target_link_libraries(rexcore PRIVATE dl log)
+diff --git a/glue/rexglue-sdk-main/src/core/clock_posix.cpp b/glue/rexglue-sdk-main/src/core/clock_posix.cpp
+index 00f23828..1166da69 100644
+--- a/glue/rexglue-sdk-main/src/core/clock_posix.cpp
++++ b/glue/rexglue-sdk-main/src/core/clock_posix.cpp
+@@ -26,13 +26,11 @@ uint64_t Clock::host_tick_frequency_platform() {
+   mach_timebase_info(&info);
+   return (uint64_t)((1000000000ull * (uint64_t)info.denom) / (uint64_t)info.numer);
+ #else
+-  timespec res;
+-  int error = clock_getres(CLOCK_MONOTONIC_RAW, &res);
+-  assert_zero(error);
+-  assert_zero(res.tv_sec);  // Sub second resolution is required.
+-
+-  // Convert nano seconds to hertz. Resolution is 1ns on most systems.
+-  return 1000000000ull / res.tv_nsec;
++  // host_tick_count_platform() counts nanoseconds, so this is 1 GHz whatever
++  // the clock's resolution. (It used to be 1e9 / clock_getres(): 1 ns on Linux,
++  // but FreeBSD reports 1e9 / timecounter frequency + 1, more than 1 ns on a
++  // PS5, and the guest clock ran that many times too fast.)
++  return 1000000000ull;
+ #endif
+ }
+ 
 diff --git a/glue/rexglue-sdk-main/src/core/exception_handler_posix.cpp b/glue/rexglue-sdk-main/src/core/exception_handler_posix.cpp
-index 6445034..7f900b8 100644
+index 64450348..7f900b8c 100644
 --- a/glue/rexglue-sdk-main/src/core/exception_handler_posix.cpp
 +++ b/glue/rexglue-sdk-main/src/core/exception_handler_posix.cpp
 @@ -9,12 +9,21 @@
@@ -35313,7 +35410,7 @@ index 6445034..7f900b8 100644
      }
    }
 diff --git a/glue/rexglue-sdk-main/src/core/fiber_posix.cpp b/glue/rexglue-sdk-main/src/core/fiber_posix.cpp
-index 4fe1ca6..67d3f4f 100644
+index 4fe1ca6f..67d3f4fd 100644
 --- a/glue/rexglue-sdk-main/src/core/fiber_posix.cpp
 +++ b/glue/rexglue-sdk-main/src/core/fiber_posix.cpp
 @@ -23,10 +23,74 @@
@@ -35401,7 +35498,7 @@ index 4fe1ca6..67d3f4f 100644
    // Thread fibers are destroyed from the owning thread itself.
    if (is_thread_fiber_) {
 diff --git a/glue/rexglue-sdk-main/src/core/filesystem.cpp b/glue/rexglue-sdk-main/src/core/filesystem.cpp
-index 08e04c7..50d6f5a 100644
+index 08e04c7d..50d6f5a4 100644
 --- a/glue/rexglue-sdk-main/src/core/filesystem.cpp
 +++ b/glue/rexglue-sdk-main/src/core/filesystem.cpp
 @@ -9,6 +9,7 @@
@@ -35423,7 +35520,7 @@ index 08e04c7..50d6f5a 100644
  }
  
 diff --git a/glue/rexglue-sdk-main/src/core/filesystem_posix.cpp b/glue/rexglue-sdk-main/src/core/filesystem_posix.cpp
-index d0d6656..8cd9f20 100644
+index d0d66569..8cd9f203 100644
 --- a/glue/rexglue-sdk-main/src/core/filesystem_posix.cpp
 +++ b/glue/rexglue-sdk-main/src/core/filesystem_posix.cpp
 @@ -61,6 +61,9 @@ std::filesystem::path GetExecutablePath() {
@@ -35449,7 +35546,7 @@ index d0d6656..8cd9f20 100644
    if (auto xdg = rex::platform::env::get("XDG_DATA_HOME")) {
      return std::filesystem::path(*xdg);
 diff --git a/glue/rexglue-sdk-main/src/core/mapped_memory_posix.cpp b/glue/rexglue-sdk-main/src/core/mapped_memory_posix.cpp
-index 92c06c8..26cd8d3 100644
+index 92c06c89..26cd8d3d 100644
 --- a/glue/rexglue-sdk-main/src/core/mapped_memory_posix.cpp
 +++ b/glue/rexglue-sdk-main/src/core/mapped_memory_posix.cpp
 @@ -9,6 +9,9 @@
@@ -35583,7 +35680,7 @@ index 92c06c8..26cd8d3 100644
  #if REX_PLATFORM_ANDROID
  std::unique_ptr<MappedMemory> MappedMemory::OpenForAndroidContentUri(const std::string_view uri,
 diff --git a/glue/rexglue-sdk-main/src/core/memory_posix.cpp b/glue/rexglue-sdk-main/src/core/memory_posix.cpp
-index a9a6ce6..c9419ce 100644
+index a9a6ce64..c9419ce9 100644
 --- a/glue/rexglue-sdk-main/src/core/memory_posix.cpp
 +++ b/glue/rexglue-sdk-main/src/core/memory_posix.cpp
 @@ -9,6 +9,12 @@
@@ -35662,7 +35759,7 @@ index a9a6ce6..c9419ce 100644
      return kFileMappingHandleInvalid;
    }
 diff --git a/glue/rexglue-sdk-main/src/core/mutex.cpp b/glue/rexglue-sdk-main/src/core/mutex.cpp
-index d639924..7f325c0 100644
+index d639924c..7f325c0c 100644
 --- a/glue/rexglue-sdk-main/src/core/mutex.cpp
 +++ b/glue/rexglue-sdk-main/src/core/mutex.cpp
 @@ -11,11 +11,40 @@
@@ -35711,7 +35808,7 @@ index d639924..7f325c0 100644
  }  // namespace rex::thread
 diff --git a/glue/rexglue-sdk-main/src/core/ps5_diag.cpp b/glue/rexglue-sdk-main/src/core/ps5_diag.cpp
 new file mode 100644
-index 0000000..7d718ff
+index 00000000..7d718ffa
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/src/core/ps5_diag.cpp
 @@ -0,0 +1,181 @@
@@ -35898,7 +35995,7 @@ index 0000000..7d718ff
 +}  // namespace rex::ps5diag
 diff --git a/glue/rexglue-sdk-main/src/core/ps5_libc_extras.c b/glue/rexglue-sdk-main/src/core/ps5_libc_extras.c
 new file mode 100644
-index 0000000..95c028d
+index 00000000..95c028d7
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/src/core/ps5_libc_extras.c
 @@ -0,0 +1,128 @@
@@ -36031,7 +36128,7 @@ index 0000000..95c028d
 +}
 +#endif
 diff --git a/glue/rexglue-sdk-main/src/core/threading_posix.cpp b/glue/rexglue-sdk-main/src/core/threading_posix.cpp
-index 8c31d93..77249fd 100644
+index 8c31d93a..77249fde 100644
 --- a/glue/rexglue-sdk-main/src/core/threading_posix.cpp
 +++ b/glue/rexglue-sdk-main/src/core/threading_posix.cpp
 @@ -27,14 +27,20 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
@@ -36435,7 +36532,7 @@ index 8c31d93..77249fd 100644
    if (!android_pthread_getname_np_ && current_thread_) {
      current_thread_->condition().SetAndroidPreApi26Name(name);
 diff --git a/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_device.cpp b/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_device.cpp
-index 46220c7..90bc005 100644
+index 46220c70..90bc0050 100644
 --- a/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_device.cpp
 +++ b/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_device.cpp
 @@ -12,7 +12,15 @@
@@ -36560,7 +36657,7 @@ index 46220c7..90bc005 100644
          return false;
        }
 diff --git a/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_entry.cpp b/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_entry.cpp
-index 1986c71..c46aa47 100644
+index 1986c71b..c46aa47e 100644
 --- a/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_entry.cpp
 +++ b/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_entry.cpp
 @@ -13,6 +13,9 @@
@@ -36605,7 +36702,7 @@ index 1986c71..c46aa47 100644
  
  }  // namespace rex::filesystem
 diff --git a/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_file.cpp b/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_file.cpp
-index 313c9af..2a10037 100644
+index 313c9af4..2a10037d 100644
 --- a/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_file.cpp
 +++ b/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_file.cpp
 @@ -9,6 +9,7 @@
@@ -36630,7 +36727,7 @@ index 313c9af..2a10037 100644
    return X_STATUS_SUCCESS;
  }
 diff --git a/glue/rexglue-sdk-main/src/graphics/CMakeLists.txt b/glue/rexglue-sdk-main/src/graphics/CMakeLists.txt
-index af36910..a0709c9 100644
+index af36910e..a0709c99 100644
 --- a/glue/rexglue-sdk-main/src/graphics/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/src/graphics/CMakeLists.txt
 @@ -145,12 +145,16 @@ function(rexgpu_configure_plugin target export_name)
@@ -36665,7 +36762,7 @@ index af36910..a0709c9 100644
          gta4_native/core/font_atlas.cpp
          gta4_native/shader_override_policy.h
 diff --git a/glue/rexglue-sdk-main/src/graphics/command_processor.cpp b/glue/rexglue-sdk-main/src/graphics/command_processor.cpp
-index 80a8e5a..837a4cf 100644
+index 80a8e5ae..837a4cf2 100644
 --- a/glue/rexglue-sdk-main/src/graphics/command_processor.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/command_processor.cpp
 @@ -17,6 +17,7 @@
@@ -36710,7 +36807,7 @@ index 80a8e5a..837a4cf 100644
    write_ptr_index_event_->Set();
  }
 diff --git a/glue/rexglue-sdk-main/src/graphics/graphics_system.cpp b/glue/rexglue-sdk-main/src/graphics/graphics_system.cpp
-index 1d5402e..1adeb3c 100644
+index 1d5402e9..1adeb3c1 100644
 --- a/glue/rexglue-sdk-main/src/graphics/graphics_system.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/graphics_system.cpp
 @@ -9,6 +9,9 @@
@@ -36740,7 +36837,7 @@ index 1d5402e..1adeb3c 100644
    if (command_processor_) {
      command_processor_->increment_counter();
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
-index 581a9d2..d0d5ea6 100644
+index 581a9d20..9589863f 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 @@ -1,3 +1,4 @@
@@ -36748,6 +36845,15 @@ index 581a9d2..d0d5ea6 100644
  #include <rex/graphics/gta4_native/fusion_tone_lut.h>
  #include <rex/graphics/gta4_native/modern_effect_constants.h>
  #include "core/font_atlas.h"
+@@ -155,7 +156,7 @@ REXCVAR_DEFINE_BOOL(gta4_native_batched_worker_wake, true, "GTA IV/Graphics/Nati
+                     "Wake the render worker per command batch and frame instead of per command");
+ REXCVAR_DEFINE_BOOL(gta4_native_pipeline_serialize, false, "GTA IV/Diagnostics",
+                     "Wait for each pipelined frame to finish recording before assembling the next");
+-REXCVAR_DEFINE_UINT32(gta4_native_max_queued_frames, 2, "GTA IV/Graphics/Native Renderer",
++REXCVAR_DEFINE_UINT32(gta4_native_max_queued_frames, REX_PLATFORM_PS5 ? 3 : 2, "GTA IV/Graphics/Native Renderer",
+                       "Title frames the producer may run ahead of the recorder")
+     .range(1, 4);
+ REXCVAR_DEFINE_UINT32(gta4_native_frame_complete_signal, 0, "GTA IV/Graphics/Native Renderer",
 @@ -404,6 +405,12 @@ REXCVAR_DEFINE_BOOL(gta4_native_pipelined_recording, true, "GTA IV/Graphics/Nati
                      "Record and submit each frame on a second thread while the worker assembles the next");
  REXCVAR_DEFINE_BOOL(gta4_native_async_command_retire, true, "GTA IV/Graphics/Native Renderer",
@@ -36761,7 +36867,16 @@ index 581a9d2..d0d5ea6 100644
  REXCVAR_DEFINE_BOOL(gta4_vertex_color_as_rgba, false, "GTA IV/Diagnostics",
                      "Bind D3DCOLOR vertex elements as R8G8B8A8 instead of B8G8R8A8");
  REXCVAR_DEFINE_BOOL(gta4_trace_startup_content, false, "GTA IV/Diagnostics",
-@@ -4743,6 +4750,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
+@@ -660,6 +667,8 @@ void LogFrameTimeline(uint32_t frame) {
+   if (++batched == 8) {
+ #if REX_PLATFORM_ANDROID
+     __android_log_print(ANDROID_LOG_WARN, "LibertyRecomp", "frame-timeline:%s", batch.c_str());
++#elif REX_PLATFORM_PS5
++    REXLOG_INFO("frame-timeline:{}", batch);
+ #endif
+     batch.clear();
+     batched = 0;
+@@ -4743,6 +4752,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
    if (header.type == CommandType::kPresent) {
      const auto& present = *static_cast<const PresentCommand*>(command);
      MarkFrameTimeline(present.submitted_frame, kTimelineGuestPresent);
@@ -36769,7 +36884,7 @@ index 581a9d2..d0d5ea6 100644
      const auto frontbuffer_fetch =
          std::bit_cast<xenos::xe_gpu_texture_fetch_t>(present.frontbuffer_fetch);
      auto fetch_matches = [&frontbuffer_fetch](const NativeTextureResource& resource) {
-@@ -6479,7 +6487,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+@@ -6479,7 +6489,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
            bound.read_epoch = read_epoch;
            const auto mark_read = [read_epoch](const NativeTextureResource* resource) {
              if (resource)
@@ -36778,7 +36893,7 @@ index 581a9d2..d0d5ea6 100644
            };
            for (const auto& texture : assembled.textures) {
              if (!texture) continue;
-@@ -18714,12 +18722,14 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
+@@ -18714,12 +18724,14 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
      view_info.components.b = VK_COMPONENT_SWIZZLE_ONE;
      view_info.components.a = VK_COMPONENT_SWIZZLE_R;
    } else if (vulkan_device->properties().portabilitySubset ||
@@ -36797,7 +36912,7 @@ index 581a9d2..d0d5ea6 100644
      host_swizzle = xenos::XE_GPU_TEXTURE_SWIZZLE_RGBA;
      view_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
                              VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
-@@ -31231,7 +31241,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -31231,7 +31243,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
        if (pipelined_recording_ && frame_constant_bound_.valid && frame_constant_bound_.read_epoch &&
            REXCVAR_GET(gta4_native_assembled_frame_scans)) {
          // A later frame's stamp only makes this conservative (an extra resolve).
@@ -36807,7 +36922,7 @@ index 581a9d2..d0d5ea6 100644
        } else for (const NativeCommand& scan : current_frame_) {
          for (const auto& texture : scan.textures) {
 diff --git a/glue/rexglue-sdk-main/src/graphics/pipeline/texture/cache.cpp b/glue/rexglue-sdk-main/src/graphics/pipeline/texture/cache.cpp
-index c7c824e..63f155f 100644
+index c7c824e3..63f155fd 100644
 --- a/glue/rexglue-sdk-main/src/graphics/pipeline/texture/cache.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/pipeline/texture/cache.cpp
 @@ -200,6 +200,14 @@ const TextureCache::LoadShaderInfo TextureCache::load_shader_info_[kLoadShaderCo
@@ -36885,7 +37000,7 @@ index c7c824e..63f155f 100644
    assert_true(IsDrawResolutionScaled());
    if (invalidated_by_gpu) {
 diff --git a/glue/rexglue-sdk-main/src/graphics/shared_memory.cpp b/glue/rexglue-sdk-main/src/graphics/shared_memory.cpp
-index 333becb..5996790 100644
+index 333becb8..59967902 100644
 --- a/glue/rexglue-sdk-main/src/graphics/shared_memory.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/shared_memory.cpp
 @@ -17,6 +17,8 @@
@@ -36997,7 +37112,7 @@ index 333becb..5996790 100644
      void* context_ptr, uint32_t physical_address_start, uint32_t length, bool exact_range) {
    return reinterpret_cast<SharedMemory*>(context_ptr)
 diff --git a/glue/rexglue-sdk-main/src/graphics/vulkan/command_processor.cpp b/glue/rexglue-sdk-main/src/graphics/vulkan/command_processor.cpp
-index 185597a..ddeec40 100644
+index 185597a9..ddeec405 100644
 --- a/glue/rexglue-sdk-main/src/graphics/vulkan/command_processor.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/vulkan/command_processor.cpp
 @@ -47,6 +47,9 @@
@@ -37021,7 +37136,7 @@ index 185597a..ddeec40 100644
    vertex_buffers_in_sync_[1] = 0;
  
 diff --git a/glue/rexglue-sdk-main/src/graphics/vulkan/shared_memory.cpp b/glue/rexglue-sdk-main/src/graphics/vulkan/shared_memory.cpp
-index b52ae15..5fd4dec 100644
+index b52ae15a..5fd4dec4 100644
 --- a/glue/rexglue-sdk-main/src/graphics/vulkan/shared_memory.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/vulkan/shared_memory.cpp
 @@ -375,6 +375,9 @@ bool VulkanSharedMemory::UploadRanges(
@@ -37035,7 +37150,7 @@ index b52ae15..5fd4dec 100644
                    memory().TranslatePhysical(upload_range_start << page_size_log2()),
                    upload_buffer_size);
 diff --git a/glue/rexglue-sdk-main/src/input/CMakeLists.txt b/glue/rexglue-sdk-main/src/input/CMakeLists.txt
-index 7016987..90f2bb7 100644
+index 7016987a..90f2bb7c 100644
 --- a/glue/rexglue-sdk-main/src/input/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/src/input/CMakeLists.txt
 @@ -12,6 +12,10 @@ add_library(rexinput OBJECT
@@ -37050,7 +37165,7 @@ index 7016987..90f2bb7 100644
  target_include_directories(rexinput PUBLIC
      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
 diff --git a/glue/rexglue-sdk-main/src/input/input_system.cpp b/glue/rexglue-sdk-main/src/input/input_system.cpp
-index b2b99ec..d96f32c 100644
+index b2b99ec4..d96f32c1 100644
 --- a/glue/rexglue-sdk-main/src/input/input_system.cpp
 +++ b/glue/rexglue-sdk-main/src/input/input_system.cpp
 @@ -20,6 +20,9 @@
@@ -37115,7 +37230,7 @@ index b2b99ec..d96f32c 100644
      auto sdl_driver = std::make_unique<sdl::SDLInputDriver>(nullptr, 0, expose_sdl_gamepad_state);
 diff --git a/glue/rexglue-sdk-main/src/input/ps5/ps5_input_driver.cpp b/glue/rexglue-sdk-main/src/input/ps5/ps5_input_driver.cpp
 new file mode 100644
-index 0000000..de0a08c
+index 00000000..de0a08c1
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/src/input/ps5/ps5_input_driver.cpp
 @@ -0,0 +1,282 @@
@@ -37402,7 +37517,7 @@ index 0000000..de0a08c
 +
 +}  // namespace rex::input::ps5
 diff --git a/glue/rexglue-sdk-main/src/kernel/xam/xam_info.cpp b/glue/rexglue-sdk-main/src/kernel/xam/xam_info.cpp
-index 1fda053..40f497b 100644
+index 1fda0536..40f497b5 100644
 --- a/glue/rexglue-sdk-main/src/kernel/xam/xam_info.cpp
 +++ b/glue/rexglue-sdk-main/src/kernel/xam/xam_info.cpp
 @@ -12,6 +12,10 @@
@@ -37439,7 +37554,7 @@ index 1fda053..40f497b 100644
    REX_KERNEL_STATE()->TerminateTitle();
  }
 diff --git a/glue/rexglue-sdk-main/src/kernel/xam/xam_input.cpp b/glue/rexglue-sdk-main/src/kernel/xam/xam_input.cpp
-index 197d072..887ab28 100644
+index 197d072d..887ab28e 100644
 --- a/glue/rexglue-sdk-main/src/kernel/xam/xam_input.cpp
 +++ b/glue/rexglue-sdk-main/src/kernel/xam/xam_input.cpp
 @@ -114,6 +114,15 @@ u32 XamInputGetState_entry(u32 user_index, u32 flags, ppc_ptr_t<X_INPUT_STATE> i
@@ -37469,7 +37584,7 @@ index 197d072..887ab28 100644
    auto result = is->GetKeystroke(user_index, flags, keystroke);
    if (XSUCCEEDED(result)) {
 diff --git a/glue/rexglue-sdk-main/src/kernel/xam/xam_ui.cpp b/glue/rexglue-sdk-main/src/kernel/xam/xam_ui.cpp
-index a398488..b61eee9 100644
+index a3984881..b61eee97 100644
 --- a/glue/rexglue-sdk-main/src/kernel/xam/xam_ui.cpp
 +++ b/glue/rexglue-sdk-main/src/kernel/xam/xam_ui.cpp
 @@ -29,6 +29,13 @@ REXCVAR_DEFINE_BOOL(headless, false, "Kernel",
@@ -38092,7 +38207,7 @@ index a398488..b61eee9 100644
 +}  // namespace rex::ui
 +#endif
 diff --git a/glue/rexglue-sdk-main/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp b/glue/rexglue-sdk-main/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp
-index 8b862fc..080a576 100644
+index 8b862fc7..080a5766 100644
 --- a/glue/rexglue-sdk-main/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp
 +++ b/glue/rexglue-sdk-main/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp
 @@ -12,6 +12,12 @@
@@ -38193,7 +38308,7 @@ index 8b862fc..080a576 100644
  
    assert_true(cs->owning_thread == 0);
 diff --git a/glue/rexglue-sdk-main/src/kernel/xboxkrnl/xboxkrnl_video.cpp b/glue/rexglue-sdk-main/src/kernel/xboxkrnl/xboxkrnl_video.cpp
-index 1254710..0cdc758 100644
+index 1254710a..0cdc758a 100644
 --- a/glue/rexglue-sdk-main/src/kernel/xboxkrnl/xboxkrnl_video.cpp
 +++ b/glue/rexglue-sdk-main/src/kernel/xboxkrnl/xboxkrnl_video.cpp
 @@ -549,6 +549,26 @@ void RegisterVideoExports(rex::runtime::ExportResolver* export_resolver,
@@ -38224,7 +38339,7 @@ index 1254710..0cdc758 100644
  
  }  // namespace rex::kernel::xboxkrnl
 diff --git a/glue/rexglue-sdk-main/src/system/CMakeLists.txt b/glue/rexglue-sdk-main/src/system/CMakeLists.txt
-index 60ae68e..1c4ac16 100644
+index 60ae68ec..1c4ac165 100644
 --- a/glue/rexglue-sdk-main/src/system/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/src/system/CMakeLists.txt
 @@ -52,7 +52,12 @@ set(REXSYSTEM_SOURCES
@@ -38242,7 +38357,7 @@ index 60ae68e..1c4ac16 100644
  add_library(rex::system ALIAS rexruntime)
  add_library(rex::kernel ALIAS rexruntime)
 diff --git a/glue/rexglue-sdk-main/src/system/gpu_plugin_loader.cpp b/glue/rexglue-sdk-main/src/system/gpu_plugin_loader.cpp
-index 845f6fe..923112e 100644
+index 845f6fe0..923112e7 100644
 --- a/glue/rexglue-sdk-main/src/system/gpu_plugin_loader.cpp
 +++ b/glue/rexglue-sdk-main/src/system/gpu_plugin_loader.cpp
 @@ -56,7 +56,28 @@ std::vector<platform::DynamicLibrary>& LoadedPlugins() {
@@ -38275,7 +38390,7 @@ index 845f6fe..923112e 100644
    if (!std::filesystem::exists(path)) {
      REXSYS_ERROR(
 diff --git a/glue/rexglue-sdk-main/src/system/mmio_handler.cpp b/glue/rexglue-sdk-main/src/system/mmio_handler.cpp
-index 2b93005..f94a72a 100644
+index 2b930058..f94a72ab 100644
 --- a/glue/rexglue-sdk-main/src/system/mmio_handler.cpp
 +++ b/glue/rexglue-sdk-main/src/system/mmio_handler.cpp
 @@ -10,9 +10,11 @@
@@ -38334,7 +38449,7 @@ index 2b93005..f94a72a 100644
    auto p = reinterpret_cast<const uint8_t*>(rip);
    DecodedLoadStore decoded_load_store;
 diff --git a/glue/rexglue-sdk-main/src/system/xmemory.cpp b/glue/rexglue-sdk-main/src/system/xmemory.cpp
-index 332e91e..6d45220 100644
+index 332e91e1..6d452203 100644
 --- a/glue/rexglue-sdk-main/src/system/xmemory.cpp
 +++ b/glue/rexglue-sdk-main/src/system/xmemory.cpp
 @@ -9,14 +9,19 @@
@@ -38681,7 +38796,7 @@ index 332e91e..6d45220 100644
                                      bool unwatch_exact_range, bool unprotect) {
    // TODO(Triang3l): Support read watches.
 diff --git a/glue/rexglue-sdk-main/src/system/xobject.cpp b/glue/rexglue-sdk-main/src/system/xobject.cpp
-index d358f39..b9ccbd7 100644
+index d358f399..b9ccbd70 100644
 --- a/glue/rexglue-sdk-main/src/system/xobject.cpp
 +++ b/glue/rexglue-sdk-main/src/system/xobject.cpp
 @@ -26,6 +26,47 @@
@@ -38757,7 +38872,7 @@ index d358f39..b9ccbd7 100644
      auto result =
          rex::thread::WaitAny(std::move(wait_handles), alertable ? true : false, timeout_ms);
 diff --git a/glue/rexglue-sdk-main/src/ui/CMakeLists.txt b/glue/rexglue-sdk-main/src/ui/CMakeLists.txt
-index 377172d..6a0c90e 100644
+index 377172d5..6a0c90e6 100644
 --- a/glue/rexglue-sdk-main/src/ui/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/src/ui/CMakeLists.txt
 @@ -78,6 +78,8 @@ elseif(APPLE)
@@ -38781,7 +38896,7 @@ index 377172d..6a0c90e 100644
      pkg_check_modules(X11_XCB REQUIRED x11-xcb)
  
 diff --git a/glue/rexglue-sdk-main/src/ui/rex_app.cpp b/glue/rexglue-sdk-main/src/ui/rex_app.cpp
-index 0f7c504..769cb0e 100644
+index 0f7c5043..769cb0e8 100644
 --- a/glue/rexglue-sdk-main/src/ui/rex_app.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/rex_app.cpp
 @@ -53,6 +53,9 @@
@@ -38809,7 +38924,7 @@ index 0f7c504..769cb0e 100644
  #if REX_PLATFORM_MAC || defined(__ANDROID__)
 diff --git a/glue/rexglue-sdk-main/src/ui/surface_ps5.cpp b/glue/rexglue-sdk-main/src/ui/surface_ps5.cpp
 new file mode 100644
-index 0000000..939a240
+index 00000000..939a240d
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/src/ui/surface_ps5.cpp
 @@ -0,0 +1,5 @@
@@ -38819,7 +38934,7 @@ index 0000000..939a240
 + */
 +#include <rex/ui/surface_ps5.h>
 diff --git a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_instance.cpp b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_instance.cpp
-index eb0ad80..41d0e95 100644
+index eb0ad80b..41d0e95e 100644
 --- a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_instance.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_instance.cpp
 @@ -10,6 +10,8 @@
@@ -38920,7 +39035,7 @@ index eb0ad80..41d0e95 100644
    if (vulkan_instance->extensions_.ext_KHR_surface) {
  #include <rex/ui/vulkan/functions/instance_khr_surface.inc>
 diff --git a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_presenter.cpp b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_presenter.cpp
-index 541be7e..6b8b894 100644
+index 541be7e0..6b8b894b 100644
 --- a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_presenter.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_presenter.cpp
 @@ -55,6 +55,98 @@
@@ -39054,7 +39169,7 @@ index 541be7e..6b8b894 100644
        default:
          assert_unhandled_case(surface_type);
 diff --git a/glue/rexglue-sdk-main/src/ui/window.cpp b/glue/rexglue-sdk-main/src/ui/window.cpp
-index 3516238..5fcfe7c 100644
+index 35162382..5fcfe7c7 100644
 --- a/glue/rexglue-sdk-main/src/ui/window.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/window.cpp
 @@ -51,7 +51,8 @@ REXCVAR_DEFINE_INT32(video_mode_height, 720, "Display", "Guest video mode height
@@ -39068,7 +39183,7 @@ index 3516238..5fcfe7c 100644
                        "example: 720p, 1080p, 1440p, 4k, 1280x720)")
      .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 diff --git a/glue/rexglue-sdk-main/src/ui/window_sdl.cpp b/glue/rexglue-sdk-main/src/ui/window_sdl.cpp
-index 87f9774..5acee30 100644
+index 87f97744..5acee304 100644
 --- a/glue/rexglue-sdk-main/src/ui/window_sdl.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/window_sdl.cpp
 @@ -46,6 +46,8 @@
@@ -39138,7 +39253,7 @@ index 87f9774..5acee30 100644
    if (allowed_types & Surface::kTypeFlag_AndroidNativeWindow) {
      auto* native_window = static_cast<ANativeWindow*>(GetNativeWindowHandle());
 diff --git a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
-index ac2d8dc..87d9454 100644
+index ac2d8dc4..c996a943 100644
 --- a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 @@ -11,6 +11,7 @@
@@ -39230,7 +39345,7 @@ index ac2d8dc..87d9454 100644
  
      app->InvokeOnDestroy();
    }
-@@ -161,8 +199,186 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
+@@ -161,8 +199,221 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
  #include <SDL3/SDL_main.h>
  #endif
  
@@ -39291,7 +39406,10 @@ index ac2d8dc..87d9454 100644
 +
 +// Every 10 s: the progress counters (rex/ps5_diag.h), so a black screen's
 +// log shows which stage stopped moving.
++#include <rex/chrono/clock.h>
++#include <rex/frame_stats.h>
 +#include <rex/ps5_diag.h>
++#include <time.h>
 +#include <rex/system/kernel_state.h>
 +#include <rex/system/xmemory.h>
 +#include <spdlog/spdlog.h>
@@ -39303,6 +39421,38 @@ index ac2d8dc..87d9454 100644
 +  using namespace rex::ps5diag;
 +  for (int tick = 1;; ++tick) {
 +    std::this_thread::sleep_for(std::chrono::seconds(10));
++    if (tick == 1) {
++      timespec res{};
++      clock_getres(CLOCK_MONOTONIC, &res);
++      REXLOG_INFO("ps5 diag: clock resolution {} ns, host tick frequency {} Hz", res.tv_nsec,
++                  rex::chrono::Clock::QueryHostTickFrequency());
++    }
++    // Game time against real time: the guest clock's seconds over these 10,
++    // the game's own step for its last frame, and the frames shown.
++    {
++      static uint64_t last_guest = 0, last_presents = 0;
++      static int64_t last_ns = 0;
++      const uint64_t guest = rex::chrono::Clock::QueryGuestTickCount();
++      const uint64_t presents = rex::frame_stats::g_presents.load();
++      const int64_t now_ns = rex::frame_stats::NowNs();
++      float step = 0;
++      if (auto* kernel = rex::system::kernel_state()) {
++        constexpr uint32_t kGameplayTimeStep = 0x82C6C2AC;
++        const uint32_t bits =
++            rex::memory::load_and_swap<uint32_t>(kernel->memory()->TranslateVirtual(kGameplayTimeStep));
++        std::memcpy(&step, &bits, sizeof(step));
++      }
++      if (last_ns) {
++        const double real = double(now_ns - last_ns) / 1e9;
++        const double guest_s = double(guest - last_guest) / double(rex::chrono::Clock::guest_tick_frequency());
++        REXLOG_INFO("ps5 timing: real {:.2f}s, guest clock {:.2f}s, game step {:.1f} ms, frame {:.1f} ms",
++                    real, guest_s, step * 1000.0, presents > last_presents ?
++                    real * 1000.0 / double(presents - last_presents) : 0.0);
++      }
++      last_guest = guest;
++      last_presents = presents;
++      last_ns = now_ns;
++    }
 +    REXLOG_INFO(
 +        "ps5 diag {}s: faults {} (mmio {}, watch {}, unhandled {}), vblanks {}, interrupts {}, "
 +        "ring writes {}, ring batches {}",
@@ -39418,7 +39568,7 @@ index ac2d8dc..87d9454 100644
  
  #endif
 diff --git a/glue/rexglue-sdk-main/thirdparty/CMakeLists.txt b/glue/rexglue-sdk-main/thirdparty/CMakeLists.txt
-index d77082c..60aaa0d 100644
+index d77082cc..60aaa0db 100644
 --- a/glue/rexglue-sdk-main/thirdparty/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/thirdparty/CMakeLists.txt
 @@ -302,7 +302,7 @@ set(SDL_DUMMYAUDIO OFF CACHE BOOL "" FORCE)
@@ -39431,7 +39581,7 @@ index d77082c..60aaa0d 100644
      set(SDL_ALSA_SHARED       ON  CACHE BOOL "" FORCE)
      set(SDL_PULSEAUDIO        ON  CACHE BOOL "" FORCE)
 diff --git a/glue/rexglue-sdk-main/thirdparty/crypto/sha256.cpp b/glue/rexglue-sdk-main/thirdparty/crypto/sha256.cpp
-index e96b4da..df468e8 100644
+index e96b4da1..df468e8a 100644
 --- a/glue/rexglue-sdk-main/thirdparty/crypto/sha256.cpp
 +++ b/glue/rexglue-sdk-main/thirdparty/crypto/sha256.cpp
 @@ -14,6 +14,11 @@
@@ -39447,7 +39597,7 @@ index e96b4da..df468e8 100644
  #include <endian.h>
  #endif
 diff --git a/glue/rexglue-sdk-main/thirdparty/renderdoc/renderdoc_app.h b/glue/rexglue-sdk-main/thirdparty/renderdoc/renderdoc_app.h
-index da323e9..2d51df8 100644
+index da323e9a..2d51df86 100644
 --- a/glue/rexglue-sdk-main/thirdparty/renderdoc/renderdoc_app.h
 +++ b/glue/rexglue-sdk-main/thirdparty/renderdoc/renderdoc_app.h
 @@ -30,7 +30,7 @@
