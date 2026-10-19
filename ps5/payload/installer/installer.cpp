@@ -549,8 +549,13 @@ struct DiscItem
 
 constexpr std::size_t kBlock = 16u << 20;
 constexpr int kBlocks = 3;
+/* Files copied at once on the console's own drive: one writer there managed about
+ * 190 MB/s while the disc image read at over 700, so three files go at once, each in a
+ * lane of its own (a reader and a writer). On a USB drive one at a time, as before (a
+ * hard drive would only seek between them). */
+constexpr int kLanes = 3;
 
-/* A reader thread fills kBlock pieces in disc order, the writer (the caller) writes them. */
+/* A lane's reader thread fills kBlock pieces in disc order, its writer writes them. */
 struct Pipe
 {
     std::mutex m;
@@ -604,19 +609,15 @@ void read_files(Pipe &p, recomp::Disc &disc, const std::vector<DiscItem> &items)
     }
 }
 
-bool copy_disc(recomp::Disc &disc, const std::vector<DiscItem> &items, const std::string &game, std::string &error)
+/* One lane: its files, in disc order, through its blocks. Stops when another lane
+ * failed (`abort`), leaving `error` empty. */
+void copy_lane(recomp::Disc &disc, const std::vector<DiscItem> &items, const std::string &game,
+               std::uint8_t *const *blocks, std::atomic<bool> &abort, std::string &error)
 {
     Pipe p;
     for (int i = 0; i < kBlocks; ++i)
     {
-        p.data[i] = static_cast<std::uint8_t *>(std::malloc(kBlock));
-        if (!p.data[i])
-        {
-            for (int j = 0; j < i; ++j)
-                std::free(p.data[j]);
-            error = "The installer couldn't get memory to copy with.";
-            return false;
-        }
+        p.data[i] = blocks[i];
         p.free.push_back(i);
     }
     std::thread reader([&] {
@@ -629,6 +630,8 @@ bool copy_disc(recomp::Disc &disc, const std::vector<DiscItem> &items, const std
     std::set<std::string> made;
     for (const DiscItem &it : items)
     {
+        if (abort.load())
+            break;
         const std::string dst = game + "/" + it.rel;
         const std::string dir = dst.substr(0, dst.find_last_of('/'));
         if (made.insert(dir).second)
@@ -686,6 +689,8 @@ bool copy_disc(recomp::Disc &disc, const std::vector<DiscItem> &items, const std
                 error = "Stopped.";
                 ok = false;
             }
+            else if (abort.load())
+                ok = false;
         }
         if (::close(fd) != 0 && ok)
         {
@@ -695,14 +700,85 @@ bool copy_disc(recomp::Disc &disc, const std::vector<DiscItem> &items, const std
         if (!ok)
             break;
     }
+    if (!error.empty())
+        abort = true;
     {
         std::lock_guard<std::mutex> l(p.m);
         p.stop = true;
     }
     p.cv.notify_all();
     reader.join();
-    for (std::uint8_t *d : p.data)
-        std::free(d);
+}
+
+bool on_console_drive(const std::string &path)
+{
+#ifdef GTA4_TEST_ROOT
+    return !std::getenv("GTA4_TEST_USB"); /* (the desktop test: as the console's drive, or a USB one) */
+#endif
+    return path.rfind("/data/", 0) == 0 || path.rfind("/user/", 0) == 0 || path.rfind("/system_ex/", 0) == 0;
+}
+
+bool copy_disc(recomp::Disc &disc, const std::vector<DiscItem> &items, const std::string &game, std::string &error)
+{
+    /* The lanes (fewer if there's not the memory for all of them) */
+    int lanes = int(std::min<std::size_t>(on_console_drive(game) ? kLanes : 1, std::max<std::size_t>(items.size(), 1)));
+    std::vector<std::uint8_t *> blocks;
+    for (;; --lanes)
+    {
+        for (int i = 0; i < lanes * kBlocks; ++i)
+            if (std::uint8_t *b = static_cast<std::uint8_t *>(std::malloc(kBlock)))
+                blocks.push_back(b);
+            else
+                break;
+        if (int(blocks.size()) == lanes * kBlocks)
+            break;
+        for (std::uint8_t *b : blocks)
+            std::free(b);
+        blocks.clear();
+        if (lanes == 1)
+        {
+            error = "The installer couldn't get memory to copy with.";
+            return false;
+        }
+    }
+    /* The files shared out, the biggest first to the lane with the least so far; each
+     * lane then reads its own in disc order. */
+    const std::size_t lane_count = std::size_t(lanes);
+    std::vector<std::vector<DiscItem>> work(lane_count);
+    {
+        std::vector<const DiscItem *> by_size;
+        for (const DiscItem &it : items)
+            by_size.push_back(&it);
+        std::stable_sort(by_size.begin(), by_size.end(),
+                         [](const DiscItem *a, const DiscItem *b) { return a->file->size > b->file->size; });
+        std::vector<std::uint64_t> load(lane_count, 0);
+        for (const DiscItem *it : by_size)
+        {
+            const std::size_t k = std::size_t(std::min_element(load.begin(), load.end()) - load.begin());
+            work[k].push_back(*it);
+            load[k] += it->file->size + 4096; /* (a file's own cost, too) */
+        }
+        for (auto &w : work)
+            std::sort(w.begin(), w.end(),
+                      [](const DiscItem &a, const DiscItem &b) { return a.file->sector < b.file->sector; });
+    }
+    if (lanes > 1)
+        log_line("copying in %d lanes at once", lanes);
+    std::atomic<bool> abort{false};
+    std::vector<std::string> errors(lane_count);
+    std::vector<std::thread> others;
+    for (int k = 1; k < lanes; ++k)
+        others.emplace_back([&, k] {
+            copy_lane(disc, work[std::size_t(k)], game, blocks.data() + k * kBlocks, abort, errors[std::size_t(k)]);
+        });
+    copy_lane(disc, work[0], game, blocks.data(), abort, errors[0]);
+    for (std::thread &t : others)
+        t.join();
+    for (std::uint8_t *b : blocks)
+        std::free(b);
+    for (const std::string &e : errors)
+        if (!e.empty() && error.empty())
+            error = e;
     if (!error.empty())
         return false;
     /* every file there, at its size */
@@ -922,6 +998,10 @@ int install(const std::string &job)
     if (!plain || !parse_key(field(job, "key"), key))
         return fail("The install job is damaged. Start the install again.");
     const std::string staging = g_app + "/" + staging_rel, game = staging + "/game";
+    /* Unpacking is thousands of small files, each mostly the drive's time to make it:
+     * on the console's own drive six at once (three managed 7 MB/s). */
+    if (on_console_drive(game))
+        threads = std::max(threads, 6);
     const std::string image = g_app + "/" + image_rel, update = g_app + "/" + update_rel;
     drive_of(g_app);
     log_line("started (pid %d): %s, %s, into %s (%s, %s free)", int(getpid()), image_rel.c_str(), update_rel.c_str(),
