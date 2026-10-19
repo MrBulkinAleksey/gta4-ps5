@@ -201,10 +201,10 @@ index 9ffeffdf..1f19e16d 100644
      endif()
  
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
-index 3b033069..6ad8e84c 100644
+index 3b033069..d98cba69 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
-@@ -443,6 +443,84 @@ elseif(ANDROID)
+@@ -443,6 +443,87 @@ elseif(ANDROID)
              -Wno-backend-plugin)
          target_link_options(LibertyRecomp PRIVATE "-fprofile-use=${LIBERTY_ANDROID_PGO}")
      endif()
@@ -233,9 +233,12 @@ index 3b033069..6ad8e84c 100644
 +        src/ps5/game/trophies_game.cpp
 +        src/ps5/game/ps5_overlay.cpp
 +        src/ps5/game/save_import.cpp)
++    # (the fonts are built into it: a changed one rebuilds it)
++    file(GLOB GTA4_PS5_FONTS CONFIGURE_DEPENDS "${GTA4_PS5_DIR}/assets/fonts/*.ttf"
++         "${GTA4_PS5_DIR}/assets/fonts/*.otf")
 +    set_source_files_properties(src/ps5/hub/ps5_hub.cpp PROPERTIES
 +        COMPILE_DEFINITIONS "GTA4PS5_FONTS_DIR=\"${GTA4_PS5_DIR}/assets/fonts\""
-+        OBJECT_DEPENDS "${GTA4_PS5_DIR}/assets/fonts/inter-latin-400-normal.ttf")
++        OBJECT_DEPENDS "${GTA4_PS5_FONTS}")
 +    message(STATUS "GTA IV for PS5 ${GTA4_PS5_VERSION}")
 +
 +    # The title's wait for a free frame slot sleeps instead of spinning a core
@@ -24295,10 +24298,10 @@ index 00000000..995f785d
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..0caae400
+index 00000000..963b54d7
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1369 @@
+@@ -0,0 +1,1352 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -24710,6 +24713,20 @@ index 00000000..0caae400
 +  a.menu_regular = a.menu_regular_sizes.empty() ? nullptr : a.menu_regular_sizes.back();
 +}
 +
++void AddPlayFont(ImFontAtlas* atlas, const void* data, int bytes, Assets& a) {
++  static const ImWchar kPlay[] = {'A', 'A', 'H', 'H', 'L', 'L', 'P', 'P', 'Y', 'Y', 0};  // (H: the capitals' height)
++  a.play_sizes.clear();
++  for (float px : {104.0f, 216.0f}) {
++    ImFontConfig cfg;
++    cfg.FontDataOwnedByAtlas = false;
++    cfg.OversampleH = 1;
++    cfg.OversampleV = 1;
++    cfg.GlyphRanges = kPlay;
++    if (ImFont* f = atlas->AddFontFromMemoryTTF(const_cast<void*>(data), bytes, px, &cfg)) a.play_sizes.push_back(f);
++  }
++  a.play = a.play_sizes.empty() ? nullptr : a.play_sizes.back();
++}
++
 +// ------------------------------------------------------------------ drawing
 +
 +float Hub::Ease(float& v, float target, float speed) {
@@ -24726,7 +24743,10 @@ index 00000000..0caae400
 +}
 +
 +ImFont* Hub::Pick(ImFont* f, float size, const std::string* t) const {
-+  const std::vector<ImFont*>* sizes = f == a_.menu ? &a_.menu_sizes : f == a_.menu_regular ? &a_.menu_regular_sizes : nullptr;
++  const std::vector<ImFont*>* sizes = f == a_.menu           ? &a_.menu_sizes
++                                      : f == a_.menu_regular ? &a_.menu_regular_sizes
++                                      : f == a_.play         ? &a_.play_sizes
++                                                             : nullptr;
 +  if (!sizes || sizes->empty()) return f;
 +  const float want = size * s_ * 0.94f;  // (a touch smaller is still sharp)
 +  auto has_all = [&](ImFont* face) {
@@ -24846,29 +24866,6 @@ index 00000000..0caae400
 +  }
 +}
 +void FillPoly(ImDrawList* dl, const std::vector<ImVec2>& pts, ImU32 c) { FillPolyGradient(dl, pts, 0, 1, c, c); }
-+// A convex polygon cut to another convex one (Sutherland-Hodgman; both clockwise on screen).
-+std::vector<ImVec2> ClipConvex(const std::vector<ImVec2>& subject, const std::vector<ImVec2>& clip) {
-+  std::vector<ImVec2> out = subject;
-+  for (size_t e = 0; e < clip.size() && !out.empty(); ++e) {
-+    const ImVec2 a = clip[e], b = clip[(e + 1) % clip.size()];
-+    const auto inside = [&](ImVec2 p) { return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) >= 0; };
-+    const auto cross = [&](ImVec2 p, ImVec2 q) {
-+      const float a1 = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
-+      const float a2 = (b.x - a.x) * (q.y - a.y) - (b.y - a.y) * (q.x - a.x);
-+      const float t = a1 / (a1 - a2);
-+      return ImVec2(p.x + (q.x - p.x) * t, p.y + (q.y - p.y) * t);
-+    };
-+    std::vector<ImVec2> in = std::move(out);
-+    out.clear();
-+    for (size_t i = 0; i < in.size(); ++i) {
-+      const ImVec2 p = in[i], q = in[(i + 1) % in.size()];
-+      const bool pi = inside(p), qi = inside(q);
-+      if (pi) out.push_back(p);
-+      if (pi != qi) out.push_back(cross(p, q));
-+    }
-+  }
-+  return out;
-+}
 +}  // namespace
 +
 +namespace {
@@ -25223,13 +25220,12 @@ index 00000000..0caae400
 +                                 Black(0.6f), Black(0.6f));
 +  }
 +  // PLAY: a gold button with its top-left and bottom-right corners cut, lit
-+  // from above (a gradient, a gloss over its upper half, a light edge on top
-+  // and a dark one under it), standing off the picture on a soft shadow in a
-+  // faint glow, the capitals pressed into it. Now and then a light sweeps
-+  // across it. Pressed, it sinks a little and flashes white.
++  // from above (a gradient, a light edge on top and a dark one under it),
++  // standing off the picture on a soft shadow in a faint glow, the capitals
++  // pressed into it. Pressed, it sinks a little and flashes white.
 +  const float in = Smooth((time_ - 0.2f) / 0.6f);
 +  const int v0 = dl_->VtxBuffer.Size;
-+  constexpr float kBw = 420, kBh = 118, kCut = 22, kSize = 92;
++  constexpr float kBw = 420, kBh = 118, kCut = 22, kSize = 92, kCap = 60, kTrack = 4;
 +  const float sink = press_ * 5;
 +  const float bx = kPageL, by = 636 + (1 - in) * 14 + sink;
 +  const auto shape = [&](float grow, float dx, float dy) {
@@ -25247,24 +25243,7 @@ index 00000000..0caae400
 +  // the body, lit from above
 +  const std::vector<ImVec2> body = shape(0, 0, 0);
 +  const float body_top = P(0, by).y, body_bottom = P(0, by + kBh).y;
-+  FillPolyGradient(dl_, body, body_top, body_bottom, Rgba(255, 232, 104), Rgba(232, 160, 8));
-+  // the gloss over the upper half
-+  {
-+    const float mid = P(0, by + kBh * 0.48f).y;
-+    const std::vector<ImVec2> upper = ClipConvex(
-+        body, {ImVec2(-1e5f, body_top - 1), ImVec2(1e5f, body_top - 1), ImVec2(1e5f, mid), ImVec2(-1e5f, mid)});
-+    FillPolyGradient(dl_, upper, body_top, mid, White(0.34f), White(0.06f));
-+  }
-+  // a light sweeping across every few seconds
-+  {
-+    const float period = 4.2f, t = std::fmod(time_ + 1.0f, period) / 1.1f;
-+    if (t < 1) {
-+      const float sx = bx - 160 + (kBw + 320) * Smooth(t), w = 70, lean = 60;
-+      const std::vector<ImVec2> streak = ClipConvex(
-+          body, {P(sx, by - 2), P(sx + w, by - 2), P(sx + w - lean, by + kBh + 2), P(sx - lean, by + kBh + 2)});
-+      FillPoly(dl_, streak, White(0.28f * std::sin(t * 3.14159f)));
-+    }
-+  }
++  FillPolyGradient(dl_, body, body_top, body_bottom, Rgba(255, 228, 92), Rgba(226, 154, 6));
 +  // its edges: light along the top, dark under and down the right
 +  dl_->AddLine(body[0], body[1], Rgba(255, 250, 214, 230), 2.2f * s_);
 +  dl_->AddLine(body[5], body[0], Rgba(255, 246, 190, 200), 2.2f * s_);
@@ -25273,9 +25252,16 @@ index 00000000..0caae400
 +  dl_->AddLine(body[1], body[2], Rgba(150, 96, 0, 170), 2.0f * s_);
 +  dl_->AddPolyline(body.data(), int(body.size()), Rgba(70, 40, 0, 150), ImDrawFlags_Closed, 1.2f * s_);
 +  // the capitals, pressed in: a light line under each letter, then the letter
-+  const float tx = bx + kBw * 0.5f, ty = by + kBh * 0.5f + 2;
-+  TextMid(Bold(), kSize, tx, ty + 2.2f, Rgba(255, 244, 170, 170), "PLAY", 0.5f, 1);
-+  TextMid(Bold(), kSize, tx, ty, Rgba(26, 18, 0), "PLAY", 0.5f, 1);
++  // (its face's capitals kCap tall, whatever their proportions, and no
++  // wider than the button leaves them)
++  ImFont* face = PlayFace();
++  float tsize = kSize;
++  if (const ImFontGlyph* g = CapGlyph(Pick(face, kSize)); g && g->Y1 > g->Y0)
++    tsize = kCap * Pick(face, kSize)->LegacySize / (g->Y1 - g->Y0);
++  tsize = std::min(tsize, tsize * (kBw - 120) / std::max(1.0f, TextWidth(face, tsize, "PLAY", kTrack)));
++  const float tx = bx + kBw * 0.5f, ty = by + kBh * 0.5f + 1;
++  TextMid(face, tsize, tx, ty + 2.2f, Rgba(255, 244, 170, 170), "PLAY", 0.5f, kTrack);
++  TextMid(face, tsize, tx, ty, Rgba(26, 18, 0), "PLAY", 0.5f, kTrack);
 +  if (press_ > 0.01f) FillPoly(dl_, body, White(0.75f * press_));
 +  if (!state_.installed)
 +    TextMid(Regular(), 29, kPageL, by + kBh + 50, kMenuGray, "Not installed yet. PLAY sets it up from your disc image.");
@@ -25442,7 +25428,7 @@ index 00000000..0caae400
 +  TextMid(Bold(), 21, px, py + 12, kDimGray, "BUILT WITH", 0, 1.6f);
 +  py += 44;
 +  const char* parts[] = {"PS5 Payload SDK", "Mesa RADV (Vulkan)", "Dear ImGui", "stb_image, stb_vorbis, dr_mp3 and dr_flac",
-+                         "TeX Gyre Heros (GUST Font License)", "Oswald and Inter (SIL Open Font License)"};
++                         "TeX Gyre Heros (GUST Font License)", "Oswald, Inter and Russo One (SIL Open Font License)"};
 +  for (const char* part : parts) {
 +    TextMid(Regular(), 28, px, py + 14, Rgba(196, 196, 196), part);
 +    py += 40;
@@ -25670,10 +25656,10 @@ index 00000000..0caae400
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
 new file mode 100644
-index 00000000..3e1cf651
+index 00000000..4c074eea
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
-@@ -0,0 +1,334 @@
+@@ -0,0 +1,341 @@
 +// GTA IV PS5 - the hub: the screen the app opens on, before the game
 +// (the PC launcher's settings, driven by the controller), drawn after GTA IV's
 +// own pause menu: tabs across the top in its condensed type, the chosen one in
@@ -25755,7 +25741,10 @@ index 00000000..3e1cf651
 +  ImFont* menu = nullptr;          // (a face's handle: its largest size)
 +  ImFont* menu_regular = nullptr;
 +  std::vector<ImFont*> menu_sizes, menu_regular_sizes;  // ascending
-+  Image logo;                   // the game's logo
++  // The PLAY button's lettering, its own display face (AddPlayFont).
++  ImFont* play = nullptr;
++  std::vector<ImFont*> play_sizes;
++  Image logo;                  // the game's logo
 +  Image hero;                   // the picture behind it all
 +  std::map<uint32_t, Image> buttons;  // the PS5's button pictures, by Button (kLeft | kRight: the d-pad)
 +};
@@ -25764,6 +25753,9 @@ index 00000000..3e1cf651
 +// to the atlas at the hub's sizes, for a 1080p and a 4K screen.
 +void AddMenuFonts(ImFontAtlas* atlas, const void* bold, int bold_bytes, const void* regular, int regular_bytes,
 +                  Assets& a);
++// Adds the PLAY button's face (the file's bytes), only its four letters, at
++// the button's size on a 1080p and a 4K screen.
++void AddPlayFont(ImFontAtlas* atlas, const void* data, int bytes, Assets& a);
 +
 +struct Paths {
 +  std::filesystem::path app;        // the app folder (/data/homebrew/PPSA94004)
@@ -25859,6 +25851,7 @@ index 00000000..3e1cf651
 +  // the hub's two faces (the overlay's when the menu type didn't load)
 +  ImFont* Bold() const { return a_.menu ? a_.menu : a_.body_bold; }
 +  ImFont* Regular() const { return a_.menu_regular ? a_.menu_regular : a_.body; }
++  ImFont* PlayFace() const { return a_.play ? a_.play : Bold(); }
 +  // A title over a page of its own (the installer): yellow, as the game's.
 +  void Heading(const std::string& title, const std::string& subtitle);
 +  // the installer (hub_installer_page.cpp): over the pages, from PLAY
@@ -26010,10 +26003,10 @@ index 00000000..3e1cf651
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
 new file mode 100644
-index 00000000..15d1971f
+index 00000000..8ecce786
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
-@@ -0,0 +1,400 @@
+@@ -0,0 +1,402 @@
 +// GTA IV PS5 - the hub on the console (see hub_ui.h):
 +// shown before the game is set up (ReXApp::OnFinalizePaths, asynchronous),
 +// driven by the DualSense through scePad, with the menu music (hub/music,
@@ -26057,8 +26050,8 @@ index 00000000..15d1971f
 +int sceSystemServicePowerTick(void);
 +}
 +
-+// The fonts, built into the app (fonts/: Oswald and Inter under the SIL Open
-+// Font License, TeX Gyre Heros Cn under the GUST Font License).
++// The fonts, built into the app (fonts/: Oswald, Inter and Russo One under
++// the SIL Open Font License, TeX Gyre Heros Cn under the GUST Font License).
 +#define SVR_INCBIN(name, file)                                                        \
 +  __asm__(".section .rodata\n.global " #name "\n.balign 16\n" #name ":\n.incbin \"" \
 +          file "\"\n.global " #name "_end\n" #name "_end:\n.byte 0\n.previous\n");    \
@@ -26070,6 +26063,7 @@ index 00000000..15d1971f
 +SVR_INCBIN(gta4ps5_font_inter_bold, GTA4PS5_FONTS_DIR "/inter-latin-600-normal.ttf")
 +SVR_INCBIN(gta4ps5_font_menu, GTA4PS5_FONTS_DIR "/texgyreheroscn-bold.otf")
 +SVR_INCBIN(gta4ps5_font_menu_regular, GTA4PS5_FONTS_DIR "/texgyreheroscn-regular.otf")
++SVR_INCBIN(gta4ps5_font_play, GTA4PS5_FONTS_DIR "/russo-one-latin-400-normal.ttf")
 +
 +namespace gta4ps5::hub {
 +namespace {
@@ -26397,6 +26391,7 @@ index 00000000..15d1971f
 +  // the hub's menu type (GTA IV's: a Helvetica Condensed), at its sizes
 +  AddMenuFonts(atlas, gta4ps5_font_menu, int(gta4ps5_font_menu_end - gta4ps5_font_menu), gta4ps5_font_menu_regular,
 +               int(gta4ps5_font_menu_regular_end - gta4ps5_font_menu_regular), g_assets);
++  AddPlayFont(atlas, gta4ps5_font_play, int(gta4ps5_font_play_end - gta4ps5_font_play), g_assets);
 +}
 +
 +const Assets& Fonts() { return g_assets; }
