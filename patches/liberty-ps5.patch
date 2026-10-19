@@ -30,7 +30,7 @@ index fef3fea0..b72d4da7 100644
      if(REX_TARGET_PROCESSOR MATCHES "AMD64|x86_64")
          set(REX_PLATFORM "mac-amd64")
 diff --git a/glue/rexglue-sdk-main/cmake/rexglue_fidelityfx.cmake b/glue/rexglue-sdk-main/cmake/rexglue_fidelityfx.cmake
-index c71aa2db..cca92eb3 100644
+index c71aa2db..07e4a9d6 100644
 --- a/glue/rexglue-sdk-main/cmake/rexglue_fidelityfx.cmake
 +++ b/glue/rexglue-sdk-main/cmake/rexglue_fidelityfx.cmake
 @@ -21,6 +21,19 @@ function(_rexglue_ffx_write_if_changed path content)
@@ -75,6 +75,43 @@ index c71aa2db..cca92eb3 100644
      set(fidelityfx_SOURCE_DIR "${_rexglue_ffx_portable_source}")
  endif()
  
+@@ -179,6 +207,36 @@ if(TARGET amd_fidelityfx_vk AND REXGLUE_FIDELITYFX_FRAME_GENERATION AND NOT WIN3
+     target_include_directories(amd_fidelityfx_vk PRIVATE "${fidelityfx_SOURCE_DIR}/ffx-api/src")
+ endif()
+ 
++if(TARGET ffx_backend_vk_x64 AND NOT WIN32)
++    # The Vulkan backend carves its scratch buffer into arrays at 4-byte
++    # offsets, but EffectContext is alignas(32): clang may store to it with
++    # aligned vector moves, which fault (the PS5 crashed this way creating the
++    # FSR 3 context). Lay every array out on 64-byte boundaries instead, with
++    # room for the first one's padding.
++    set(_rexglue_ffx_vk "${fidelityfx_SOURCE_DIR}/sdk/src/backends/vk/ffx_vk.cpp")
++    file(READ "${_rexglue_ffx_vk}" _rexglue_ffx_vk_source)
++    set(_rexglue_ffx_vk_patched "${_rexglue_ffx_vk_source}")
++    string(REPLACE "sizeof(uint32_t));" "64);" _rexglue_ffx_vk_patched "${_rexglue_ffx_vk_patched}")
++    string(REPLACE "uint8_t* pMem = (uint8_t*)((BackendContext_VK*)(backendContext + 1));"
++        "uint8_t* pMem = (uint8_t*)((reinterpret_cast<uintptr_t>(backendContext + 1) + 63) & ~uintptr_t(63));"
++        _rexglue_ffx_vk_patched "${_rexglue_ffx_vk_patched}")
++    string(REPLACE "return FFX_ALIGN_UP(sizeof(BackendContext_VK) + extensionPropArraySize"
++        "return FFX_ALIGN_UP(sizeof(BackendContext_VK) + 64 + extensionPropArraySize"
++        _rexglue_ffx_vk_patched "${_rexglue_ffx_vk_patched}")
++    string(FIND "${_rexglue_ffx_vk_patched}" "& ~uintptr_t(63)" _rexglue_ffx_vk_mapped)
++    string(FIND "${_rexglue_ffx_vk_patched}" "sizeof(BackendContext_VK) + 64 +" _rexglue_ffx_vk_sized)
++    string(FIND "${_rexglue_ffx_vk_patched}" "sizeof(uint32_t));" _rexglue_ffx_vk_left)
++    if(_rexglue_ffx_vk_mapped EQUAL -1 OR _rexglue_ffx_vk_sized EQUAL -1 OR NOT _rexglue_ffx_vk_left EQUAL -1)
++        message(FATAL_ERROR "FidelityFX: the Vulkan backend's scratch layout changed; update the alignment overlay")
++    endif()
++    set(_rexglue_ffx_vk_overlay "${fidelityfx_BINARY_DIR}/ffx_vk_aligned.cpp")
++    _rexglue_ffx_write_if_changed("${_rexglue_ffx_vk_overlay}" "${_rexglue_ffx_vk_patched}")
++    get_target_property(_rexglue_ffx_vk_sources ffx_backend_vk_x64 SOURCES)
++    list(FILTER _rexglue_ffx_vk_sources EXCLUDE REGEX "(^|/)ffx_vk\\.cpp$")
++    list(APPEND _rexglue_ffx_vk_sources "${_rexglue_ffx_vk_overlay}")
++    set_property(TARGET ffx_backend_vk_x64 PROPERTY SOURCES "${_rexglue_ffx_vk_sources}")
++endif()
++
+ # The upstream FidelityFX targets expose source-tree include paths in
+ # INTERFACE_INCLUDE_DIRECTORIES, which breaks our install export checks.
+ # We only link against these targets internally, so no public includes are
 diff --git a/glue/rexglue-sdk-main/cmake/rexglue_helpers.cmake b/glue/rexglue-sdk-main/cmake/rexglue_helpers.cmake
 index 9ffeffdf..1f19e16d 100644
 --- a/glue/rexglue-sdk-main/cmake/rexglue_helpers.cmake
@@ -32397,6 +32434,19 @@ index 00000000..61d85885
 +
 +}  // namespace ui
 +}  // namespace rex
+diff --git a/glue/rexglue-sdk-main/include/rex/ui/vulkan/device.h b/glue/rexglue-sdk-main/include/rex/ui/vulkan/device.h
+index 984e5e23..38102400 100644
+--- a/glue/rexglue-sdk-main/include/rex/ui/vulkan/device.h
++++ b/glue/rexglue-sdk-main/include/rex/ui/vulkan/device.h
+@@ -24,6 +24,8 @@ namespace vulkan {
+ // TEMP (Android perf investigation): per-frame averages of counted Vulkan commands
+ // since the previous call.
+ std::string ConsumeCommandCounters(uint32_t frames);
++// [ps5 port] Reuse counts of the device-memory recycler (PS5 only).
++std::string MemoryRecyclerSummary();
+ 
+ class VulkanDevice {
+  public:
 diff --git a/glue/rexglue-sdk-main/include/rex/ui/vulkan/functions/instance_khr_display.inc b/glue/rexglue-sdk-main/include/rex/ui/vulkan/functions/instance_khr_display.inc
 new file mode 100644
 index 00000000..4df17f05
@@ -35411,11 +35461,115 @@ index 86d57cff..d269751f 100644
      target_link_libraries(rexcore PRIVATE pthread)
  elseif(ANDROID)
      target_link_libraries(rexcore PRIVATE dl log)
+diff --git a/glue/rexglue-sdk-main/src/core/clock.cpp b/glue/rexglue-sdk-main/src/core/clock.cpp
+index ae72b7ae..1b0c0ae2 100644
+--- a/glue/rexglue-sdk-main/src/core/clock.cpp
++++ b/glue/rexglue-sdk-main/src/core/clock.cpp
+@@ -10,8 +10,11 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <limits>
++#include <memory>
+ #include <mutex>
++#include <vector>
+ 
+ #include <rex/chrono/clock.h>
+ #include <rex/cvar.h>
+@@ -42,6 +45,23 @@ uint64_t last_host_tick_count_ = Clock::QueryHostTickCount();
+ // Mutex to ensure last_host_tick_count_ and last_guest_tick_count_ are in sync
+ std::mutex tick_mutex_;
+ 
++#if REX_PLATFORM_PS5
++// [ps5 port] The guest clock as a function of the host's: guest ticks at a
++// host tick are guest_base + (host - host_base) * numerator / denominator.
++// Every mftb read took tick_mutex_ (a system call when another thread held
++// it) and dropped the remainder of each step, so the clock lost time the more
++// often the game read it. Reading it now takes no lock and loses nothing.
++struct GuestClockMapping {
++  uint64_t host_base, guest_base, numerator, denominator;
++};
++std::atomic<const GuestClockMapping*> guest_clock_mapping_{nullptr};
++inline uint64_t GuestTicksAt(const GuestClockMapping& mapping, uint64_t host) {
++  const uint64_t delta = host > mapping.host_base ? host - mapping.host_base : 0;
++  return mapping.guest_base +
++         uint64_t((unsigned __int128)delta * mapping.numerator / mapping.denominator);
++}
++#endif
++
+ void RecomputeGuestTickScalar() {
+   // Create a rational number with numerator (first) and denominator (second)
+   auto frac = std::make_pair(guest_tick_frequency_, Clock::QueryHostTickFrequency());
+@@ -58,6 +78,26 @@ void RecomputeGuestTickScalar() {
+   reduce_fraction(frac);
+ 
+   std::lock_guard<std::mutex> lock(tick_mutex_);
++#if REX_PLATFORM_PS5
++  // Continue the guest clock from where it is now, at the new rate.
++  const uint64_t host_now = Clock::QueryHostTickCount();
++  uint64_t guest_now;
++  if (const GuestClockMapping* current = guest_clock_mapping_.load(std::memory_order_acquire)) {
++    guest_now = GuestTicksAt(*current, host_now);
++  } else {
++    const uint64_t delta = host_now > last_host_tick_count_ ? host_now - last_host_tick_count_ : 0;
++    guest_now = last_guest_tick_count_ +
++                uint64_t((unsigned __int128)delta * guest_tick_ratio_.first / guest_tick_ratio_.second);
++  }
++  last_host_tick_count_ = host_now;
++  last_guest_tick_count_ = guest_now;
++  // Readers may still hold an older mapping, so mappings are never freed
++  // (the rate changes a handful of times a run).
++  static std::vector<std::unique_ptr<GuestClockMapping>> mappings;
++  mappings.push_back(std::make_unique<GuestClockMapping>(
++      GuestClockMapping{host_now, guest_now, frac.first, frac.second}));
++  guest_clock_mapping_.store(mappings.back().get(), std::memory_order_release);
++#endif
+   guest_tick_ratio_ = frac;
+ }
+ 
+@@ -71,6 +111,11 @@ uint64_t UpdateGuestClock() {
+     return host_tick_count * guest_tick_ratio_.first / guest_tick_ratio_.second;
+   }
+ 
++#if REX_PLATFORM_PS5
++  if (const GuestClockMapping* mapping = guest_clock_mapping_.load(std::memory_order_acquire)) {
++    return GuestTicksAt(*mapping, host_tick_count);
++  }
++#endif
+   std::unique_lock<std::mutex> lock(tick_mutex_, std::defer_lock);
+   if (lock.try_lock()) {
+     // Translate host tick count to guest tick count.
 diff --git a/glue/rexglue-sdk-main/src/core/clock_posix.cpp b/glue/rexglue-sdk-main/src/core/clock_posix.cpp
-index 00f23828..1166da69 100644
+index 00f23828..f870b212 100644
 --- a/glue/rexglue-sdk-main/src/core/clock_posix.cpp
 +++ b/glue/rexglue-sdk-main/src/core/clock_posix.cpp
-@@ -26,13 +26,11 @@ uint64_t Clock::host_tick_frequency_platform() {
+@@ -18,21 +18,36 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+ #include <mach/mach_time.h>
+ #endif
+ 
++#if REX_PLATFORM_PS5
++// [ps5 port] clock_gettime is a system call on the PS5; the guest reads the
++// clock (mftb, KeQueryPerformanceCounter) tens of thousands of times a second.
++// The TSC is invariant and in step across the cores, as titles rely on.
++extern "C" uint64_t sceKernelReadTsc(void);
++extern "C" uint64_t sceKernelGetTscFrequency(void);
++namespace {
++uint64_t Ps5TscFrequency() {
++  static const uint64_t frequency = sceKernelGetTscFrequency();
++  return frequency;
++}
++}  // namespace
++#endif
++
+ namespace rex::chrono {
+ 
+ uint64_t Clock::host_tick_frequency_platform() {
++#if REX_PLATFORM_PS5
++  if (const uint64_t frequency = Ps5TscFrequency()) return frequency;
++#endif
+ #ifdef __APPLE__
+   mach_timebase_info_data_t info;
    mach_timebase_info(&info);
    return (uint64_t)((1000000000ull * (uint64_t)info.denom) / (uint64_t)info.numer);
  #else
@@ -35434,6 +35588,16 @@ index 00f23828..1166da69 100644
  #endif
  }
  
+@@ -44,6 +59,9 @@ uint64_t Clock::host_tick_count_platform() {
+   // inconsistent with the 24 MHz mach frequency and cause ~41x time acceleration.
+   return mach_absolute_time();
+ #else
++#if REX_PLATFORM_PS5
++  if (Ps5TscFrequency()) return sceKernelReadTsc();
++#endif
+   timespec tp;
+   int error = clock_gettime(CLOCK_MONOTONIC_RAW, &tp);
+   assert_zero(error);
 diff --git a/glue/rexglue-sdk-main/src/core/exception_handler_posix.cpp b/glue/rexglue-sdk-main/src/core/exception_handler_posix.cpp
 index 64450348..7f900b8c 100644
 --- a/glue/rexglue-sdk-main/src/core/exception_handler_posix.cpp
@@ -36117,10 +36281,10 @@ index d639924c..7f325c0c 100644
  }  // namespace rex::thread
 diff --git a/glue/rexglue-sdk-main/src/core/ps5_diag.cpp b/glue/rexglue-sdk-main/src/core/ps5_diag.cpp
 new file mode 100644
-index 00000000..5f1b5290
+index 00000000..5aa182b2
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/src/core/ps5_diag.cpp
-@@ -0,0 +1,296 @@
+@@ -0,0 +1,333 @@
 +// [ps5 port] see rex/ps5_diag.h
 +#include <rex/ps5_diag.h>
 +
@@ -36186,6 +36350,10 @@ index 00000000..5f1b5290
 +  std::atomic<bool> want_stack{false};
 +  static constexpr int kProfileSamples = 8192;
 +  uint32_t profile[kProfileSamples] = {};
++  // For a sample in a library: the next return address into the game past
++  // the one it is charged to (who called the wrapper: std::mutex::lock's
++  // caller, not std::mutex::lock).
++  uint32_t profile_parent[kProfileSamples] = {};
 +  std::atomic<uint32_t> profile_count{0};
 +  uint32_t profile_reported = 0;
 +};
@@ -36207,22 +36375,31 @@ index 00000000..5f1b5290
 +    const uintptr_t rip = gregs[20], anchor = Anchor();
 +    const uintptr_t lo = anchor > kNear ? anchor - kNear : 0x10000;
 +    uint32_t rel = rip > lo && rip < anchor + kNear ? uint32_t(rip - anchor + 0x10000000) : 0;
++    uint32_t parent = 0;
 +    if (!rel) {
 +      // In a library (libc's memcpy, a kernel wait...): charge the game code
 +      // that called it, the nearest return address into the eboot on the
-+      // stack, marked with the top bit.
++      // stack, marked with the top bit; and note the next one in another
++      // block, its likely caller.
 +      const uintptr_t rsp = gregs[23] & ~uintptr_t(7);
-+      uintptr_t end = rsp + 24 * 8;
++      uintptr_t end = rsp + 40 * 8;
 +      if (e->stack_top && e->stack_top < end) end = e->stack_top;
 +      for (uintptr_t p = rsp; p + 8 <= end; p += 8) {
 +        const uintptr_t v = *reinterpret_cast<const uintptr_t*>(p);
 +        if (v > lo && v < anchor + kNear) {
-+          rel = uint32_t(v - anchor + 0x10000000) | 0x80000000u;
-+          break;
++          const uint32_t word = uint32_t(v - anchor + 0x10000000);
++          if (!rel) {
++            if (p >= rsp + 24 * 8) break;
++            rel = word | 0x80000000u;
++          } else if ((word & ~63u) != (rel & 0x7FFFFFC0u)) {
++            parent = word;
++            break;
++          }
 +        }
 +      }
 +    }
 +    const uint32_t n = e->profile_count.load(std::memory_order_relaxed);
++    e->profile_parent[n % ThreadEntry::kProfileSamples] = parent;
 +    e->profile[n % ThreadEntry::kProfileSamples] = rel;
 +    e->profile_count.store(n + 1, std::memory_order_release);
 +    return;
@@ -36318,6 +36495,7 @@ index 00000000..5f1b5290
 +    ThreadEntry* e;
 +    uint32_t total, inside, via;
 +    std::unordered_map<uint32_t, uint32_t> hits, callers;
++    std::unordered_map<uint64_t, uint32_t> pairs;  // caller block << 32 | its caller's block
 +  };
 +  std::vector<Busy> busy;
 +  const int count = std::min(next_thread.load(), kThreads);
@@ -36329,13 +36507,18 @@ index 00000000..5f1b5290
 +    if (end - begin > uint32_t(ThreadEntry::kProfileSamples))
 +      begin = end - ThreadEntry::kProfileSamples;
 +    e.profile_reported = end;
-+    Busy b{&e, end - begin, 0, 0, {}, {}};
++    Busy b{&e, end - begin, 0, 0, {}, {}, {}};
 +    for (uint32_t k = begin; k != end; ++k) {
 +      const uint32_t pc = e.profile[k % ThreadEntry::kProfileSamples];
 +      if (!pc) continue;
 +      // by 64-byte block, so one function's instructions mostly add up
-+      if (pc & 0x80000000u) ++b.callers[pc & 0x7FFFFFC0u], ++b.via;
-+      else ++b.hits[pc & ~63u], ++b.inside;
++      if (pc & 0x80000000u) {
++        ++b.callers[pc & 0x7FFFFFC0u], ++b.via;
++        const uint32_t parent = e.profile_parent[k % ThreadEntry::kProfileSamples];
++        if (parent) ++b.pairs[uint64_t(pc & 0x7FFFFFC0u) << 32 | (parent & ~63u)];
++      } else {
++        ++b.hits[pc & ~63u], ++b.inside;
++      }
 +    }
 +    // Threads that ran game code; ones only ever blocked (idle job threads)
 +    // would otherwise crowd the busy ones out of the report.
@@ -36368,9 +36551,27 @@ index 00000000..5f1b5290
 +      REXLOG_INFO("ps5 prof: tid {} {}: {} samples, {} {} part {}:{}", b.e->tid, b.e->what, b.total, n,
 +                  kind, ++part, line);
 +  };
++  // Library time by caller and that caller's caller ("A/B"), the busiest 120.
++  auto emit_pairs = [](const Busy& b) {
++    std::vector<std::pair<uint64_t, uint32_t>> all(b.pairs.begin(), b.pairs.end());
++    std::sort(all.begin(), all.end(), [](const auto& x, const auto& y) { return x.second > y.second; });
++    std::string line;
++    int entries = 0;
++    for (const auto& [key, hits] : all) {
++      if (hits < 3 || entries == 120) break;
++      char buf[40];
++      snprintf(buf, sizeof(buf), " %X/%X:%u", uint32_t(key >> 32), uint32_t(key), hits);
++      line += buf;
++      ++entries;
++    }
++    if (entries)
++      REXLOG_INFO("ps5 prof: tid {} {}: {} samples, {} in libraries, by caller/parent part 1:{}",
++                  b.e->tid, b.e->what, b.total, b.via, line);
++  };
 +  for (size_t t = 0; t < busy.size() && t < 10; ++t) {
 +    emit(busy[t], "in game code", busy[t].hits, busy[t].inside);
 +    emit(busy[t], "in libraries, by caller", busy[t].callers, busy[t].via);
++    emit_pairs(busy[t]);
 +  }
 +}
 +
@@ -36552,10 +36753,10 @@ index 00000000..95c028d7
 +}
 +#endif
 diff --git a/glue/rexglue-sdk-main/src/core/threading_posix.cpp b/glue/rexglue-sdk-main/src/core/threading_posix.cpp
-index 8c31d93a..cb812e21 100644
+index 8c31d93a..d0920b4d 100644
 --- a/glue/rexglue-sdk-main/src/core/threading_posix.cpp
 +++ b/glue/rexglue-sdk-main/src/core/threading_posix.cpp
-@@ -27,14 +27,20 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+@@ -27,15 +27,22 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
  #if REX_PLATFORM_ANDROID
  #include <android/log.h>
  #endif
@@ -36574,9 +36775,11 @@ index 8c31d93a..cb812e21 100644
  #include <rex/assert.h>
 +#include <rex/cvar.h>
  #include <rex/chrono/chrono_steady_cast.h>
++#include <rex/chrono/clock.h>
  #include <rex/logging.h>
  #include <rex/thread/timer_queue.h>
-@@ -49,7 +55,79 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+ 
+@@ -49,7 +56,79 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
  #include <rex/string.h>
  #endif
  
@@ -36657,7 +36860,7 @@ index 8c31d93a..cb812e21 100644
  // SIGEV_THREAD_ID in timer_create(...) is a Linux extension
  #define REX_HAS_SIGEV_THREAD_ID 1
  #ifdef __GLIBC__
-@@ -62,6 +140,11 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+@@ -62,6 +141,11 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
  #define REX_HAS_SIGEV_THREAD_ID 0
  #endif
  
@@ -36669,7 +36872,7 @@ index 8c31d93a..cb812e21 100644
  namespace rex::thread {
  
  #if REX_PLATFORM_ANDROID
-@@ -115,12 +198,24 @@ enum class SignalType {
+@@ -115,12 +199,24 @@ enum class SignalType {
  };
  
  int GetSystemSignal(SignalType num) {
@@ -36694,7 +36897,7 @@ index 8c31d93a..cb812e21 100644
    return static_cast<SignalType>(num - SIGRTMIN);
  }
  
-@@ -150,7 +245,7 @@ void EnableAffinityConfiguration() {}
+@@ -150,7 +246,7 @@ void EnableAffinityConfiguration() {}
  // uint64_t ticks() { return mach_absolute_time(); }
  
  uint32_t current_thread_system_id() {
@@ -36703,7 +36906,7 @@ index 8c31d93a..cb812e21 100644
  }
  
  void MaybeYield() {
-@@ -221,7 +316,7 @@ bool SetTlsValue(TlsHandle handle, uintptr_t value) {
+@@ -221,7 +317,7 @@ bool SetTlsValue(TlsHandle handle, uintptr_t value) {
  class PosixConditionBase {
   public:
    PosixConditionBase() {
@@ -36712,7 +36915,7 @@ index 8c31d93a..cb812e21 100644
      // Use robust mutexes so waits can recover if owner thread terminates.
      pthread_mutexattr_t attr;
      if (pthread_mutexattr_init(&attr) == 0) {
-@@ -241,7 +336,7 @@ class PosixConditionBase {
+@@ -241,7 +337,7 @@ class PosixConditionBase {
    WaitResult Wait(std::chrono::milliseconds timeout) {
      bool executed;
      auto predicate = [this] { return this->signaled(); };
@@ -36721,7 +36924,7 @@ index 8c31d93a..cb812e21 100644
      auto native_mutex = static_cast<pthread_mutex_t*>(mutex_.native_handle());
      int lock_result = pthread_mutex_lock(native_mutex);
      if (lock_result == EOWNERDEAD) {
-@@ -252,6 +347,11 @@ class PosixConditionBase {
+@@ -252,6 +348,11 @@ class PosixConditionBase {
      std::unique_lock<std::mutex> lock(mutex_, std::adopt_lock);
  #else
      std::unique_lock<std::mutex> lock(mutex_);
@@ -36733,7 +36936,7 @@ index 8c31d93a..cb812e21 100644
  #endif
      if (predicate()) {
        executed = true;
-@@ -378,6 +478,9 @@ class PosixConditionBase {
+@@ -378,6 +479,9 @@ class PosixConditionBase {
    // Callers hold mutex_. Wakes every WaitMultiple currently including this
    // handle; lock order is always handle mutex_ then waiter mutex.
    void NotifyExternalWaiters() {
@@ -36743,7 +36946,7 @@ index 8c31d93a..cb812e21 100644
      for (ExternalWaiter* waiter : external_waiters_) {
        std::lock_guard<std::mutex> lock(waiter->mutex);
        ++waiter->generation;
-@@ -395,6 +498,38 @@ class PosixConditionBase {
+@@ -395,6 +499,41 @@ class PosixConditionBase {
    std::condition_variable cond_;
    std::mutex mutex_;
    std::vector<ExternalWaiter*> external_waiters_;  // guarded by mutex_
@@ -36760,7 +36963,10 @@ index 8c31d93a..cb812e21 100644
 +    }
 +    uint32_t generation = signal_generation_.load(std::memory_order_relaxed);
 +    lock.unlock();
-+    const auto end = std::chrono::steady_clock::now() + std::chrono::microseconds(spin_us);
++    // The TSC, not steady_clock: a clock_gettime system call every few
++    // pauses made the spin itself expensive.
++    const uint64_t end = rex::chrono::Clock::QueryHostTickCount() +
++                         rex::chrono::Clock::QueryHostTickFrequency() * uint64_t(spin_us) / 1000000;
 +    do {
 +      for (int i = 0; i < 8; ++i) {
 +        __builtin_ia32_pause();
@@ -36774,7 +36980,7 @@ index 8c31d93a..cb812e21 100644
 +        lock.unlock();
 +        generation = now_generation;
 +      }
-+    } while (std::chrono::steady_clock::now() < end);
++    } while (rex::chrono::Clock::QueryHostTickCount() < end);
 +    lock.lock();
 +  }
 +  std::atomic<uint32_t> signal_generation_{0};  // bumped on every signal
@@ -36782,7 +36988,7 @@ index 8c31d93a..cb812e21 100644
  };
  
  // There really is no native POSIX handle for a single wait/signal construct
-@@ -617,10 +752,24 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -617,10 +756,24 @@ class PosixCondition<Thread> : public PosixConditionBase {
      pthread_attr_t attr;
      if (pthread_attr_init(&attr) != 0)
        return false;
@@ -36807,7 +37013,7 @@ index 8c31d93a..cb812e21 100644
      if (params.initial_priority != 0) {
        sched_param sched{};
        sched.sched_priority = params.initial_priority + 1;
-@@ -633,7 +782,13 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -633,7 +786,13 @@ class PosixCondition<Thread> : public PosixConditionBase {
          return false;
        }
      }
@@ -36822,7 +37028,7 @@ index 8c31d93a..cb812e21 100644
        pthread_attr_destroy(&attr);
        return false;
      }
-@@ -680,6 +835,8 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -680,6 +839,8 @@ class PosixCondition<Thread> : public PosixConditionBase {
          std::lock_guard<std::mutex> lock(android_pre_api_26_name_mutex_);
          rex::string::copy_truncating(result.data(), android_pre_api_26_name_, result.size());
        }
@@ -36831,7 +37037,7 @@ index 8c31d93a..cb812e21 100644
  #else
        if (pthread_getname_np(thread_, result.data(), result.size() - 1) != 0) {
          assert_always();
-@@ -693,7 +850,11 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -693,7 +854,11 @@ class PosixCondition<Thread> : public PosixConditionBase {
      WaitStarted();
      std::unique_lock<std::mutex> lock(state_mutex_);
      if (state_ != State::kUninitialized && state_ != State::kFinished) {
@@ -36843,7 +37049,7 @@ index 8c31d93a..cb812e21 100644
  #if REX_PLATFORM_ANDROID
        SetAndroidPreApi26Name(name);
  #endif
-@@ -711,12 +872,26 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -711,12 +876,26 @@ class PosixCondition<Thread> : public PosixConditionBase {
    }
  #endif
  
@@ -36870,7 +37076,7 @@ index 8c31d93a..cb812e21 100644
      WaitStarted();
      cpu_set_t cpu_set;
  #if REX_PLATFORM_ANDROID
-@@ -735,9 +910,13 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -735,9 +914,13 @@ class PosixCondition<Thread> : public PosixConditionBase {
        result |= set << i;
      }
      return result;
@@ -36884,7 +37090,7 @@ index 8c31d93a..cb812e21 100644
      WaitStarted();
      cpu_set_t cpu_set;
      CPU_ZERO(&cpu_set);
-@@ -754,6 +933,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -754,6 +937,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
      if (pthread_setaffinity_np(thread_, sizeof(cpu_set_t), &cpu_set) != 0) {
        assert_always();
      }
@@ -36892,7 +37098,7 @@ index 8c31d93a..cb812e21 100644
  #endif
    }
  
-@@ -771,6 +951,14 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -771,6 +955,14 @@ class PosixCondition<Thread> : public PosixConditionBase {
  
    void set_priority(int new_priority) {
      WaitStarted();
@@ -36907,7 +37113,7 @@ index 8c31d93a..cb812e21 100644
  #if REX_PLATFORM_ANDROID
      // Apps may not use SCHED_FIFO; only creation-flag requests land here.
      __android_log_print(ANDROID_LOG_WARN, "LibertyRecomp", "thread-priority-flag tid=%d value=%d",
-@@ -817,6 +1005,9 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -817,6 +1009,9 @@ class PosixCondition<Thread> : public PosixConditionBase {
  #if REX_PLATFORM_ANDROID
      int result = sigqueue(pthread_gettid_np(thread_),
                            GetSystemSignal(SignalType::kThreadUserCallback), value);
@@ -36917,7 +37123,7 @@ index 8c31d93a..cb812e21 100644
  #else
      int result = pthread_sigqueue(thread_, GetSystemSignal(SignalType::kThreadUserCallback), value);
  #endif
-@@ -949,16 +1140,29 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -949,16 +1144,29 @@ class PosixCondition<Thread> : public PosixConditionBase {
  
    void* native_handle() const override { return reinterpret_cast<void*>(thread_); }
  
@@ -36947,7 +37153,7 @@ index 8c31d93a..cb812e21 100644
    bool signaled_;
    int exit_code_;
    State state_;             // Protected by state_mutex_
-@@ -1346,6 +1550,10 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+@@ -1346,6 +1554,10 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
  
    current_thread_ = thread;
    current_thread_condition_ = &thread->handle_;
@@ -36958,7 +37164,7 @@ index 8c31d93a..cb812e21 100644
    {
      std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
      thread->handle_.suspend_count_ = create_suspended ? 1 : 0;
-@@ -1430,7 +1638,11 @@ void Thread::Exit(int exit_code) {
+@@ -1430,7 +1642,11 @@ void Thread::Exit(int exit_code) {
  }
  
  void set_current_thread_name(const std::string_view name) {
@@ -37288,7 +37494,7 @@ index 1d5402e9..1adeb3c1 100644
    if (command_processor_) {
      command_processor_->increment_counter();
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
-index 581a9d20..3b09e591 100644
+index 581a9d20..eab5555e 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 @@ -1,3 +1,7 @@
@@ -37711,7 +37917,7 @@ index 581a9d20..3b09e591 100644
        const NativeTextureImage* evicted = evicted_images.back().get();
        RecordNativeMemoryLifecycle(
            memory::ResourceKind::kTextureImage, memory::LifecycleAction::kEvict,
-@@ -20622,6 +20728,17 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedTextureImages(
+@@ -20622,6 +20728,18 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedTextureImages(
      CollectProtectedTextureGenerations(present_source, protected_texture_generations_);
      EvictNativeTextureImages(submitted_frame, false);
    }
@@ -37719,17 +37925,100 @@ index 581a9d20..3b09e591 100644
 +  // [ps5 port] Texture memory every ~20 s: textures come and go on the PS5.
 +  if (submitted_frame % 600 == 0) {  // one line every ~20 s
 +    REXLOG_INFO("ps5 textures: frame={} images={} heap-usage={} MB heap-budget={} MB pressure={} "
-+                "alloc-retries={} alloc-failures={} pool-reuses={} evictions={}",
++                "alloc-retries={} alloc-failures={} pool-reuses={} evictions={}; {}",
 +                submitted_frame, native_texture_images_.size(), texture_heap_usage_ >> 20,
 +                texture_heap_budget_ >> 20, texture_budget_pressure_active_,
 +                texture_allocation_retry_count_, texture_allocation_failure_count_,
-+                texture_allocation_reuses_, g_ps5_texture_evictions.load());
++                texture_allocation_reuses_, g_ps5_texture_evictions.load(),
++                ui::vulkan::MemoryRecyclerSummary());
 +  }
 +#endif
  }
  
  void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_frame) {
-@@ -31231,7 +31348,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -20633,12 +20751,7 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+   if (!poll_due && !buffer_cache_reclamation_pending_) return;
+   buffer_cache_reclamation_pending_ = false;
+ 
+-  struct Candidate {
+-    uint32_t handle = 0;
+-    uint64_t generation = 0;
+-    uint32_t last_used_frame = 0;
+-    uint64_t retained_bytes = 0;
+-  };
++  using Candidate = BufferReclamationCandidate;
+   auto retained_bytes = [](const NativeBufferResource& resource) {
+     uint64_t bytes = resource.payload.capacity();
+     bytes += resource.host_index16_payload.capacity();
+@@ -20652,9 +20765,19 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+ 
+   constexpr uint64_t kBytesPerMiB = 1048576ull;
+   const uint64_t cache_limit = uint64_t(kNativeBufferCacheLimitMiB) * kBytesPerMiB;
+-  std::vector<Candidate> candidates;
+-  uint64_t cache_bytes = 0;
+-  {
++  // A sweep cut short by its per-frame budget continues next frame from the
++  // same candidate list instead of walking (and sorting) the whole cache
++  // again: every candidate is checked against the live entry anyway, and the
++  // byte count only shrinks in between. A fresh walk happens at each poll.
++  std::vector<Candidate>& candidates = buffer_reclamation_candidates_;
++  uint64_t cache_bytes = buffer_reclamation_cache_bytes_;
++  const bool continue_sweep = !poll_due && buffer_reclamation_next_ < candidates.size();
++  if (!continue_sweep) {
++    candidates.clear();
++    buffer_reclamation_next_ = 0;
++    cache_bytes = 0;
++  }
++  if (!continue_sweep) {
+     std::lock_guard lock(buffer_resource_mutex_);
+     candidates.reserve(buffer_resources_.size());
+     for (const auto& [handle, resource] : buffer_resources_) {
+@@ -20672,7 +20795,7 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+   // Under budget every eligible aged entry is reclaimed regardless of order.
+   // Only pressure eviction needs oldest-first ordering to choose which younger
+   // entries to discard before the byte budget is satisfied.
+-  if (ShouldSortNativeBufferReclamation(cache_bytes, cache_limit)) {
++  if (!continue_sweep && ShouldSortNativeBufferReclamation(cache_bytes, cache_limit)) {
+     std::sort(candidates.begin(), candidates.end(),
+               [](const Candidate& left, const Candidate& right) {
+                 return left.last_used_frame < right.last_used_frame ||
+@@ -20684,14 +20807,20 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+   size_t reclaimed_resources = 0;
+   NativeWorkBudget buffer_reclamation(64, 16777216);
+   std::lock_guard lock(buffer_resource_mutex_);
+-  for (const Candidate& candidate : candidates) {
++  size_t candidate_index = buffer_reclamation_next_;
++  for (; candidate_index < candidates.size(); ++candidate_index) {
++    const Candidate& candidate = candidates[candidate_index];
+     const auto entry = buffer_resources_.find(candidate.handle);
+     if (entry == buffer_resources_.end() || !entry->second ||
+         entry->second->generation != candidate.generation || entry->second.use_count() != 1) {
+       continue;
+     }
+     const bool over_budget = cache_bytes > cache_limit;
+-    if (!ShouldReclaimNativeBuffer(true, over_budget, submitted_frame, candidate.last_used_frame,
++    // The live entry's use, not the candidate's: a continued sweep's list is
++    // a few frames old.
++    const uint32_t last_used_frame =
++        entry->second->last_used_frame.load(std::memory_order_relaxed);
++    if (!ShouldReclaimNativeBuffer(true, over_budget, submitted_frame, last_used_frame,
+                                    kNativeBufferCacheRetentionFrames)) {
+       continue;
+     }
+@@ -20740,6 +20869,12 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+     buffer_resources_.erase(entry);
+     buffer_resources_epoch_.fetch_add(1, std::memory_order_release);
+   }
++  buffer_reclamation_next_ = candidate_index;
++  buffer_reclamation_cache_bytes_ = cache_bytes;
++  if (!buffer_cache_reclamation_pending_) {
++    candidates.clear();
++    buffer_reclamation_next_ = 0;
++  }
+ 
+   if (reclaimed_resources &&
+       CachedDiagnosticsEnabled(rex::diagnostics::Category::kNativeMemoryProfiler)) {
+@@ -31231,7 +31366,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
        if (pipelined_recording_ && frame_constant_bound_.valid && frame_constant_bound_.read_epoch &&
            REXCVAR_GET(gta4_native_assembled_frame_scans)) {
          // A later frame's stamp only makes this conservative (an extra resolve).
@@ -37738,7 +38027,7 @@ index 581a9d20..3b09e591 100644
                 frame_constant_bound_.read_epoch;
        } else for (const NativeCommand& scan : current_frame_) {
          for (const auto& texture : scan.textures) {
-@@ -31542,6 +31659,35 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -31542,6 +31677,35 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
      }
  
      const NativeCommand& command = *command_pointer;
@@ -37774,7 +38063,7 @@ index 581a9d20..3b09e591 100644
      const bool descriptor_draw = command.type == CommandType::kDrawPrimitive ||
                                   command.type == CommandType::kDrawPrimitiveUp ||
                                   command.type == CommandType::kDrawIndexedPrimitive;
-@@ -33478,6 +33624,119 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -33478,6 +33642,119 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
        }
        std::fflush(stderr);
      }
@@ -37894,7 +38183,7 @@ index 581a9d20..3b09e591 100644
      if (legacy_diagnostics && is_draw && command.render_phase == RenderPhase::kRadarMap) {
        static std::atomic<uint64_t> radar_draw_count{0};
        const uint64_t radar_draw_index = ++radar_draw_count;
-@@ -38033,8 +38292,18 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
+@@ -38033,8 +38310,18 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
          return presenter_written;
        },
        ui::GuestOutputProvenance{
@@ -37915,6 +38204,27 @@ index 581a9d20..3b09e591 100644
            .tv_session_id = present.diagnostic_tv_session_id,
            .title_present_id = present.diagnostic_present_id,
            .selected_generation = present_source ? present_source->generation : 0,
+diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h
+index 0b9e1311..085d2bcb 100644
+--- a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h
++++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h
+@@ -2813,6 +2813,16 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
+   std::atomic<bool> buffer_fast_path_disabled_{false};
+   NativePeriodicWorkSchedule buffer_cache_poll_schedule_{kNativeBufferCachePollPhaseFrames};
+   bool buffer_cache_reclamation_pending_ = false;
++  // A sweep continued over several frames (ReleaseUnusedBufferResources).
++  struct BufferReclamationCandidate {
++    uint32_t handle = 0;
++    uint64_t generation = 0;
++    uint32_t last_used_frame = 0;
++    uint64_t retained_bytes = 0;
++  };
++  std::vector<BufferReclamationCandidate> buffer_reclamation_candidates_;
++  size_t buffer_reclamation_next_ = 0;
++  uint64_t buffer_reclamation_cache_bytes_ = 0;
+   uint64_t texture_image_eviction_count_ = 0;
+   uint64_t texture_image_evicted_bytes_ = 0;
+   uint64_t texture_allocation_retry_count_ = 0;
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/native_cpu_profile_scope.h b/glue/rexglue-sdk-main/src/graphics/gta4_native/native_cpu_profile_scope.h
 index cd5a375d..20ebfaaa 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/native_cpu_profile_scope.h
@@ -37995,6 +38305,305 @@ index cd5a375d..20ebfaaa 100644
  };
  template <typename Fn>
  decltype(auto) CpuCall(CpuOp op, Fn&& fn) {
+diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/native_frame_scheduling.h b/glue/rexglue-sdk-main/src/graphics/gta4_native/native_frame_scheduling.h
+index 1bab34b3..9c5daeee 100644
+--- a/glue/rexglue-sdk-main/src/graphics/gta4_native/native_frame_scheduling.h
++++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/native_frame_scheduling.h
+@@ -25,7 +25,13 @@ inline constexpr size_t kNativeBufferShadowValidationMaxBytes = 256;
+ inline constexpr uint32_t kNativeBufferCacheRetentionFrames = 600;
+ inline constexpr uint32_t kNativeBufferCachePollFrames = 120;
+ inline constexpr uint32_t kNativeBufferCachePollPhaseFrames = 80;
++#if defined(__PROSPERO__)
++// [ps5 port] Over the limit, every frame reclaimed buffers the title then
++// captured again; the PS5 has the memory to keep twice as many.
++inline constexpr uint32_t kNativeBufferCacheLimitMiB = 512;
++#else
+ inline constexpr uint32_t kNativeBufferCacheLimitMiB = 256;
++#endif
+ inline constexpr size_t kNativeMaximumVertexConversionsPerBuffer = 2;
+ inline constexpr uint32_t kNativeUploadShrinkObservationFrames = 120;
+ 
+diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/native_snapshot_resource.h b/glue/rexglue-sdk-main/src/graphics/gta4_native/native_snapshot_resource.h
+index 1294764a..f0c5411f 100644
+--- a/glue/rexglue-sdk-main/src/graphics/gta4_native/native_snapshot_resource.h
++++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/native_snapshot_resource.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ #include <algorithm>
++#include <atomic>
+ #include <cstddef>
+ #include <memory_resource>
+ #include <mutex>
+@@ -9,11 +10,12 @@
+ namespace rex::graphics::gta4_native {
+ 
+ // Pipeline and shader-state snapshots are allocated by the render worker for
+-// nearly every draw and released on the retirement threads. A synchronized
+-// pool took its mutex on both sides of every allocation. Here the single
+-// allocating thread pops from a private free list and takes the lock only to
+-// adopt everything returned since (or to grow); releases from any thread
+-// take it once each. Memory is kept for reuse until the resource dies.
++// nearly every draw and released on the retirement threads. The single
++// allocating thread pops from a private free list; releases push onto a
++// lock-free list per size, which the allocator takes whole when its own runs
++// out. (Releases used to take a mutex each, against the allocator's refills:
++// on the PS5 the recorder spent a quarter of its time waiting on such locks.)
++// Memory is kept for reuse until the resource dies.
+ class NativeSnapshotResource final : public std::pmr::memory_resource {
+  public:
+   ~NativeSnapshotResource() override {
+@@ -24,16 +26,21 @@ class NativeSnapshotResource final : public std::pmr::memory_resource {
+   static constexpr size_t kAlignment = 16;
+   static constexpr size_t kChunksPerBlock = 64;
+   static constexpr size_t kMaximumClasses = 8;
++  struct FreeChunk {
++    FreeChunk* next;
++  };
++  static_assert(sizeof(FreeChunk) <= kAlignment);
+   struct SizeClass {
+-    size_t size = 0;
+-    std::vector<void*> local;     // Allocating thread only.
+-    std::vector<void*> returned;  // Under mutex_.
++    size_t size = 0;                           // set before class_count_ publishes it
++    std::vector<void*> local;                  // allocating thread only
++    std::atomic<FreeChunk*> returned{nullptr};  // pushed by any thread
+   };
+ 
+   static size_t Rounded(size_t bytes) { return (bytes + kAlignment - 1) & ~(kAlignment - 1); }
+ 
+   SizeClass* Find(size_t size) {
+-    for (size_t i = 0; i < class_count_; ++i)
++    const size_t count = class_count_.load(std::memory_order_acquire);
++    for (size_t i = 0; i < count; ++i)
+       if (classes_[i].size == size) return &classes_[i];
+     return nullptr;
+   }
+@@ -43,21 +50,28 @@ class NativeSnapshotResource final : public std::pmr::memory_resource {
+     const size_t size = Rounded(bytes);
+     SizeClass* size_class = Find(size);
+     if (!size_class) {
+-      std::lock_guard lock(mutex_);
+-      if (class_count_ == kMaximumClasses) {
++      const size_t count = class_count_.load(std::memory_order_relaxed);
++      if (count == kMaximumClasses) {
+         return ::operator new(bytes, std::align_val_t(alignment));
+       }
+-      size_class = &classes_[class_count_];
++      size_class = &classes_[count];
+       size_class->size = size;
+-      ++class_count_;  // Published to this thread; other threads look up under mutex_.
++      class_count_.store(count + 1, std::memory_order_release);
+     }
+     if (size_class->local.empty()) {
+-      std::lock_guard lock(mutex_);
+-      size_class->local.swap(size_class->returned);
++      for (FreeChunk* chunk = size_class->returned.exchange(nullptr, std::memory_order_acquire);
++           chunk;) {
++        FreeChunk* next = chunk->next;
++        size_class->local.push_back(chunk);
++        chunk = next;
++      }
+       if (size_class->local.empty()) {
+         auto* block = static_cast<std::byte*>(
+             ::operator new(size * kChunksPerBlock, std::align_val_t(kAlignment)));
+-        blocks_.push_back(block);
++        {
++          std::lock_guard lock(mutex_);
++          blocks_.push_back(block);
++        }
+         size_class->local.reserve(kChunksPerBlock);
+         for (size_t i = 0; i < kChunksPerBlock; ++i) size_class->local.push_back(block + i * size);
+       }
+@@ -72,26 +86,28 @@ class NativeSnapshotResource final : public std::pmr::memory_resource {
+       ::operator delete(pointer, std::align_val_t(alignment));
+       return;
+     }
+-    const size_t size = Rounded(bytes);
+-    std::lock_guard lock(mutex_);
+-    for (size_t i = 0; i < class_count_; ++i) {
+-      if (classes_[i].size == size) {
+-        classes_[i].returned.push_back(pointer);
+-        return;
+-      }
++    SizeClass* size_class = Find(Rounded(bytes));
++    if (!size_class) {
++      // Allocated after the class table filled up.
++      ::operator delete(pointer, std::align_val_t(alignment));
++      return;
+     }
+-    // Allocated after the class table filled up.
+-    ::operator delete(pointer, std::align_val_t(alignment));
++    auto* chunk = static_cast<FreeChunk*>(pointer);
++    FreeChunk* head = size_class->returned.load(std::memory_order_relaxed);
++    do {
++      chunk->next = head;
++    } while (!size_class->returned.compare_exchange_weak(head, chunk, std::memory_order_release,
++                                                         std::memory_order_relaxed));
+   }
+ 
+   bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
+     return this == &other;
+   }
+ 
+-  std::mutex mutex_;
++  std::mutex mutex_;  // blocks_
+   SizeClass classes_[kMaximumClasses];
+-  size_t class_count_ = 0;
+-  std::vector<void*> blocks_;  // Under mutex_.
++  std::atomic<size_t> class_count_{0};
++  std::vector<void*> blocks_;
+ };
+ 
+ }  // namespace rex::graphics::gta4_native
+diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/stateful_constant_state.h b/glue/rexglue-sdk-main/src/graphics/gta4_native/stateful_constant_state.h
+index d919e925..4960fec2 100644
+--- a/glue/rexglue-sdk-main/src/graphics/gta4_native/stateful_constant_state.h
++++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/stateful_constant_state.h
+@@ -3,11 +3,13 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <atomic>
+ #include <cstddef>
+ #include <cstdint>
+ #include <cstring>
+ #include <limits>
+ #include <memory>
++#include <mutex>
+ #include <span>
+ #include <utility>
+ #include <vector>
+@@ -181,52 +183,98 @@ struct ConstantApplyResult {
+ // stage. Published versions retain only copied deltas. A contiguous host view
+ // is reconstructed lazily on first consumer use and then memoized.
+ // Recycles the full-bank snapshot buffers taken for every draw that changes
+-// constants (two 3.5-4 KB heap blocks per draw otherwise). Releases may come
+-// from any thread (command retirement is asynchronous), hence the mutex.
++// constants (two 3.5-4 KB heap blocks per draw otherwise). Releases come from
++// any thread (command retirement is asynchronous). They push onto a lock-free
++// list: a mutex shared with the allocating render worker, taken twice a draw
++// on both sides, kept the PS5's recorder waiting on it.
+ class ConstantSnapshotPool {
++  struct Node {
++    std::vector<uint8_t> bytes;
++    Node* next = nullptr;
++  };
++  struct SizeList {
++    size_t size = 0;                        // set once, before count publishes it
++    std::atomic<Node*> returned{nullptr};   // pushed by any thread
++    std::atomic<uint32_t> returned_count{0};
++    std::vector<Node*> local;               // under State::allocate
++  };
++  static constexpr size_t kMaximumLists = 16;
++  static constexpr uint32_t kMaximumReturned = 8192;
++  struct State {
++    std::mutex allocate;  // Copy's side only (the render worker): uncontended
++    std::array<SizeList, kMaximumLists> lists;
++    std::atomic<size_t> count{0};
++  };
++  static State& state() {
++    static auto* instance = new State();  // never destroyed: buffers outlive statics
++    return *instance;
++  }
++  static SizeList* Find(State& st, size_t size) {
++    const size_t count = st.count.load(std::memory_order_acquire);
++    for (size_t i = 0; i < count; ++i)
++      if (st.lists[i].size == size) return &st.lists[i];
++    return nullptr;
++  }
++  static void Release(Node* node) {
++    SizeList* list = Find(state(), node->bytes.size());
++    if (!list || list->returned_count.fetch_add(1, std::memory_order_relaxed) >= kMaximumReturned) {
++      if (list) list->returned_count.fetch_sub(1, std::memory_order_relaxed);
++      delete node;
++      return;
++    }
++    Node* head = list->returned.load(std::memory_order_relaxed);
++    do {
++      node->next = head;
++    } while (!list->returned.compare_exchange_weak(head, node, std::memory_order_release,
++                                                   std::memory_order_relaxed));
++  }
++
+  public:
+   static std::shared_ptr<const std::vector<uint8_t>> Copy(const std::vector<uint8_t>& source,
+                                                           size_t copy_bytes = SIZE_MAX) {
+     copy_bytes = std::min(copy_bytes, source.size());
+-    std::vector<uint8_t>* buffer = nullptr;
++    State& st = state();
++    Node* node = nullptr;
+     {
+-      std::lock_guard lock(mutex());
+-      auto& list = free_list(source.size());
+-      if (!list.empty()) {
+-        buffer = list.back();
+-        list.pop_back();
++      std::lock_guard lock(st.allocate);
++      SizeList* list = Find(st, source.size());
++      if (!list) {
++        const size_t count = st.count.load(std::memory_order_relaxed);
++        if (count < kMaximumLists) {
++          list = &st.lists[count];
++          list->size = source.size();
++          st.count.store(count + 1, std::memory_order_release);
++        }
++      }
++      if (list) {
++        if (list->local.empty()) {
++          Node* taken = list->returned.exchange(nullptr, std::memory_order_acquire);
++          uint32_t taken_count = 0;
++          for (; taken; ++taken_count) {
++            Node* next = taken->next;
++            list->local.push_back(taken);
++            taken = next;
++          }
++          if (taken_count) list->returned_count.fetch_sub(taken_count, std::memory_order_relaxed);
++        }
++        if (!list->local.empty()) {
++          node = list->local.back();
++          list->local.pop_back();
++        }
+       }
+     }
+-    if (buffer) {
+-      std::memcpy(buffer->data(), source.data(), copy_bytes);
++    if (node) {
++      std::memcpy(node->bytes.data(), source.data(), copy_bytes);
+     } else if (copy_bytes == source.size()) {
+-      buffer = new std::vector<uint8_t>(source);
++      node = new Node{source};
+     } else {
+-      buffer = new std::vector<uint8_t>(source.size());
+-      std::memcpy(buffer->data(), source.data(), copy_bytes);
++      node = new Node{std::vector<uint8_t>(source.size())};
++      std::memcpy(node->bytes.data(), source.data(), copy_bytes);
+     }
+     return std::shared_ptr<const std::vector<uint8_t>>(
+-        buffer,
+-        [](const std::vector<uint8_t>* bytes) {
+-          auto* owned = const_cast<std::vector<uint8_t>*>(bytes);
+-          std::lock_guard lock(mutex());
+-          auto& list = free_list(owned->size());
+-          if (list.size() < 8192) list.push_back(owned);
+-          else delete owned;
+-        },
++        &node->bytes, [node](const std::vector<uint8_t>*) { Release(node); },
+         std::pmr::polymorphic_allocator<std::byte>(&ConstantVersionResource()));
+   }
+-
+- private:
+-  static std::mutex& mutex() { static std::mutex instance; return instance; }
+-  // One list per bank size (vertex, pixel and the rare others).
+-  static std::vector<std::vector<uint8_t>*>& free_list(size_t size) {
+-    static std::vector<std::pair<size_t, std::vector<std::vector<uint8_t>*>>> lists;
+-    for (auto& [list_size, list] : lists)
+-      if (list_size == size) return list;
+-    lists.emplace_back(size, std::vector<std::vector<uint8_t>*>{});
+-    return lists.back().second;
+-  }
+ };
+ 
+ class AuthoritativeConstantState {
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/temporal/native_renderer.inc b/glue/rexglue-sdk-main/src/graphics/gta4_native/temporal/native_renderer.inc
 index ede9fd26..6af89171 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/temporal/native_renderer.inc
@@ -40081,11 +40690,210 @@ index cec91ec7..96ec1fd7 100644
    using namespace command_counters;
  #define REX_WRAP(field, saved, wrapper) \
    if (dfn.field) {                      \
+diff --git a/glue/rexglue-sdk-main/src/ui/vulkan/memory_recycler.inc b/glue/rexglue-sdk-main/src/ui/vulkan/memory_recycler.inc
+new file mode 100644
+index 00000000..6d1db99c
+--- /dev/null
++++ b/glue/rexglue-sdk-main/src/ui/vulkan/memory_recycler.inc
+@@ -0,0 +1,183 @@
++// [ps5 port] Device-memory recycling. Included inside namespace
++// rex::ui::vulkan by vulkan_device.cpp.
++//
++// On the PS5 every vkAllocateMemory is a direct-memory allocation and a
++// mapping in the kernel, and every vkFreeMemory an unmap and a release. The
++// renderer gives each texture and surface its own allocation, and streaming
++// replaces textures constantly while driving, so the recorder spent about 8%
++// of its time in those calls and some frames took 100-500 ms. Freed
++// device-local memory of up to kLargest bytes is kept here instead (at most
++// kBudget in all, oldest given back first) and handed to the next allocation
++// of the same memory type and nearly the same size. Contents are undefined
++// either way. Host-visible memory and allocations with extension structures
++// other than a dedicated-allocation hint go straight to the driver.
++namespace memory_recycler {
++
++constexpr VkDeviceSize kPage = 16 * 1024;              // the PS5 driver's page
++constexpr VkDeviceSize kLargest = 48ull * 1024 * 1024;  // a 1440p RGBA16F target fits
++constexpr VkDeviceSize kBudget = 384ull * 1024 * 1024;
++
++PFN_vkAllocateMemory allocate_fn;
++PFN_vkFreeMemory free_fn;
++uint32_t recyclable_types = 0;  // device-local, nothing else
++
++using Key = std::pair<uint32_t, VkDeviceSize>;  // (memory type, size)
++struct Cached {
++  VkDeviceMemory memory;
++  uint64_t serial;
++};
++std::mutex mutex;
++// Ours, live: memory -> (size, type).
++std::unordered_map<VkDeviceMemory, std::pair<VkDeviceSize, uint32_t>> live;
++// Free, by key; each list oldest first (reuse takes the newest).
++std::map<Key, std::vector<Cached>> cached;
++// Every entry ever cached, oldest first; entries reused since are skipped.
++std::deque<std::pair<uint64_t, Key>> order;
++VkDeviceSize cached_bytes = 0;
++size_t cached_count = 0;
++uint64_t next_serial = 0;
++std::atomic<uint64_t> hits{0}, misses{0}, given_back{0};
++
++VkDeviceSize Rounded(VkDeviceSize size) { return (size + kPage - 1) & ~(kPage - 1); }
++
++// Under mutex: the oldest free entry gives its memory back to the driver.
++bool ReleaseOldestLocked(VkDevice device) {
++  while (!order.empty()) {
++    const auto [serial, key] = order.front();
++    order.pop_front();
++    auto it = cached.find(key);
++    // A list's front is its oldest entry; an older serial was reused.
++    if (it == cached.end() || it->second.front().serial != serial) continue;
++    const VkDeviceMemory memory = it->second.front().memory;
++    it->second.erase(it->second.begin());
++    if (it->second.empty()) cached.erase(it);
++    cached_bytes -= key.second;
++    --cached_count;
++    free_fn(device, memory, nullptr);
++    given_back.fetch_add(1, std::memory_order_relaxed);
++    return true;
++  }
++  return false;
++}
++
++// Under mutex: drops the order's entries for memory reused since.
++void CompactOrderLocked() {
++  if (order.size() < 4 * cached_count + 4096) return;
++  std::vector<std::pair<uint64_t, Key>> present;
++  present.reserve(cached_count);
++  for (const auto& [key, list] : cached)
++    for (const Cached& entry : list) present.emplace_back(entry.serial, key);
++  std::sort(present.begin(), present.end(),
++            [](const auto& a, const auto& b) { return a.first < b.first; });
++  order.assign(present.begin(), present.end());
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL Allocate(VkDevice device, const VkMemoryAllocateInfo* info,
++                                        const VkAllocationCallbacks* allocator,
++                                        VkDeviceMemory* memory) {
++  const bool plain_next =
++      !info->pNext || (static_cast<const VkBaseInStructure*>(info->pNext)->sType ==
++                           VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO &&
++                       !static_cast<const VkBaseInStructure*>(info->pNext)->pNext);
++  if (allocator || !plain_next || info->memoryTypeIndex >= 32 ||
++      !(recyclable_types & (1u << info->memoryTypeIndex)) || info->allocationSize > kLargest) {
++    return allocate_fn(device, info, allocator, memory);
++  }
++  const VkDeviceSize size = Rounded(info->allocationSize);
++  {
++    std::lock_guard lock(mutex);
++    // The same size, or up to a quarter larger.
++    auto it = cached.lower_bound({info->memoryTypeIndex, size});
++    if (it != cached.end() && it->first.first == info->memoryTypeIndex &&
++        it->first.second <= size + size / 4) {
++      const VkDeviceSize found_size = it->first.second;
++      *memory = it->second.back().memory;
++      it->second.pop_back();
++      if (it->second.empty()) cached.erase(it);
++      cached_bytes -= found_size;
++      --cached_count;
++      CompactOrderLocked();
++      live.emplace(*memory, std::make_pair(found_size, info->memoryTypeIndex));
++      hits.fetch_add(1, std::memory_order_relaxed);
++      return VK_SUCCESS;
++    }
++  }
++  // Without the dedicated hint the allocation can serve any image later.
++  VkMemoryAllocateInfo plain = *info;
++  plain.pNext = nullptr;
++  plain.allocationSize = size;
++  VkResult result = allocate_fn(device, &plain, nullptr, memory);
++  if (result != VK_SUCCESS) {
++    // Short of memory: give back everything held here and try once more.
++    {
++      std::lock_guard lock(mutex);
++      while (ReleaseOldestLocked(device)) {
++      }
++    }
++    result = allocate_fn(device, &plain, nullptr, memory);
++    if (result != VK_SUCCESS) return result;
++  }
++  misses.fetch_add(1, std::memory_order_relaxed);
++  std::lock_guard lock(mutex);
++  live.emplace(*memory, std::make_pair(size, info->memoryTypeIndex));
++  return VK_SUCCESS;
++}
++
++VKAPI_ATTR void VKAPI_CALL Free(VkDevice device, VkDeviceMemory memory,
++                                const VkAllocationCallbacks* allocator) {
++  if (memory != VK_NULL_HANDLE) {
++    std::lock_guard lock(mutex);
++    auto it = live.find(memory);
++    if (it != live.end()) {
++      const auto [size, type] = it->second;
++      live.erase(it);
++      if (size <= kBudget) {
++        while (cached_bytes + size > kBudget && ReleaseOldestLocked(device)) {
++        }
++        const uint64_t serial = ++next_serial;
++        cached[{type, size}].push_back({memory, serial});
++        order.emplace_back(serial, Key{type, size});
++        cached_bytes += size;
++        ++cached_count;
++        return;
++      }
++    }
++  }
++  free_fn(device, memory, allocator);
++}
++
++void FreeAll(VkDevice device) {
++  if (!free_fn) return;
++  std::lock_guard lock(mutex);
++  while (ReleaseOldestLocked(device)) {
++  }
++}
++
++}  // namespace memory_recycler
++
++std::string MemoryRecyclerSummary() {
++  using namespace memory_recycler;
++  VkDeviceSize held;
++  {
++    std::lock_guard lock(mutex);
++    held = cached_bytes;
++  }
++  return fmt::format("memory-recycler: reused={} new={} given-back={} held={} MB",
++                     hits.load(std::memory_order_relaxed), misses.load(std::memory_order_relaxed),
++                     given_back.load(std::memory_order_relaxed), held >> 20);
++}
++
++static void InstallMemoryRecycler(VulkanDevice::Functions& dfn,
++                                  const VkPhysicalDeviceMemoryProperties& properties) {
++  using namespace memory_recycler;
++  if (allocate_fn) return;  // one device
++  for (uint32_t i = 0; i < properties.memoryTypeCount && i < 32; ++i) {
++    if (properties.memoryTypes[i].propertyFlags == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
++      recyclable_types |= 1u << i;
++  }
++  if (!recyclable_types || !dfn.vkAllocateMemory || !dfn.vkFreeMemory) return;
++  allocate_fn = dfn.vkAllocateMemory;
++  free_fn = dfn.vkFreeMemory;
++  dfn.vkAllocateMemory = Allocate;
++  dfn.vkFreeMemory = Free;
++}
 diff --git a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_device.cpp b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_device.cpp
-index 7c25d612..95d09a3c 100644
+index 7c25d612..2a6ed4c9 100644
 --- a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_device.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_device.cpp
-@@ -31,7 +31,7 @@
+@@ -16,7 +16,9 @@
+ #endif
+ #include <algorithm>
+ #include <cstring>
++#include <deque>
+ #include <map>
++#include <mutex>
+ #include <string>
+ #include <unordered_map>
+ #include <vector>
+@@ -31,7 +33,7 @@
  
  #include "graphics/gta4_native/temporal/dlss_bootstrap.h"
  
@@ -40094,7 +40902,31 @@ index 7c25d612..95d09a3c 100644
                      "Count barriers, renderings, draws, copies and pipeline binds per frame for "
                      "the pipeline report (a wrapper on every such command)");
  REXCVAR_DEFINE_BOOL(vulkan_native_queue_separation, true, "UI/Vulkan",
-@@ -1147,6 +1147,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -62,6 +64,9 @@ namespace ui {
+ namespace vulkan {
+ 
+ #include "command_counters.inc"
++#if REX_PLATFORM_PS5
++#include "memory_recycler.inc"
++#endif
+ 
+ template <typename Structure, VkStructureType StructureType>
+ struct VulkanFeatures {
+@@ -1112,6 +1117,13 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+     return nullptr;
+   }
+   if (REXCVAR_GET(vulkan_command_counters)) InstallCommandCounters(dfn);
++#if REX_PLATFORM_PS5
++  {
++    VkPhysicalDeviceMemoryProperties recycler_memory_properties;
++    ifn.vkGetPhysicalDeviceMemoryProperties(physical_device, &recycler_memory_properties);
++    InstallMemoryRecycler(dfn, recycler_memory_properties);
++  }
++#endif
+ 
+   // Get the queues.
+ 
+@@ -1147,6 +1159,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
      if (memory_type_flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) {
        device->memory_types_.host_cached |= memory_type_bit;
      }
@@ -40111,6 +40943,16 @@ index 7c25d612..95d09a3c 100644
    }
  
    return device;
+@@ -1154,6 +1176,9 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+ 
+ VulkanDevice::~VulkanDevice() {
+   if (device_) {
++#if REX_PLATFORM_PS5
++    memory_recycler::FreeAll(device_);
++#endif
+     vulkan_instance_->functions().vkDestroyDevice(device_, nullptr);
+   }
+ }
 diff --git a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_instance.cpp b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_instance.cpp
 index eb0ad80b..d94f2fb2 100644
 --- a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_instance.cpp
