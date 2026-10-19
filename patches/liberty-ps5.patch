@@ -57,10 +57,10 @@ index 9ffeffdf..1f19e16d 100644
      endif()
  
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
-index 3b033069..2eb0a272 100644
+index 3b033069..3807efe7 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
-@@ -443,6 +443,75 @@ elseif(ANDROID)
+@@ -443,6 +443,78 @@ elseif(ANDROID)
              -Wno-backend-plugin)
          target_link_options(LibertyRecomp PRIVATE "-fprofile-use=${LIBERTY_ANDROID_PGO}")
      endif()
@@ -94,9 +94,12 @@ index 3b033069..2eb0a272 100644
 +        OBJECT_DEPENDS "${GTA4_PS5_DIR}/assets/fonts/inter-latin-400-normal.ttf")
 +    message(STATUS "GTA IV for PS5 ${GTA4_PS5_VERSION}")
 +
++    # The title's wait for a free frame slot sleeps instead of spinning a core
++    # (written for Android, nothing Android-specific in it).
 +    add_executable(gta4
 +        ${GTA4_PS5_SOURCES}
 +        src/android/android_platform_stubs.cpp
++        src/android/android_frame_wait_hook.cpp
 +        ${GENERATED_SOURCES}
 +    )
 +    set_property(SOURCE generated/gta4_register.cpp APPEND PROPERTY COMPILE_OPTIONS
