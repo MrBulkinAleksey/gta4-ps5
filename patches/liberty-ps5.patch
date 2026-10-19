@@ -57,10 +57,10 @@ index 9ffeffd..1f19e16 100644
      endif()
  
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
-index 3b03306..31628c0 100644
+index 3b03306..2eb0a27 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
-@@ -443,6 +443,74 @@ elseif(ANDROID)
+@@ -443,6 +443,75 @@ elseif(ANDROID)
              -Wno-backend-plugin)
          target_link_options(LibertyRecomp PRIVATE "-fprofile-use=${LIBERTY_ANDROID_PGO}")
      endif()
@@ -80,6 +80,7 @@ index 3b03306..31628c0 100644
 +        src/ps5/gta4_ps5_app.cpp
 +        src/ps5/hub/hub_ui.cpp
 +        src/ps5/hub/hub_install.cpp
++        src/ps5/hub/hub_installer_page.cpp
 +        src/ps5/hub/hub_sfx.cpp
 +        src/ps5/hub/hub_trophies.cpp
 +        src/ps5/hub/hub_trophies_page.cpp
@@ -149,7 +150,7 @@ index 42ddaa3..f25b7a2 100644
  #else
  #define REX_PHYS_HOST_OFFSET(addr) 0u
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
-index 68d694b..36dfde1 100644
+index 68d694b..49071da 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
 @@ -1,4 +1,7 @@
@@ -181,44 +182,44 @@ index 68d694b..36dfde1 100644
    auto paths = defaults;
    paths.game_data_root = liberty_root_ / "game";
    paths.marketplace_content_root = liberty_root_ / "dlc";
-@@ -681,7 +698,35 @@ std::optional<rex::PathConfig> GTA4App::OnFinalizePaths(
+@@ -655,6 +672,25 @@ std::optional<rex::PathConfig> GTA4App::OnFinalizePaths(
+     }
+   }
+ 
++#if REX_PLATFORM_PS5
++  // [ps5 port] The hub's installer sets the game up (START GAME only gets
++  // here once it's installed); the PC installer dialog isn't used.
++  (void)force_install, (void)force_dlc;
++  if (!ready) {
++    REXLOG_WARN("GTA IV installation is not launch-ready: {} (back to the hub)", readiness_error);
++    OnFinalizePaths(defaults, std::move(resume));
++    return std::nullopt;
++  }
++  {
++    std::error_code error;
++    const auto update_root = paths.game_data_root / "update";
++    if (std::filesystem::is_directory(update_root, error)) {
++      paths.update_data_root = update_root;
++    }
++    return paths;
++  }
++#endif
++
+   if (ready && !force_install && !force_dlc) {
+     std::error_code error;
+     const auto update_root = paths.game_data_root / "update";
+@@ -681,7 +717,9 @@ std::optional<rex::PathConfig> GTA4App::OnFinalizePaths(
          resume(std::move(paths));
        },
        [this]() { app_context().QuitFromUIThread(); });
 -  install_dialog->Preselect(REXCVAR_GET(install_game_source), REXCVAR_GET(install_update_source));
 +  std::string game_source = REXCVAR_GET(install_game_source);
 +  std::string update_source = REXCVAR_GET(install_update_source);
-+#if REX_PLATFORM_PS5
-+  // [ps5 port] No file picker on the PS5: the disc image and the title update
-+  // go in the app's install folder (the first .iso is the disc, the largest
-+  // other file the title update), as on Android.
-+  if (game_source.empty() && update_source.empty()) {
-+    std::error_code ps5_error;
-+    const std::filesystem::path install_dir("/app0/install");
-+    std::filesystem::create_directories(install_dir, ps5_error);
-+    uintmax_t update_size = 0;
-+    for (const auto& entry : std::filesystem::directory_iterator(install_dir, ps5_error)) {
-+      if (!entry.is_regular_file(ps5_error)) continue;
-+      const auto name = entry.path().filename().string();
-+      if (name.empty() || name[0] == '.') continue;
-+      std::string extension = entry.path().extension().string();
-+      std::transform(extension.begin(), extension.end(), extension.begin(),
-+                     [](unsigned char c) { return char(std::tolower(c)); });
-+      if (extension == ".iso") {
-+        if (game_source.empty()) game_source = entry.path().string();
-+      } else if (entry.file_size(ps5_error) > update_size) {
-+        update_size = entry.file_size(ps5_error);
-+        update_source = entry.path().string();
-+      }
-+    }
-+    REXLOG_INFO("ps5 install folder: disc '{}', title update '{}'", game_source, update_source);
-+  }
-+#endif
 +  install_dialog->Preselect(game_source, update_source);
    return std::nullopt;
  }
  
-@@ -1020,6 +1065,9 @@ void StartLiveCvarWatcher(std::filesystem::path path) {
+@@ -1020,6 +1058,9 @@ void StartLiveCvarWatcher(std::filesystem::path path) {
  #endif
  
  void GTA4App::OnPostSetup() {
@@ -1424,10 +1425,10 @@ index 0000000..18a0d8a
 +}  // namespace gta4ps5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp
 new file mode 100644
-index 0000000..ac8e355
+index 0000000..05d0f08
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,75 @@
 +// GTA IV PS5 - the app's PS5 parts (see gta4_ps5_app.h).
 +#include <rex/platform.h>
 +#if REX_PLATFORM_PS5
@@ -1467,6 +1468,7 @@ index 0000000..ac8e355
 +  hub_paths.app = kApp;
 +  hub_paths.config = config;
 +  hub_paths.user_data = g_saves_root;
++  hub_paths.install = liberty_root;
 +  hub::SetSaveImport({[] { return PendingSaveImports(kApp); },
 +                      [] {
 +                        const SaveImportResult r = ImportXbox360Saves(kApp, g_saves_root);
@@ -19735,22 +19737,54 @@ index 0000000..a631ae4
 +*/
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
 new file mode 100644
-index 0000000..ae32646
+index 0000000..d340942
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
-@@ -0,0 +1,49 @@
-+// GTA IV PS5 - the hub's check of the game's files (see hub_install.h).
+@@ -0,0 +1,279 @@
++// GTA IV PS5 - the hub's check of the game's files and its installer (see
++// hub_install.h). The install itself is LibertyRecomp's (install/).
 +#include "hub_install.h"
 +
 +#include <algorithm>
 +#include <cctype>
++#include <chrono>
++#include <condition_variable>
 +#include <cstdio>
++#include <cstring>
++#include <fstream>
++#include <thread>
 +
 +#include <rex/logging.h>
 +
 +#include "../../install/gta4_installer.h"
++#include "../../install/gta4_source_inspector.h"
 +
 +namespace gta4ps5::hub::install {
++
++namespace {
++
++std::string Lower(std::string s) {
++  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(std::tolower(c)); });
++  return s;
++}
++
++// An Xbox 360 content package (a title update, an episode): CON / LIVE / PIRS.
++bool IsPackage(const fs::path& file) {
++  char magic[4] = {};
++  std::ifstream in(file, std::ios::binary);
++  if (!in.read(magic, 4)) return false;
++  return !std::memcmp(magic, "CON ", 4) || !std::memcmp(magic, "LIVE", 4) || !std::memcmp(magic, "PIRS", 4);
++}
++
++uint64_t FolderSize(const fs::path& dir) {
++  uint64_t total = 0;
++  std::error_code ec;
++  for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
++    if (it->is_regular_file(ec)) total += it->file_size(ec);
++  return total;
++}
++
++}  // namespace
 +
 +std::vector<fs::directory_entry> ListDir(const fs::path& dir) {
 +  std::vector<fs::directory_entry> out;
@@ -19773,35 +19807,234 @@ index 0000000..ae32646
 +State Look(const fs::path& app) {
 +  State s;
 +  s.installed = gta4::install::IsInstallReady(GameRoot(app), &s.reason);
-+  std::error_code ec;
-+  for (const auto& e : ListDir(InstallFolder(app))) {
-+    if (!e.is_regular_file(ec)) continue;
-+    std::string ext = e.path().extension().string();
-+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-+    const std::string name = e.path().filename().string();
-+    if (ext == ".iso") s.iso = true;
-+    else if (name.rfind("TU_", 0) == 0 || name.rfind("tu_", 0) == 0) s.update = true;
-+  }
++  const Sources found = Find(app);
++  s.iso = !found.disc.empty();
++  s.update = !found.update.empty();
 +  REXLOG_INFO("PS5 hub: installed {}, disc image {}, title update {}{}", s.installed, s.iso, s.update,
 +              s.installed ? "" : " (" + s.reason + ")");
++  return s;
++}
++
++Sources Find(const fs::path& app) {
++  Sources s;
++  std::error_code ec;
++  auto entries = ListDir(InstallFolder(app));
++  std::sort(entries.begin(), entries.end(),
++            [](const fs::directory_entry& a, const fs::directory_entry& b) { return a.path() < b.path(); });
++  fs::path package;
++  uint64_t package_bytes = 0;
++  for (const auto& e : entries) {
++    const fs::path& p = e.path();
++    const std::string name = Lower(p.filename().string());
++    if (name.empty() || name[0] == '.') continue;
++    if (e.is_directory(ec)) {
++      // an extracted game: a folder with default.xex in it
++      if (s.disc.empty() && fs::is_regular_file(p / "default.xex", ec)) s.disc = p, s.disc_bytes = FolderSize(p);
++      continue;
++    }
++    if (!e.is_regular_file(ec)) continue;
++    const uint64_t size = e.file_size(ec);
++    const std::string ext = Lower(p.extension().string());
++    if (ext == ".iso") {
++      if (s.disc.empty()) s.disc = p, s.disc_bytes = size;
++    } else if (ext == ".xexp" || name.rfind("tu_", 0) == 0) {
++      if (s.update.empty()) s.update = p, s.update_bytes = size;
++    } else if (IsPackage(p) && (package.empty() || size < package_bytes)) {
++      // (a package without the title update's name: the smallest one, as the
++      // episodes are far bigger)
++      package = p, package_bytes = size;
++    }
++  }
++  if (s.update.empty() && !package.empty()) s.update = package, s.update_bytes = package_bytes;
++  return s;
++}
++
++uint64_t FreeSpace(const fs::path& install_root) {
++  std::error_code ec;
++  fs::create_directories(install_root, ec);
++  const auto space = fs::space(install_root, ec);
++  return ec ? 0 : uint64_t(space.available);
++}
++
++// ------------------------------------------------------------------ the job
++
++struct Job::Impl {
++  using Clock = std::chrono::steady_clock;
++
++  fs::path app, root;
++  Sources found;
++  mutable std::mutex m;
++  std::condition_variable cv;
++  Status st;
++  bool go = false, quit = false;
++  gta4::install::Progress progress;
++  Clock::time_point started;
++  std::thread thread;
++  // (Get's bookkeeping)
++  mutable uint64_t copy_total = 0, unpack_guess = 0;
++  mutable float shown = 0;
++  mutable Clock::time_point rate_at{};
++  mutable uint64_t rate_bytes = 0;
++  mutable float rate = 0;
++
++  void Set(Phase phase, std::string problem = {}) {
++    std::lock_guard lock(m);
++    st.phase = phase;
++    st.problem = std::move(problem);
++  }
++
++  void Run() {
++    REXLOG_INFO("PS5 installer: disc '{}', title update '{}'", found.disc.string(), found.update.string());
++    if (found.disc.empty()) {
++      Set(Phase::kProblem,
++          "There's no disc image in the install folder. Copy your GTA IV disc image (.iso) into "
++          "/data/homebrew/PPSA94004/install/ and press Triangle.");
++      return;
++    }
++    const auto inspected = gta4::install::InspectGameSource(found.disc);
++    if (!inspected.supported()) {
++      Set(Phase::kProblem, "This disc image can't be used: " + inspected.rejection_reason +
++                               "\nIt has to be the USA disc of GTA IV, the original release.");
++      return;
++    }
++    {
++      std::lock_guard lock(m);
++      st.disc = gta4::install::FormatXexRegion(inspected.region) + "  \xC2\xB7  " + inspected.release_label;
++    }
++    if (found.update.empty()) {
++      Set(Phase::kProblem,
++          "Title Update 8 is missing. Copy TU_1A581VI_000000K000000.0000000000205 into the install folder, next "
++          "to the disc image, and press Triangle.");
++      return;
++    }
++    const uint64_t free = FreeSpace(root), needed = SpaceNeeded(found.disc_bytes);
++    if (free && free < needed) {
++      Set(Phase::kProblem, "There isn't enough free space. The install needs about " + Bytes(needed) +
++                               " and the PS5 has " + Bytes(free) + " free.");
++      return;
++    }
++    Set(Phase::kReady);
++    {
++      std::unique_lock lock(m);
++      cv.wait(lock, [this] { return go || quit; });
++      if (quit) return;
++      st.phase = Phase::kInstalling;
++      started = Clock::now();
++    }
++    REXLOG_INFO("PS5 installer: installing into {}", root.string());
++    gta4::install::Selection selection;
++    selection.game_source = found.disc;
++    selection.update_source = found.update;
++    const auto result = gta4::install::Install(selection, root, progress);
++    if (result.success) {
++      REXLOG_INFO("PS5 installer: done in {:.0f} s",
++                  std::chrono::duration<float>(Clock::now() - started).count());
++      Set(Phase::kDone);
++    } else if (progress.cancel_requested.load()) {
++      REXLOG_INFO("PS5 installer: cancelled");
++      Set(Phase::kCancelled);
++    } else {
++      REXLOG_ERROR("PS5 installer: failed: {}", result.error);
++      Set(Phase::kFailed, result.error);
++    }
++  }
++};
++
++Job::Job(const fs::path& app, const fs::path& install_root) : impl_(std::make_unique<Impl>()) {
++  impl_->app = app;
++  impl_->root = install_root;
++  impl_->found = Find(app);
++  impl_->thread = std::thread([impl = impl_.get()] { impl->Run(); });
++}
++
++Job::~Job() {
++  {
++    std::lock_guard lock(impl_->m);
++    impl_->quit = true;
++  }
++  impl_->progress.cancel_requested = true;
++  impl_->cv.notify_all();
++  if (impl_->thread.joinable()) impl_->thread.join();
++}
++
++const Sources& Job::Found() const { return impl_->found; }
++
++void Job::Start() {
++  {
++    std::lock_guard lock(impl_->m);
++    if (impl_->st.phase != Phase::kReady) return;
++    impl_->go = true;
++  }
++  impl_->cv.notify_all();
++}
++
++void Job::Cancel() { impl_->progress.cancel_requested = true; }
++
++Job::Status Job::Get() const {
++  Impl& j = *impl_;
++  Status s;
++  Impl::Clock::time_point started;
++  {
++    std::lock_guard lock(j.m);
++    s = j.st;
++    started = j.started;
++  }
++  if (s.phase == Phase::kDone) s.progress = 1;
++  if (s.phase != Phase::kInstalling) return s;
++  const auto now = Impl::Clock::now();
++  const uint64_t done = j.progress.copied_bytes.load(), total = j.progress.total_bytes.load();
++  s.written = done;
++  s.seconds = std::chrono::duration<float>(now - started).count();
++  // Two steps: the disc image's files are copied (the total known up front),
++  // then the game's archives are unpacked (their total grows as each one is
++  // opened, so it's guessed from the archives' sizes).
++  if (!j.copy_total && total) j.copy_total = total;
++  float f = 0;
++  if (j.copy_total && total > j.copy_total) {
++    if (!j.unpack_guess) {
++      const fs::path staged = j.root / ".install-staging" / "game";
++      std::error_code ec;
++      for (const char* rpf : {"common.rpf", "xbox360.rpf", "audio.rpf"}) j.unpack_guess += fs::file_size(staged / rpf, ec);
++      j.unpack_guess = j.unpack_guess * 23 / 20;
++    }
++    const uint64_t unpack_total = std::max(total - j.copy_total, j.unpack_guess);
++    s.step = 2;
++    f = 0.45f + 0.55f * float(double(done - std::min(done, j.copy_total)) / double(std::max<uint64_t>(unpack_total, 1)));
++  } else {
++    s.step = 1;
++    f = j.copy_total ? 0.45f * float(double(done) / double(j.copy_total)) : 0;
++  }
++  j.shown = std::max(j.shown, std::min(f, 0.995f));
++  s.progress = j.shown;
++  // the speed, over the last second or so
++  if (j.rate_at == Impl::Clock::time_point{}) j.rate_at = now, j.rate_bytes = done;
++  const float dt = std::chrono::duration<float>(now - j.rate_at).count();
++  if (dt >= 1.0f) {
++    const float r = float(double(done - std::min(done, j.rate_bytes)) / dt);
++    j.rate = j.rate > 0 ? j.rate * 0.6f + r * 0.4f : r;
++    j.rate_at = now, j.rate_bytes = done;
++  }
++  s.rate = j.rate;
++  if (s.progress > 0.03f && s.seconds > 15) s.eta = s.seconds * (1 - s.progress) / s.progress;
 +  return s;
 +}
 +
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h
 new file mode 100644
-index 0000000..0b3b247
+index 0000000..8c82240
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h
-@@ -0,0 +1,46 @@
-+// GTA IV PS5 - the hub's check of the game's files. The game installs itself
-+// from the disc image and Title Update 8 in the app's install folder (the
-+// in-game installer); after that it runs from UserData/LibertyRecomp/game.
+@@ -0,0 +1,93 @@
++// GTA IV PS5 - the hub's check of the game's files, and its installer: the
++// game is installed from the disc image and Title Update 8 in the app's
++// install folder; after that it runs from UserData/LibertyRecomp/game.
 +#pragma once
 +
 +#include <atomic>
 +#include <cstdint>
 +#include <filesystem>
++#include <memory>
 +#include <mutex>
 +#include <string>
 +#include <vector>
@@ -19839,7 +20072,366 @@ index 0000000..0b3b247
 +// "6.6 GB" etc. for messages.
 +std::string Bytes(uint64_t n);
 +
++// What's in install/: the disc image (or an extracted game folder) and the
++// title update.
++struct Sources {
++  fs::path disc, update;
++  uint64_t disc_bytes = 0, update_bytes = 0;
++};
++Sources Find(const fs::path& app);
++
++// Free space where the game goes, in bytes.
++uint64_t FreeSpace(const fs::path& install_root);
++
++// About how much room the install takes, from the disc image's size.
++inline uint64_t SpaceNeeded(uint64_t disc_bytes) { return disc_bytes * 9 / 4 + (512ull << 20); }
++
++// The installer's work, on a thread of its own: it checks the disc image
++// right away (the USA disc, the original release), and installs once started.
++class Job {
++ public:
++  enum class Phase { kChecking, kReady, kProblem, kInstalling, kDone, kFailed, kCancelled };
++  struct Status {
++    Phase phase = Phase::kChecking;
++    std::string disc;     // what the disc image is ("USA  ·  Retail 1.00")
++    std::string problem;  // why it can't install, or why the install stopped
++    int step = 0;         // installing: 1 copying from the disc image, 2 unpacking the archives
++    float progress = 0;   // 0..1
++    uint64_t written = 0;  // bytes so far
++    float seconds = 0;     // since the install started
++    float rate = 0;        // bytes a second, lately
++    float eta = -1;        // seconds left (-1: not known yet)
++  };
++  // `install_root`: UserData/LibertyRecomp (the game goes in its game/).
++  Job(const fs::path& app, const fs::path& install_root);
++  ~Job();
++  Job(const Job&) = delete;
++  Job& operator=(const Job&) = delete;
++  const Sources& Found() const;
++  Status Get() const;
++  void Start();   // once kReady
++  void Cancel();  // while installing (what was copied is removed)
++
++  struct Impl;
++
++ private:
++  std::unique_ptr<Impl> impl_;
++};
++
 +}  // namespace gta4ps5::hub::install
+diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
+new file mode 100644
+index 0000000..962ae98
+--- /dev/null
++++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
+@@ -0,0 +1,307 @@
++// GTA IV PS5 - the hub's installer (see hub_ui.h, hub_install.h): START GAME
++// opens it while the game isn't installed. It shows what's in install/ and
++// the disc image's check, then installs with a progress bar. All on the
++// controller; the hub's music keeps playing.
++#include <algorithm>
++#include <cmath>
++#include <cstdio>
++#include <string>
++
++#include "hub_style.h"
++#include "hub_ui.h"
++
++namespace gta4ps5::hub {
++
++namespace {
++
++using Phase = install::Job::Phase;
++
++enum RowStatus { kRowChecking, kRowOk, kRowBad, kRowNone };
++
++std::string Minutes(float seconds) {
++  const int m = int(std::ceil(seconds / 60.0f));
++  if (m <= 1) return "Under a minute";
++  return std::to_string(m) + " min";
++}
++
++std::string Rate(float bytes_per_second) {
++  char buf[32];
++  std::snprintf(buf, sizeof(buf), "%.0f MB/s", double(bytes_per_second) / double(1 << 20));
++  return buf;
++}
++
++}  // namespace
++
++std::filesystem::path Hub::InstallRoot() const {
++  return paths_.install.empty() ? paths_.app / "UserData" / "LibertyRecomp" : paths_.install;
++}
++
++bool Hub::Busy() const { return installer_ && job_phase_ == Phase::kInstalling; }
++
++void Hub::OpenInstaller() {
++  installer_ = true;
++  job_ = std::make_unique<install::Job>(paths_.app, InstallRoot());
++  job_phase_ = Phase::kChecking;
++  free_space_ = install::FreeSpace(InstallRoot());
++  shown_progress_ = 0;
++  page_in_ = 0;
++  page_dir_ = 1;
++  focus_y_ = -1;
++}
++
++void Hub::CloseInstaller() {
++  installer_ = false;
++  job_.reset();
++  state_ = install::Look(paths_.app);
++  page_in_ = 0;
++  page_dir_ = -1;
++}
++
++// ---------------------------------------------------------------- drawing
++
++void Hub::Spinner(float cx, float cy, float r, ImU32 col) {
++  const float a = time_ * 5.5f;
++  dl_->PathArcTo(P(cx, cy), r * s_, a, a + 4.4f, 32);
++  dl_->PathStroke(col, 0, 3.2f * s_);
++}
++
++void Hub::Tick(float cx, float cy, float size, ImU32 col) {
++  const float k = size / 20;
++  dl_->PathLineTo(P(cx - 9 * k, cy + 0.5f * k));
++  dl_->PathLineTo(P(cx - 3 * k, cy + 6.5f * k));
++  dl_->PathLineTo(P(cx + 9.5f * k, cy - 6.5f * k));
++  dl_->PathStroke(col, 0, 3.4f * k * s_);
++}
++
++void Hub::XMark(float cx, float cy, float size, ImU32 col) {
++  const float k = size / 20 * 7;
++  dl_->AddLine(P(cx - k, cy - k), P(cx + k, cy + k), col, 3.4f * size / 20 * s_);
++  dl_->AddLine(P(cx - k, cy + k), P(cx + k, cy - k), col, 3.4f * size / 20 * s_);
++}
++
++// One of the setup's rows: what it is, the file, and how it checked out.
++void Hub::Row3(float y, const char* label, const std::string& name, int status, const std::string& note) {
++  const float x = kListX, w = kListW, h = 104;
++  Rect(x, y, w, h, White(0.07f), 12);
++  if (status == kRowBad) dl_->AddRectFilled(P(x, y), P(x + 5, y + h), kAccent, 12 * s_, ImDrawFlags_RoundCornersLeft);
++  Text(a_.body_bold, 15, x + 30, y + 20, White(0.45f), label, 0, 3);
++  const float note_w = note.empty() ? 0 : TextWidth(a_.body_bold, 21, note) + 56;
++  Text(a_.body_bold, 25, x + 30, y + 48, name.empty() ? White(0.4f) : White(0.94f),
++       Fit(a_.body_bold, 25, name.empty() ? "Not found" : name, w - 60 - std::max(note_w, 80.0f)));
++  const float cy = y + h * 0.5f + 2, icon_x = x + w - 44;
++  switch (status) {
++    case kRowChecking: Spinner(icon_x, cy, 13, White(0.8f)); break;
++    case kRowOk: Tick(icon_x, cy, 24, kText); break;
++    case kRowBad: XMark(icon_x, cy, 22, kAccent); break;
++    default: break;
++  }
++  if (!note.empty())
++    TextMid(a_.body_bold, 21, icon_x - 32, cy, status == kRowBad ? kAccent : White(0.7f), note, 1);
++}
++
++void Hub::DrawInstaller() {
++  const install::Job::Status st = job_->Get();
++  // what changed since the last frame
++  if (st.phase != job_phase_) {
++    switch (st.phase) {
++      case Phase::kProblem:
++      case Phase::kFailed: Play(Sound::kError); break;
++      case Phase::kDone:
++        Play(Sound::kOn);
++        state_ = install::Look(paths_.app);
++        break;
++      default: break;
++    }
++    job_phase_ = st.phase;
++    panel_in_ = 0;
++    if (st.phase == Phase::kCancelled) {
++      // back to the setup, looked at again
++      job_ = std::make_unique<install::Job>(paths_.app, InstallRoot());
++      job_phase_ = Phase::kChecking;
++      shown_progress_ = 0;
++      Toast("Install stopped. Nothing was kept.");
++      return;
++    }
++  }
++  const install::Sources& found = job_->Found();
++  const uint64_t needed = install::SpaceNeeded(found.disc_bytes);
++
++  // ---- the setup: what's there, and whether it can install
++  if (st.phase == Phase::kChecking || st.phase == Phase::kReady || st.phase == Phase::kProblem) {
++    PageTitle("INSTALL GTA IV", "One time only. The game is copied off your Xbox 360 disc image and set up on the PS5.");
++    const bool checking = st.phase == Phase::kChecking;
++    const bool disc_bad = st.phase == Phase::kProblem && (found.disc.empty() || st.disc.empty());
++    float y = kListY + 14;
++    Row3(y, found.disc.empty() || found.disc.has_extension() ? "DISC IMAGE" : "GAME FOLDER",
++         found.disc.filename().string(), checking ? kRowChecking : disc_bad ? kRowBad : kRowOk,
++         checking ? "Checking" : disc_bad ? (found.disc.empty() ? "Missing" : "Can't use") : st.disc);
++    y += 122;
++    Row3(y, "TITLE UPDATE 8", found.update.filename().string(), found.update.empty() ? kRowBad : kRowOk,
++         found.update.empty() ? "Missing" : install::Bytes(found.update_bytes));
++    y += 122;
++    const bool room = !free_space_ || free_space_ >= needed;
++    Row3(y, "SPACE", "Needs about " + install::Bytes(needed), room ? kRowOk : kRowBad,
++         free_space_ ? install::Bytes(free_space_) + " free" : "");
++    Panel([&](float px, float py, float pw) {
++      if (checking) {
++        Text(a_.display, 44, px, py, kText, "Checking");
++        Wrapped(a_.body, 22, px, py + 72, pw, White(0.65f),
++                "Making sure the disc image is the USA disc of GTA IV. This takes a few seconds.");
++      } else if (st.phase == Phase::kReady) {
++        Text(a_.display, 44, px, py, kText, "Ready");
++        py += 72;
++        py += Wrapped(a_.body, 22, px, py, pw, White(0.65f),
++                      "Press Cross to install. It takes a while: keep the app open until it's done. Your disc image "
++                      "isn't changed.") + 30;
++        Text(a_.body_bold, 15, px, py, White(0.45f), "INSTALLS TO", 0, 3);
++        Text(a_.body_bold, 21, px, py + 30, White(0.8f), "/data/homebrew/PPSA94004/UserData");
++      } else {
++        Text(a_.display, 44, px, py, kText, "Can't install yet");
++        py += 72;
++        py += Wrapped(a_.body, 22, px, py, pw, White(0.72f), st.problem) + 30;
++        Text(a_.body_bold, 15, px, py, White(0.45f), "THE INSTALL FOLDER", 0, 3);
++        Text(a_.body_bold, 21, px, py + 30, White(0.8f), "/data/homebrew/PPSA94004/install/");
++      }
++    });
++    return;
++  }
++
++  // ---- installing, done, or stopped
++  if (st.phase == Phase::kFailed) {
++    PageTitle("THE INSTALL STOPPED", "What was copied has been removed, so nothing is left half done.");
++    const float x = kListX, y = kListY + 14, w = 1100;
++    const int lines = int(WrapLines(a_.body, 23, w - 60, st.problem).size());
++    const float h = 84 + lines * 23 * 1.4f;
++    Rect(x, y, w, h, White(0.07f), 12);
++    dl_->AddRectFilled(P(x, y), P(x + 5, y + h), kAccent, 12 * s_, ImDrawFlags_RoundCornersLeft);
++    Text(a_.body_bold, 15, x + 30, y + 22, White(0.45f), "WHAT HAPPENED", 0, 3);
++    Wrapped(a_.body, 23, x + 30, y + 56, w - 60, White(0.85f), st.problem);
++    Wrapped(a_.body, 21, x, y + h + 30, w, White(0.55f),
++            "Press Cross to try again. If it stops again, send the log from /data/homebrew/PPSA94004/logs.");
++    return;
++  }
++
++  const bool done = st.phase == Phase::kDone;
++  Ease(shown_progress_, done ? 1.0f : st.progress, 3.5f);
++  if (done && shown_progress_ > 0.98f) shown_progress_ = 1;
++  const float p = std::clamp(shown_progress_, 0.0f, 1.0f);
++  if (done) PageTitle("INSTALLED", "GTA IV is set up on your PS5. Press Cross to play.");
++  else PageTitle("INSTALLING", "Keep the app open until it's done. The PS5 won't go to sleep.");
++  // the percentage, big
++  char pct[8];
++  std::snprintf(pct, sizeof(pct), "%d%%", done ? 100 : std::min(99, int(p * 100 + 0.0001f)));
++  Text(a_.display, 150, 104, 300, kText, pct);
++  // the step
++  Text(a_.body_bold, 15, 112, 530, White(0.45f),
++       done ? "ALL DONE" : st.step >= 2 ? "STEP 2 OF 2" : "STEP 1 OF 2", 0, 3);
++  Text(a_.body_bold, 27, 112, 558, White(0.92f),
++       done ? "The game's files are in place" : st.step >= 2 ? "Unpacking the game's archives"
++                                                          : "Copying the game from your disc image");
++  // the bar
++  const float bx = 112, by = 640, bw = 1696, bh = 12;
++  Rect(bx, by, bw, bh, White(0.12f), bh * 0.5f);
++  const float fw = std::max(bh, bw * p);
++  Rect(bx, by, fw, bh, kAccent, bh * 0.5f);
++  if (!done) {  // a light running along the filled part
++    dl_->PushClipRect(P(bx, by), P(bx + fw, by + bh), true);
++    const float run = std::fmod(time_ * 520.0f, fw + 400.0f) - 200.0f;
++    dl_->AddRectFilledMultiColor(P(bx + run - 140, by), P(bx + run, by + bh), White(0), White(0.35f), White(0.35f),
++                                 White(0));
++    dl_->AddRectFilledMultiColor(P(bx + run, by), P(bx + run + 140, by + bh), White(0.35f), White(0), White(0),
++                                 White(0.35f));
++    dl_->PopClipRect();
++  }
++  // the numbers under it
++  std::string left = install::Bytes(st.written) + " written";
++  if (done) left = "Took " + Minutes(st.seconds > 0 ? st.seconds : 1);
++  Text(a_.body, 21, bx, by + 40, White(0.6f), left);
++  if (!done) {
++    std::string right;
++    if (st.rate > 0) right = Rate(st.rate);
++    if (st.eta >= 0) right += (right.empty() ? "" : "  \xC2\xB7  ") + std::string("About ") + Minutes(st.eta) + " left";
++    else if (st.seconds > 2) right += (right.empty() ? "" : "  \xC2\xB7  ") + std::string("Working out the time left");
++    Text(a_.body, 21, bx + bw, by + 40, White(0.6f), right, 1);
++  }
++}
++
++void Hub::InstallerHints(float r) {
++  switch (job_phase_) {
++    case Phase::kChecking: Hint(r, kCircle, "Back"); break;
++    case Phase::kReady:
++      r = Hint(r, kCircle, "Back");
++      r = Hint(r, kTriangle, "Look Again");
++      Hint(r, kCross, "Install");
++      break;
++    case Phase::kProblem:
++      r = Hint(r, kCircle, "Back");
++      Hint(r, kTriangle, "Look Again");
++      break;
++    case Phase::kInstalling: Hint(r, kCircle, "Cancel"); break;
++    case Phase::kDone:
++      r = Hint(r, kCircle, "Home");
++      Hint(r, kCross, "Start Game");
++      break;
++    case Phase::kFailed:
++    case Phase::kCancelled:
++      r = Hint(r, kCircle, "Back");
++      Hint(r, kCross, "Try Again");
++      break;
++  }
++}
++
++// ---------------------------------------------------------------- controls
++
++void Hub::InstallerInput(uint32_t p) {
++  auto again = [this] {
++    job_ = std::make_unique<install::Job>(paths_.app, InstallRoot());
++    job_phase_ = Phase::kChecking;
++    free_space_ = install::FreeSpace(InstallRoot());
++    shown_progress_ = 0;
++    panel_in_ = 0;
++    Play(Sound::kSelect);
++  };
++  switch (job_phase_) {
++    case Phase::kChecking:
++      if (p & kCircle) Play(Sound::kBack), CloseInstaller();
++      break;
++    case Phase::kReady:
++      if (p & kCross) {
++        job_->Start();
++        press_ = 1;
++        Play(Sound::kStart);
++      } else if (p & kTriangle) {
++        again();
++      } else if (p & kCircle) {
++        Play(Sound::kBack), CloseInstaller();
++      }
++      break;
++    case Phase::kProblem:
++      if (p & (kTriangle | kCross)) again();
++      else if (p & kCircle) Play(Sound::kBack), CloseInstaller();
++      break;
++    case Phase::kInstalling:
++      if (p & kCircle) {
++        Play(Sound::kSelect);
++        Confirm("Stop installing?", "What's been copied so far is removed. You can start over later.", "Stop",
++                [this] {
++                  if (job_) job_->Cancel();
++                },
++                "Keep Going", nullptr);
++      }
++      break;
++    case Phase::kDone:
++      if (p & kCross) {
++        press_ = 1, launch_ = true;  // (Draw fades out and starts the game)
++      } else if (p & kCircle) {
++        Play(Sound::kBack), CloseInstaller();
++      }
++      break;
++    case Phase::kFailed:
++    case Phase::kCancelled:
++      if (p & kCross) again();
++      else if (p & kCircle) Play(Sound::kBack), CloseInstaller();
++      break;
++  }
++}
++
++}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.cpp
 new file mode 100644
 index 0000000..4276bd7
@@ -20771,10 +21363,10 @@ index 0000000..7d075b4
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 0000000..72f9a91
+index 0000000..6aa98e3
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1144 @@
+@@ -0,0 +1,1150 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -21408,7 +22000,7 @@ index 0000000..72f9a91
 +    dl_->AddImage(a_.hero.id, ImVec2(0, 0), size, uv0, uv1);
 +  }
 +  // The pages over it: the picture steps back
-+  Ease(shade_, tab_ == kHome ? 0.0f : 0.84f, 7);
++  Ease(shade_, tab_ == kHome && !installer_ ? 0.0f : 0.84f, 7);
 +  if (shade_ > 0.003f) dl_->AddRectFilled(ImVec2(0, 0), size, Black(shade_));
 +  // (on the home page, the lower left darkens a little under the logo)
 +  if (shade_ < 0.6f) {
@@ -21458,14 +22050,18 @@ index 0000000..72f9a91
 +    r = Hint(r, kCross, confirm_yes_.c_str());
 +    return;
 +  }
-+  if (tab_ != kHome) r = Hint(r, kOptions, "Start Game");
-+  if (tab_ != kHome) r = Hint(r, kCircle, "Home");
-+  switch (tab_) {
-+    case kHome: r = Hint(r, kCross, "Start Game"); break;
-+    case kSettingsTab: r = Hint(r, kLeft | kRight, "Change"); break;
-+    case kSavesTab:
-+      if (item_[tab_] <= int(backups_.size())) r = Hint(r, kCross, item_[tab_] == 0 ? "Back Up" : "Restore");
-+      break;
++  if (installer_) {
++    InstallerHints(r);
++  } else {
++    if (tab_ != kHome) r = Hint(r, kOptions, "Start Game");
++    if (tab_ != kHome) r = Hint(r, kCircle, "Home");
++    switch (tab_) {
++      case kHome: r = Hint(r, kCross, "Start Game"); break;
++      case kSettingsTab: r = Hint(r, kLeft | kRight, "Change"); break;
++      case kSavesTab:
++        if (item_[tab_] <= int(backups_.size())) r = Hint(r, kCross, item_[tab_] == 0 ? "Back Up" : "Restore");
++        break;
++    }
 +  }
 +  // a message (bottom left, rising in)
 +  if (toast_time_ > 0) {
@@ -21546,6 +22142,9 @@ index 0000000..72f9a91
 +  const float tx = bx + (bw - (kArrowW + kArrowGap + tw)) * 0.5f;
 +  dl_->AddTriangleFilled(P(tx, cy - kArrowH * 0.5f), P(tx + kArrowW, cy), P(tx, cy + kArrowH * 0.5f), ink);
 +  TextMid(a_.display, kSize, tx + kArrowW + kArrowGap, cy, ink, "START GAME", 0, kSpacing);
++  // (not installed yet: START GAME sets it up first)
++  if (!state_.installed)
++    Text(a_.body, 19, 114, by + bh + 26, White(0.6f), "Not installed yet. START GAME sets it up from your disc image.");
 +  Fade(v0, in_btn);
 +
 +}
@@ -21799,24 +22398,19 @@ index 0000000..72f9a91
 +    }
 +    return;
 +  }
-+  // START GAME: once the game is installed (and not while DLC installs)
-+  auto launch = [this] { press_ = 1, launch_ = true; };
++  // the installer, over everything
++  if (installer_) {
++    InstallerInput(p);
++    return;
++  }
++  // START GAME: the game, once installed; before that, the installer
 +  auto start = [&] {
 +    state_ = install::Look(paths_.app);
-+    if (!state_.Installed()) {
-+      Play(Sound::kError);
-+      Notice("The game isn't set up",
-+             "Put your GTA IV disc image (.iso, the USA disc) and its Title Update 8 file in "
-+             "/data/homebrew/PPSA94004/install/ on the PS5. The game installs itself from them the first time it "
-+             "starts.");
-+    } else if (!state_.installed && !state_.update) {
-+      Play(Sound::kError);
-+      Confirm("No title update",
-+              "There's a disc image in install/ but no Title Update 8 next to it "
-+              "(TU_1A581VI_000000K000000.0000000000205). The game is made for Title Update 8.",
-+              "Start Anyway", launch);
++    if (state_.installed) {
++      press_ = 1, launch_ = true;
 +    } else {
-+      launch();
++      Play(Sound::kSelect);
++      OpenInstaller();
 +    }
 +  };
 +  if (p & kOptions) {
@@ -21893,18 +22487,22 @@ index 0000000..72f9a91
 +  oy_ = (size.y - kH * s_) * 0.5f;
 +  dl_ = ImGui::GetForegroundDrawList();
 +  DrawBackdrop();
-+  DrawTopBar();
++  if (!installer_) DrawTopBar();
 +  // the page slides in from the side it came from, fading up
 +  Ease(page_in_, 1, 11);
 +  const int first = dl_->VtxBuffer.Size;
 +  const float shift = (1 - page_in_) * 48 * page_dir_;
 +  ox_ += shift * s_;
-+  switch (tab_) {
-+    case kHome: DrawHome(); break;
-+    case kSettingsTab: DrawSettings(); break;
-+    case kSavesTab: DrawSaves(); break;
-+    case kTrophiesTab: DrawTrophies(); break;
-+    case kAboutTab: DrawAbout(); break;
++  if (installer_) {
++    DrawInstaller();
++  } else {
++    switch (tab_) {
++      case kHome: DrawHome(); break;
++      case kSettingsTab: DrawSettings(); break;
++      case kSavesTab: DrawSaves(); break;
++      case kTrophiesTab: DrawTrophies(); break;
++      case kAboutTab: DrawAbout(); break;
++    }
 +  }
 +  ox_ -= shift * s_;
 +  Fade(first, Smooth(page_in_));
@@ -21921,10 +22519,10 @@ index 0000000..72f9a91
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
 new file mode 100644
-index 0000000..70d5a0a
+index 0000000..ba31464
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
-@@ -0,0 +1,281 @@
+@@ -0,0 +1,302 @@
 +// GTA IV PS5 - the hub: the screen the app opens on, before the game
 +// (the PC launcher's settings, driven by the controller). The SmackDown vs. Raw
 +// and WWE 2K14 PS5 ports' hub, with its Home, Settings, Saves and About pages,
@@ -22005,6 +22603,7 @@ index 0000000..70d5a0a
 +  std::filesystem::path app;        // the app folder (/data/homebrew/PPSA94004)
 +  std::filesystem::path config;     // native.toml (the game's settings, which the hub also writes)
 +  std::filesystem::path user_data;  // UserData: the saves are the game's content folders in it
++  std::filesystem::path install;    // UserData/LibertyRecomp: the game is installed in its game/
 +};
 +
 +// The sounds the hub asks for (ps5_hub.cpp plays them).
@@ -22031,8 +22630,10 @@ index 0000000..70d5a0a
 +  // A song started (shown at the bottom for a few seconds).
 +  void NowPlaying(const std::string& name);
 +  bool HasMusic() const { return music_; }
-+  // The game's files are in Assets (START GAME can go).
-+  bool Installed() const { return state_.Installed(); }
++  // The game is installed (START GAME starts it; else it opens the installer).
++  bool Installed() const { return state_.installed; }
++  // Installing: the PS5 should stay awake.
++  bool Busy() const;
 +  void SetHasMusic(bool on) { music_ = on; }
 +  // Settings' Menu Music (hub_music_volume, 50% when not set), 0..1.
 +  float MusicVolume() const;
@@ -22083,6 +22684,17 @@ index 0000000..70d5a0a
 +  void DrawSettings();
 +  void DrawSaves();
 +  void DrawAbout();
++  // the installer (hub_installer_page.cpp): over the pages, from START GAME
++  // while the game isn't installed
++  void OpenInstaller();
++  void CloseInstaller();
++  void DrawInstaller();
++  void InstallerInput(uint32_t pressed);
++  void InstallerHints(float right);
++  void Row3(float y, const char* label, const std::string& name, int status, const std::string& note);
++  void Spinner(float cx, float cy, float r, ImU32 col);
++  void Tick(float cx, float cy, float size, ImU32 col);
++  void XMark(float cx, float cy, float size, ImU32 col);
 +  // the Trophies page (hub_trophies_page.cpp)
 +  struct TrophyItem {
 +    int index;  // in trophies_.trophies; -1: the platinum
@@ -22179,6 +22791,13 @@ index 0000000..70d5a0a
 +  int pending_imports_ = 0;
 +  // the game's files
 +  install::State state_;
++  // the installer
++  std::unique_ptr<install::Job> job_;
++  bool installer_ = false;
++  install::Job::Phase job_phase_ = install::Job::Phase::kChecking;
++  float shown_progress_ = 0;
++  uint64_t free_space_ = 0;
++  std::filesystem::path InstallRoot() const;
 +  std::vector<Backup> backups_;
 +  // helpers (virtual coordinates)
 +  ImVec2 P(float x, float y) const { return ImVec2(ox_ + x * s_, oy_ + y * s_); }
@@ -22208,10 +22827,10 @@ index 0000000..70d5a0a
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
 new file mode 100644
-index 0000000..74129fc
+index 0000000..2dd1c66
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
-@@ -0,0 +1,387 @@
+@@ -0,0 +1,394 @@
 +// GTA IV PS5 - the hub on the console (see hub_ui.h):
 +// shown before the game is set up (ReXApp::OnFinalizePaths, asynchronous),
 +// driven by the DualSense through scePad, with the menu music (hub/music,
@@ -22252,6 +22871,7 @@ index 0000000..74129fc
 +int scePadOpen(int32_t user_id, int32_t type, int32_t index, const void* param);
 +int scePadGetHandle(int32_t user_id, int32_t type, int32_t index);
 +int scePadReadState(int32_t handle, void* data);
++int sceSystemServicePowerTick(void);
 +}
 +
 +// The fonts, built into the app (fonts/, SIL Open Font License).
@@ -22536,6 +23156,11 @@ index 0000000..74129fc
 +    audio_->SetLevel(hub_.MusicVolume());
 +    hub_.NowPlaying(audio_->Tick(io.DeltaTime));
 +    const bool go = hub_.Draw(pad, io.DeltaTime);
++    // installing: the PS5 stays awake (no rest mode, no screen dimming)
++    if (hub_.Busy() && (awake_ -= io.DeltaTime) <= 0) {
++      sceSystemServicePowerTick();
++      awake_ = 10;
++    }
 +    if (hub_.Leaving() && !faded_) audio_->FadeOut(), faded_ = true;
 +    if (go) {
 +      done_ = true;
@@ -22564,6 +23189,7 @@ index 0000000..74129fc
 +  std::unique_ptr<HubAudio> audio_;  // (its voices outlive it: the last sounds finish in the game)
 +  bool faded_ = false;
 +  bool done_ = false;
++  float awake_ = 0;
 +  std::function<void()> launch_;
 +};
 +
@@ -28317,6 +28943,37 @@ index 6f4b3f0..0744c00 100644
  namespace rex {
  using hundrednano = std::ratio<1, 10000000>;
  
+diff --git a/glue/rexglue-sdk-main/include/rex/filesystem/devices/disc_image_device.h b/glue/rexglue-sdk-main/include/rex/filesystem/devices/disc_image_device.h
+index f97559e..d08d145 100644
+--- a/glue/rexglue-sdk-main/include/rex/filesystem/devices/disc_image_device.h
++++ b/glue/rexglue-sdk-main/include/rex/filesystem/devices/disc_image_device.h
+@@ -43,12 +43,16 @@ class DiscImageDevice : public Device {
+   uint64_t total_file_size() const { return total_file_size_; }
+   const DiscInfo& disc_info() const { return disc_info_; }
+ 
++  // Copies `length` bytes at `offset` in the image (false past its end or on a
++  // read error).
++  bool ReadAt(size_t offset, void* out, size_t length) const;
++
+   const std::string& name() const override { return name_; }
+   uint32_t attributes() const override { return 0; }
+   uint32_t component_name_max_length() const override { return 255; }
+ 
+   uint32_t total_allocation_units() const override {
+-    return uint32_t(mmap_->size() / sectors_per_allocation_unit() / bytes_per_sector());
++    return uint32_t(host_size_ / sectors_per_allocation_unit() / bytes_per_sector());
+   }
+   uint32_t available_allocation_units() const override { return 0; }
+   uint32_t sectors_per_allocation_unit() const override { return 1; }
+@@ -67,6 +71,8 @@ class DiscImageDevice : public Device {
+   std::filesystem::path host_path_;
+   std::unique_ptr<Entry> root_entry_;
+   std::unique_ptr<memory::MappedMemory> mmap_;
++  int fd_ = -1;  // [ps5 port] the image, read with pread (never mapped)
++  size_t host_size_ = 0;
+   DiscInfo disc_info_{};
+   uint64_t file_count_ = 0;
+   uint64_t total_file_size_ = 0;
 diff --git a/glue/rexglue-sdk-main/include/rex/frame_stats.h b/glue/rexglue-sdk-main/include/rex/frame_stats.h
 new file mode 100644
 index 0000000..96410f8
@@ -32527,6 +33184,140 @@ index d0d6656..8cd9f20 100644
    // get preferred data home
    if (auto xdg = rex::platform::env::get("XDG_DATA_HOME")) {
      return std::filesystem::path(*xdg);
+diff --git a/glue/rexglue-sdk-main/src/core/mapped_memory_posix.cpp b/glue/rexglue-sdk-main/src/core/mapped_memory_posix.cpp
+index 92c06c8..26cd8d3 100644
+--- a/glue/rexglue-sdk-main/src/core/mapped_memory_posix.cpp
++++ b/glue/rexglue-sdk-main/src/core/mapped_memory_posix.cpp
+@@ -9,6 +9,9 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <algorithm>
++#include <cerrno>
++#include <cstdlib>
+ #include <memory>
+ 
+ #include <fcntl.h>
+@@ -18,10 +21,103 @@
+ 
+ #include <rex/filesystem.h>
+ #include <rex/memory/mapped_memory.h>
++#include <rex/logging.h>
+ #include <rex/platform.h>
+ 
+ namespace rex::memory {
+ 
++#if REX_PLATFORM_PS5
++// [ps5 port] No file mappings on the PS5: paging a big file in through one
++// (the 8 GB disc image) froze the whole console. A "mapping" here is a copy
++// of the file's bytes in memory, written back on Flush/Close when writable.
++namespace {
++
++constexpr size_t kMaxFileCopy = size_t(512) << 20;
++
++bool ReadAll(int fd, uint8_t* p, size_t length, size_t offset) {
++  while (length) {
++    const ssize_t n = pread(fd, p, length, off_t(offset));
++    if (n < 0 && errno == EINTR) continue;
++    if (n <= 0) return false;
++    p += n, offset += size_t(n), length -= size_t(n);
++  }
++  return true;
++}
++
++bool WriteAll(int fd, const uint8_t* p, size_t length, size_t offset) {
++  while (length) {
++    const ssize_t n = pwrite(fd, p, length, off_t(offset));
++    if (n < 0 && errno == EINTR) continue;
++    if (n <= 0) return false;
++    p += n, offset += size_t(n), length -= size_t(n);
++  }
++  return true;
++}
++
++class Ps5FileCopy : public MappedMemory {
++ public:
++  Ps5FileCopy(void* data, size_t size, int fd, size_t offset, bool writable)
++      : MappedMemory(data, size), fd_(fd), offset_(offset), writable_(writable) {}
++  ~Ps5FileCopy() override { Close(0); }
++
++  void Close(uint64_t truncate_size) override {
++    if (data_) {
++      Flush();
++      std::free(data_);
++      data_ = nullptr;
++    }
++    if (fd_ >= 0) {
++      if (truncate_size) ftruncate(fd_, off_t(truncate_size));
++      close(fd_);
++      fd_ = -1;
++    }
++  }
++
++  void Flush() override {
++    if (writable_ && data_ && fd_ >= 0) WriteAll(fd_, data(), size(), offset_);
++  }
++
++ private:
++  int fd_;
++  size_t offset_;
++  bool writable_;
++};
++
++}  // namespace
++
++std::unique_ptr<MappedMemory> MappedMemory::Open(const std::filesystem::path& path, Mode mode,
++                                                 size_t offset, size_t length) {
++  const bool writable = mode == Mode::kReadWrite;
++  const int fd = open(path.c_str(), writable ? O_RDWR : O_RDONLY);
++  if (fd < 0) return nullptr;
++  size_t size = length;
++  if (!size) {
++    struct stat st {};
++    if (fstat(fd, &st) != 0 || size_t(st.st_size) < offset) {
++      close(fd);
++      return nullptr;
++    }
++    size = size_t(st.st_size) - offset;
++  }
++  if (size > kMaxFileCopy) {
++    REXLOG_WARN("ps5: {} is too big to load whole ({} MB)", path.string(), size >> 20);
++    close(fd);
++    return nullptr;
++  }
++  auto* data = static_cast<uint8_t*>(std::calloc(std::max<size_t>(size, 1), 1));
++  if (!data) {
++    close(fd);
++    return nullptr;
++  }
++  if (!ReadAll(fd, data, size, offset) && !length) {
++    std::free(data);
++    close(fd);
++    return nullptr;
++  }
++  return std::make_unique<Ps5FileCopy>(data, size, fd, offset, writable);
++}
++#endif  // REX_PLATFORM_PS5
++
+ class PosixMappedMemory : public MappedMemory {
+  public:
+   PosixMappedMemory(void* data, size_t size, int file_descriptor)
+@@ -88,6 +184,7 @@ class PosixMappedMemory : public MappedMemory {
+   int file_descriptor_;
+ };
+ 
++#if !REX_PLATFORM_PS5
+ std::unique_ptr<MappedMemory> MappedMemory::Open(const std::filesystem::path& path, Mode mode,
+                                                  size_t offset, size_t length) {
+   int open_flags = 0;
+@@ -105,6 +202,7 @@ std::unique_ptr<MappedMemory> MappedMemory::Open(const std::filesystem::path& pa
+   }
+   return PosixMappedMemory::WrapFileDescriptor(file_descriptor, mode, offset, length);
+ }
++#endif  // !REX_PLATFORM_PS5
+ 
+ #if REX_PLATFORM_ANDROID
+ std::unique_ptr<MappedMemory> MappedMemory::OpenForAndroidContentUri(const std::string_view uri,
 diff --git a/glue/rexglue-sdk-main/src/core/memory_posix.cpp b/glue/rexglue-sdk-main/src/core/memory_posix.cpp
 index a9a6ce6..c9419ce 100644
 --- a/glue/rexglue-sdk-main/src/core/memory_posix.cpp
@@ -33379,6 +34170,224 @@ index 8c31d93..77249fd 100644
  #if REX_PLATFORM_ANDROID
    if (!android_pthread_getname_np_ && current_thread_) {
      current_thread_->condition().SetAndroidPreApi26Name(name);
+diff --git a/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_device.cpp b/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_device.cpp
+index 46220c7..b32e1cf 100644
+--- a/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_device.cpp
++++ b/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_device.cpp
+@@ -12,7 +12,17 @@
+ #include <rex/filesystem/devices/disc_image_device.h>
+ #include <rex/filesystem/devices/disc_image_entry.h>
+ 
++#include <cerrno>
++#include <cstring>
+ #include <limits>
++#include <vector>
++
++#include <rex/platform.h>
++#if REX_PLATFORM_PS5
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
+ 
+ #include <rex/literals.h>
+ #include <rex/logging.h>
+@@ -50,25 +60,49 @@ DiscImageDevice::DiscImageDevice(const std::string_view mount_path,
+                                  const std::filesystem::path& host_path)
+     : Device(mount_path), name_("GDFX"), host_path_(host_path) {}
+ 
+-DiscImageDevice::~DiscImageDevice() = default;
++DiscImageDevice::~DiscImageDevice() {
++#if REX_PLATFORM_PS5
++  if (fd_ >= 0) {
++    close(fd_);
++  }
++#endif
++}
+ 
+ bool DiscImageDevice::Initialize() {
++#if REX_PLATFORM_PS5
++  // [ps5 port] The image is read with pread, not mapped: paging an 8 GB disc
++  // image in through a file mapping froze the whole console.
++  fd_ = open(host_path_.c_str(), O_RDONLY);
++  struct stat st {};
++  if (fd_ < 0 || fstat(fd_, &st) != 0) {
++    REXFS_ERROR("Disc image could not be opened");
++    return false;
++  }
++  host_size_ = size_t(st.st_size);
++#else
+   mmap_ = memory::MappedMemory::Open(host_path_, memory::MappedMemory::Mode::kRead);
+   if (!mmap_) {
+     REXFS_ERROR("Disc image could not be mapped");
+     return false;
+   }
++  host_size_ = mmap_->size();
++#endif
+ 
+   ParseState state = {};
+-  state.ptr = mmap_->data();
+-  state.size = mmap_->size();
++  state.ptr = nullptr;
++  state.size = host_size_;
+   auto result = Verify(&state);
+   if (result != Error::kSuccess) {
+     REXFS_ERROR("Failed to verify disc image header: {}", static_cast<int>(result));
+     return false;
+   }
+ 
+-  result = ReadAllEntries(&state, state.ptr + state.root_offset);
++  std::vector<uint8_t> root(state.root_size);
++  if (!ReadAt(state.root_offset, root.data(), root.size())) {
++    REXFS_ERROR("Failed to read the GDFX root directory");
++    return false;
++  }
++  result = ReadAllEntries(&state, root.data());
+   if (result != Error::kSuccess) {
+     REXFS_ERROR("Failed to read all GDFX entries: {}", static_cast<int>(result));
+     return false;
+@@ -85,6 +119,31 @@ void DiscImageDevice::Dump(string::StringBuffer* string_buffer) {
+       disc_info_.root_size, disc_info_.host_size);
+ }
+ 
++bool DiscImageDevice::ReadAt(size_t offset, void* out, size_t length) const {
++  if (!RangeWithin(offset, length, host_size_)) {
++    return false;
++  }
++#if REX_PLATFORM_PS5
++  auto* p = static_cast<uint8_t*>(out);
++  while (length) {
++    const ssize_t n = pread(fd_, p, length, off_t(offset));
++    if (n < 0 && errno == EINTR) {
++      continue;
++    }
++    if (n <= 0) {
++      return false;
++    }
++    p += n;
++    offset += size_t(n);
++    length -= size_t(n);
++  }
++  return true;
++#else
++  std::memcpy(out, mmap_->data() + offset, length);
++  return true;
++#endif
++}
++
+ Entry* DiscImageDevice::ResolvePath(const std::string_view path) {
+   // The filesystem will have stripped our prefix off already, so the path will
+   // be in the form:
+@@ -119,7 +178,11 @@ DiscImageDevice::Error DiscImageDevice::Verify(ParseState* state) {
+       !RangeWithin(descriptor_offset, kVolumeDescriptorSize, state->size)) {
+     return Error::kErrorReadError;
+   }
+-  uint8_t* fs_ptr = state->ptr + descriptor_offset;
++  uint8_t descriptor[kVolumeDescriptorSize];
++  if (!ReadAt(descriptor_offset, descriptor, sizeof(descriptor))) {
++    return Error::kErrorReadError;
++  }
++  const uint8_t* fs_ptr = descriptor;
+   state->root_sector = memory::load<uint32_t>(fs_ptr + 20);
+   state->root_size = memory::load<uint32_t>(fs_ptr + 24);
+   if (state->root_size < kMinimumRootDirectorySize ||
+@@ -143,7 +206,9 @@ bool DiscImageDevice::VerifyMagic(ParseState* state, size_t offset) {
+   }
+ 
+   // Simple check to see if the given offset contains the magic value.
+-  return std::memcmp(state->ptr + offset, "MICROSOFT*XBOX*MEDIA", kMagicSize) == 0;
++  uint8_t magic[kMagicSize];
++  return ReadAt(offset, magic, kMagicSize) &&
++         std::memcmp(magic, "MICROSOFT*XBOX*MEDIA", kMagicSize) == 0;
+ }
+ 
+ DiscImageDevice::Error DiscImageDevice::ReadAllEntries(ParseState* state,
+@@ -222,10 +287,13 @@ bool DiscImageDevice::ReadEntry(ParseState* state, const uint8_t* buffer, size_t
+           !RangeWithin(folder_offset, length, state->size)) {
+         return false;
+       }
+-      uint8_t* folder_ptr = state->ptr + folder_offset;
++      std::vector<uint8_t> folder(length);
++      if (!ReadAt(folder_offset, folder.data(), length)) {
++        return false;
++      }
+       std::unordered_set<uint16_t> child_active_ordinals;
+       std::unordered_set<uint16_t> child_visited_ordinals;
+-      if (!ReadEntry(state, folder_ptr, length, 0, entry.get(), child_active_ordinals,
++      if (!ReadEntry(state, folder.data(), length, 0, entry.get(), child_active_ordinals,
+                      child_visited_ordinals, depth + 1)) {
+         return false;
+       }
+diff --git a/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_entry.cpp b/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_entry.cpp
+index 1986c71..c46aa47 100644
+--- a/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_entry.cpp
++++ b/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_entry.cpp
+@@ -13,6 +13,9 @@
+ #include <rex/filesystem/devices/disc_image_file.h>
+ 
+ #include <algorithm>
++#include <vector>
++
++#include <rex/filesystem/devices/disc_image_device.h>
+ 
+ #include <rex/math.h>
+ 
+@@ -46,7 +49,29 @@ std::unique_ptr<memory::MappedMemory> DiscImageEntry::OpenMapped(memory::MappedM
+ 
+   size_t real_offset = data_offset_ + offset;
+   size_t real_length = length ? std::min(length, data_size_) : data_size_;
+-  return mmap_->Slice(real_offset, real_length);
++  if (mmap_) {
++    return mmap_->Slice(real_offset, real_length);
++  }
++  // [ps5 port] No mapping of the image: the bytes, read into memory.
++  class Copy final : public memory::MappedMemory {
++   public:
++    explicit Copy(size_t n) : bytes_(n) {
++      data_ = bytes_.data();
++      size_ = n;
++    }
++
++   private:
++    std::vector<uint8_t> bytes_;
++  };
++  if (offset > data_size_) {
++    return nullptr;
++  }
++  real_length = std::min(real_length, data_size_ - offset);
++  auto copy = std::make_unique<Copy>(real_length);
++  if (!static_cast<DiscImageDevice*>(device())->ReadAt(real_offset, copy->data(), real_length)) {
++    return nullptr;
++  }
++  return copy;
+ }
+ 
+ }  // namespace rex::filesystem
+diff --git a/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_file.cpp b/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_file.cpp
+index 313c9af..2a10037 100644
+--- a/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_file.cpp
++++ b/glue/rexglue-sdk-main/src/filesystem/devices/disc_image_file.cpp
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <rex/filesystem/devices/disc_image_device.h>
+ #include <rex/filesystem/devices/disc_image_entry.h>
+ #include <rex/filesystem/devices/disc_image_file.h>
+ 
+@@ -32,7 +33,11 @@ X_STATUS DiscImageFile::ReadSync(std::span<uint8_t> buffer, size_t byte_offset,
+   }
+   size_t real_offset = entry_->data_offset() + byte_offset;
+   size_t real_length = std::min(buffer.size(), entry_->data_size() - byte_offset);
+-  std::memcpy(buffer.data(), entry_->mmap()->data() + real_offset, real_length);
++  auto* device = static_cast<DiscImageDevice*>(entry_->device());
++  if (!device->ReadAt(real_offset, buffer.data(), real_length)) {
++    *out_bytes_read = 0;
++    return X_STATUS_UNSUCCESSFUL;
++  }
+   *out_bytes_read = real_length;
+   return X_STATUS_SUCCESS;
+ }
 diff --git a/glue/rexglue-sdk-main/src/graphics/CMakeLists.txt b/glue/rexglue-sdk-main/src/graphics/CMakeLists.txt
 index af36910..a0709c9 100644
 --- a/glue/rexglue-sdk-main/src/graphics/CMakeLists.txt
