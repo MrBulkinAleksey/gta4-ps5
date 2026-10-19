@@ -598,7 +598,7 @@ index bb44175b..1b222e35 100644
  struct PlayerInfoBatchProjectionContext {
    bool active = false;
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp
-index 2a4966bd..c9d56815 100644
+index 2a4966bd..63bc827e 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp
 @@ -25,7 +25,10 @@
@@ -612,7 +612,43 @@ index 2a4966bd..c9d56815 100644
  #include <rex/graphics/gta4_native/anti_aliasing_policy.h>
  #include <rex/graphics/gta4_native/supersampling_policy.h>
  #include <rex/graphics/gta4_native/upscaling_policy.h>
-@@ -5344,11 +5347,13 @@ std::string ShadowTargetFetch(uint8_t* base, uint32_t texture) {
+@@ -477,6 +480,9 @@ struct ActiveNativeCommandCapture {
+ };
+ 
+ thread_local ActiveNativeCommandCapture g_active_native_capture;
++// [ps5 port] Threads with a capture open. Every command the game submits
++// checks for one; the thread-local is a call on the PS5, this is a load.
++std::atomic<int> g_native_captures_open{0};
+ std::mutex g_cached_native_command_lists_mutex;
+ std::unordered_map<uint32_t, std::shared_ptr<const CachedNativeCommandList>>
+     g_cached_native_command_lists;
+@@ -3305,7 +3311,8 @@ bool IsCachedListCommandType(CommandType type) {
+ 
+ template <typename Command>
+ bool CaptureNativeCommand(const Command& command) {
+-  if (!g_active_native_capture.active || !IsCachedListCommandType(command.header.type)) {
++  if (!g_native_captures_open.load(std::memory_order_relaxed) || !g_active_native_capture.active ||
++      !IsCachedListCommandType(command.header.type)) {
+     return false;
+   }
+ 
+@@ -5043,6 +5050,7 @@ extern "C" void sub_828C01E0(PPCContext& ctx, uint8_t* base) {
+     REXLOG_WARN("gta4-native-cache: replacing unfinished build object={:08X} commands={}",
+                 g_active_native_capture.build_object, g_active_native_capture.commands.size());
+   }
++  if (!g_active_native_capture.active) g_native_captures_open.fetch_add(1, std::memory_order_relaxed);
+   g_active_native_capture = {};
+   g_active_native_capture.active = true;
+   g_active_native_capture.base = base;
+@@ -5070,6 +5078,7 @@ extern "C" void sub_828C0338(PPCContext& ctx, uint8_t* base) {
+   const uint32_t command_list = output ? LoadU32(base, output) : 0;
+   std::vector<CapturedNativeCommand> commands = std::move(g_active_native_capture.commands);
+   g_active_native_capture = {};
++  g_native_captures_open.fetch_sub(1, std::memory_order_relaxed);
+ 
+   if (command_list) {
+     const size_t command_count = commands.size();
+@@ -5344,11 +5353,13 @@ std::string ShadowTargetFetch(uint8_t* base, uint32_t texture) {
  
  bool ShadowTraceActive(uint8_t* base) {
    const uint32_t frames = REXCVAR_GET(gta4_trace_shadow_targets);
@@ -626,7 +662,7 @@ index 2a4966bd..c9d56815 100644
    if (!frames) {
      g_shadow_trace_value = 0;
      return false;
-@@ -7555,6 +7560,56 @@ extern "C" void sub_826273A0(PPCContext& ctx, uint8_t* base) {
+@@ -7555,6 +7566,56 @@ extern "C" void sub_826273A0(PPCContext& ctx, uint8_t* base) {
    }
  }
  
@@ -683,7 +719,7 @@ index 2a4966bd..c9d56815 100644
  extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
    if (!IsNativeMode()) {
      __imp__sub_82A467D8(ctx, base);
-@@ -7648,9 +7703,13 @@ extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
+@@ -7648,9 +7709,13 @@ extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
    }
    g_last_present_frontbuffer.store(command.frontbuffer_texture, std::memory_order_relaxed);
    SubmitNativeCommand(command);
@@ -23863,10 +23899,10 @@ index 00000000..7d075b44
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..2b78e7de
+index 00000000..db11a824
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1200 @@
+@@ -0,0 +1,1204 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -24013,6 +24049,10 @@ index 00000000..2b78e7de
 +       "How far out shadows are drawn. Original is the Xbox 360's; 2x reaches further but costs frame "
 +       "rate in the city.",
 +       false, {"1.0", "2.0"}, {"Original", "2x"}, "1.0"},
++      {"DISPLAY", "gta4_native_shadow_min_indices", "Small Object Shadows", nullptr,
++       "Shadows of small things like signs, bins and debris, about a fifth of what is drawn in "
++       "busy streets. Off skips them for a higher frame rate.",
++       false, {"0", "300"}, {"On", "Off"}, "0"},
 +      {"GAME", "gta4_skip_intro", "Skip Intro", nullptr,
 +       "Goes straight to the game's start screen, past the logos and the legal screens.", false,
 +       {"false", "true"}, {"Off", "On"}, "false"},
@@ -31725,10 +31765,10 @@ index 00000000..87e2fd2e
 +#endif  // !_WIN32
 diff --git a/glue/rexglue-sdk-main/include/rex/frame_stats.h b/glue/rexglue-sdk-main/include/rex/frame_stats.h
 new file mode 100644
-index 00000000..dae4188c
+index 00000000..0bba079f
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/frame_stats.h
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,149 @@
 +// [ps5 port] The guest's presented frames, for the PS5 build's frame rate
 +// counter and frame time capture: the renderer notes each present.
 +#pragma once
@@ -31856,6 +31896,12 @@ index 00000000..dae4188c
 +// The recorder holding a finished frame back for the frame limit (time that
 +// is not work), summed and for its current frame; and its last frame's work.
 +inline std::atomic<uint64_t> g_pacer_wait_us{0}, g_frame_pacer_us{0};
++// The recorder waiting for its output image to be free (the presenter still
++// using it: with frame generation, for the generated frame).
++inline std::atomic<uint64_t> g_output_image_wait_us{0};
++// The recorder's frame: recording the commands, and the whole output step
++// around it (with frame generation and FSR 3 encoding and submission).
++inline std::atomic<uint64_t> g_record_commands_us{0}, g_output_callback_us{0};
 +inline std::atomic<uint32_t> g_last_recorder_busy_us{0};
 +
 +// From the renderer, once per guest frame.
@@ -36518,10 +36564,10 @@ index d639924c..7f325c0c 100644
  }  // namespace rex::thread
 diff --git a/glue/rexglue-sdk-main/src/core/ps5_diag.cpp b/glue/rexglue-sdk-main/src/core/ps5_diag.cpp
 new file mode 100644
-index 00000000..d62c359b
+index 00000000..a8259fd6
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/src/core/ps5_diag.cpp
-@@ -0,0 +1,354 @@
+@@ -0,0 +1,411 @@
 +// [ps5 port] see rex/ps5_diag.h
 +#include <rex/ps5_diag.h>
 +
@@ -36601,6 +36647,62 @@ index 00000000..d62c359b
 +
 +constexpr uintptr_t kNear = 256ull << 20;  // the eboot text is ~100 MB
 +
++// The allocator's entry points, which only pass a call on: a sample in
++// malloc is charged past them, to whoever asked for the memory.
++}  // namespace
++}  // namespace rex::ps5diag
++extern "C" {
++__attribute__((weak)) void* __wrap_malloc(size_t);
++__attribute__((weak)) void __wrap_free(void*);
++__attribute__((weak)) void* __wrap_calloc(size_t, size_t);
++__attribute__((weak)) void* __wrap_realloc(void*, size_t);
++__attribute__((weak)) int __wrap_posix_memalign(void**, size_t, size_t);
++__attribute__((weak)) void* ps5_heap_malloc(size_t);
++__attribute__((weak)) void* ps5_heap_calloc(size_t, size_t);
++__attribute__((weak)) void* ps5_heap_memalign(size_t, size_t);
++__attribute__((weak)) void* ps5_heap_realloc(void*, size_t);
++__attribute__((weak)) void ps5_heap_free(void*);
++}
++namespace rex::ps5diag {
++namespace {
++struct PassThrough {
++  uint32_t begin = 0, end = 0;  // anchor-relative words, like the samples
++};
++PassThrough pass_through[16];
++int pass_through_count = 0;
++void NotePassThrough(const void* function, uint32_t bytes) {
++  if (!function || pass_through_count >= 16) return;
++  const uint32_t word = uint32_t(reinterpret_cast<uintptr_t>(function) - Anchor() + 0x10000000);
++  pass_through[pass_through_count++] = {word, word + bytes};
++}
++bool IsPassThrough(uint32_t word) {
++  for (int i = 0; i < pass_through_count; ++i)
++    if (word >= pass_through[i].begin && word < pass_through[i].end) return true;
++  return false;
++}
++void FindPassThroughs() {
++  NotePassThrough(reinterpret_cast<const void*>(&__wrap_malloc), 256);
++  NotePassThrough(reinterpret_cast<const void*>(&__wrap_free), 256);
++  NotePassThrough(reinterpret_cast<const void*>(&__wrap_calloc), 256);
++  NotePassThrough(reinterpret_cast<const void*>(&__wrap_realloc), 512);
++  NotePassThrough(reinterpret_cast<const void*>(&__wrap_posix_memalign), 256);
++  NotePassThrough(reinterpret_cast<const void*>(&ps5_heap_malloc), 1024);
++  NotePassThrough(reinterpret_cast<const void*>(&ps5_heap_calloc), 1024);
++  NotePassThrough(reinterpret_cast<const void*>(&ps5_heap_memalign), 1024);
++  NotePassThrough(reinterpret_cast<const void*>(&ps5_heap_realloc), 1024);
++  NotePassThrough(reinterpret_cast<const void*>(&ps5_heap_free), 1024);
++  void* (*new_one)(size_t) = &::operator new;
++  void* (*new_array)(size_t) = &::operator new[];
++  void (*delete_one)(void*) noexcept = &::operator delete;
++  void (*delete_array)(void*) noexcept = &::operator delete[];
++  void (*delete_sized)(void*, size_t) noexcept = &::operator delete;
++  NotePassThrough(reinterpret_cast<const void*>(new_one), 256);
++  NotePassThrough(reinterpret_cast<const void*>(new_array), 256);
++  NotePassThrough(reinterpret_cast<const void*>(delete_one), 128);
++  NotePassThrough(reinterpret_cast<const void*>(delete_array), 128);
++  NotePassThrough(reinterpret_cast<const void*>(delete_sized), 128);
++}
++
 +void SampleHandler(int, siginfo_t*, void* uc) {
 +  ThreadEntry* e = my_entry;
 +  if (!e) return;
@@ -36623,7 +36725,7 @@ index 00000000..d62c359b
 +        const uintptr_t v = *reinterpret_cast<const uintptr_t*>(p);
 +        if (v > lo && v < anchor + kNear) {
 +          const uint32_t word = uint32_t(v - anchor + 0x10000000);
-+          if ((word & ~63u) != (rel & ~63u)) {
++          if ((word & ~63u) != (rel & ~63u) && !IsPassThrough(word)) {
 +            parent = word;
 +            break;
 +          }
@@ -36644,7 +36746,7 @@ index 00000000..d62c359b
 +          if (!rel) {
 +            if (p >= rsp + 24 * 8) break;
 +            rel = word | 0x80000000u;
-+          } else if ((word & ~63u) != (rel & 0x7FFFFFC0u)) {
++          } else if ((word & ~63u) != (rel & 0x7FFFFFC0u) && !IsPassThrough(word)) {
 +            parent = word;
 +            break;
 +          }
@@ -36724,6 +36826,7 @@ index 00000000..d62c359b
 +void InstallSampleHandler() {
 +  static std::once_flag once;
 +  std::call_once(once, [] {
++    FindPassThroughs();
 +    struct sigaction sa = {};
 +    sa.sa_sigaction = SampleHandler;
 +    sa.sa_flags = SA_SIGINFO | SA_RESTART;
@@ -37793,7 +37896,7 @@ index 1d5402e9..1adeb3c1 100644
    if (command_processor_) {
      command_processor_->increment_counter();
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
-index 581a9d20..7bd43230 100644
+index 581a9d20..362dd946 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 +++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp
 @@ -1,3 +1,7 @@
@@ -38552,7 +38655,7 @@ index 581a9d20..7bd43230 100644
      }
    }
  }
-@@ -20622,6 +20857,63 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedTextureImages(
+@@ -20622,6 +20857,65 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedTextureImages(
      CollectProtectedTextureGenerations(present_source, protected_texture_generations_);
      EvictNativeTextureImages(submitted_frame, false);
    }
@@ -38563,14 +38666,16 @@ index 581a9d20..7bd43230 100644
 +    if (!settings_logged) {
 +      settings_logged = true;
 +      REXLOG_INFO("ps5 settings: resolution {}, draw distance {}, frame limit {}, shadow distance {}, "
-+                  "reflections {}, anti-aliasing {}, motion blur {}, frame generation {}",
++                  "reflections {}, anti-aliasing {}, motion blur {}, frame generation {}, small "
++                  "shadows skipped under {} indices, renderer threads {}",
 +                  rex::cvar::GetFlagByName("resolution"), rex::cvar::GetFlagByName("gta4_draw_distance_scale"),
 +                  rex::cvar::GetFlagByName("gta4_frame_limit"),
 +                  rex::cvar::GetFlagByName("gta4_shadow_distance_scale"),
 +                  rex::cvar::GetFlagByName("gta4_reflection_resolution"),
 +                  rex::cvar::GetFlagByName("gta4_native_anti_aliasing"),
 +                  rex::cvar::GetFlagByName("gta4_motion_blur"),
-+                  rex::cvar::GetFlagByName("gta4_native_frame_generation"));
++                  rex::cvar::GetFlagByName("gta4_native_frame_generation"),
++                  REXCVAR_GET(gta4_native_shadow_min_indices), REXCVAR_GET(ps5_renderer_cpus));
 +    }
 +    REXLOG_INFO("ps5 textures: frame={} images={} heap-usage={} MB heap-budget={} MB pressure={} "
 +                "alloc-retries={} alloc-failures={} pool-reuses={} evictions={}; {}",
@@ -38616,7 +38721,7 @@ index 581a9d20..7bd43230 100644
  }
  
  void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_frame) {
-@@ -20633,12 +20925,7 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+@@ -20633,12 +20927,7 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
    if (!poll_due && !buffer_cache_reclamation_pending_) return;
    buffer_cache_reclamation_pending_ = false;
  
@@ -38630,7 +38735,7 @@ index 581a9d20..7bd43230 100644
    auto retained_bytes = [](const NativeBufferResource& resource) {
      uint64_t bytes = resource.payload.capacity();
      bytes += resource.host_index16_payload.capacity();
-@@ -20652,9 +20939,19 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+@@ -20652,9 +20941,19 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
  
    constexpr uint64_t kBytesPerMiB = 1048576ull;
    const uint64_t cache_limit = uint64_t(kNativeBufferCacheLimitMiB) * kBytesPerMiB;
@@ -38653,7 +38758,7 @@ index 581a9d20..7bd43230 100644
      std::lock_guard lock(buffer_resource_mutex_);
      candidates.reserve(buffer_resources_.size());
      for (const auto& [handle, resource] : buffer_resources_) {
-@@ -20672,7 +20969,7 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+@@ -20672,7 +20971,7 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
    // Under budget every eligible aged entry is reclaimed regardless of order.
    // Only pressure eviction needs oldest-first ordering to choose which younger
    // entries to discard before the byte budget is satisfied.
@@ -38662,7 +38767,7 @@ index 581a9d20..7bd43230 100644
      std::sort(candidates.begin(), candidates.end(),
                [](const Candidate& left, const Candidate& right) {
                  return left.last_used_frame < right.last_used_frame ||
-@@ -20684,14 +20981,20 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+@@ -20684,14 +20983,20 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
    size_t reclaimed_resources = 0;
    NativeWorkBudget buffer_reclamation(64, 16777216);
    std::lock_guard lock(buffer_resource_mutex_);
@@ -38685,7 +38790,7 @@ index 581a9d20..7bd43230 100644
                                     kNativeBufferCacheRetentionFrames)) {
        continue;
      }
-@@ -20737,8 +21040,16 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
+@@ -20737,8 +21042,16 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
          cache_bytes > candidate.retained_bytes ? cache_bytes - candidate.retained_bytes : 0;
      reclaimed_bytes += candidate.retained_bytes;
      ++reclaimed_resources;
@@ -38703,7 +38808,7 @@ index 581a9d20..7bd43230 100644
    }
  
    if (reclaimed_resources &&
-@@ -31206,6 +31517,37 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -31206,6 +31519,37 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
      return command.snapshot_render_targets[0].width == 0 && depth.handle &&
             depth.width >= 512 && depth.width == depth.height;
    };
@@ -38741,7 +38846,7 @@ index 581a9d20..7bd43230 100644
    const bool lazy_resolves = REXCVAR_GET(gta4_native_lazy_resolves) && !diagnostic_frame &&
                               !fire_frame_ && !force_content_probe;
    {
-@@ -31231,7 +31573,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -31231,7 +31575,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
        if (pipelined_recording_ && frame_constant_bound_.valid && frame_constant_bound_.read_epoch &&
            REXCVAR_GET(gta4_native_assembled_frame_scans)) {
          // A later frame's stamp only makes this conservative (an extra resolve).
@@ -38750,7 +38855,18 @@ index 581a9d20..7bd43230 100644
                 frame_constant_bound_.read_epoch;
        } else for (const NativeCommand& scan : current_frame_) {
          for (const auto& texture : scan.textures) {
-@@ -31455,7 +31797,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -31309,7 +31653,9 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+           g_water_reflection_draws_culled.fetch_add(1, std::memory_order_relaxed);
+           continue;
+         }
+-        if (range == performance::GpuRange::kRetailWarpShadow &&
++        // (The pass tag reaches the renderer only with the profiler on; the
++        // shadow map's target identifies the pass otherwise.)
++        if ((range == performance::GpuRange::kRetailWarpShadow || shadow_map_draw(queued_command)) &&
+             draw.index_count < shadow_min_indices) {
+           g_shadow_draws_culled.fetch_add(1, std::memory_order_relaxed);
+           continue;
+@@ -31455,7 +31801,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
        }
      }
  
@@ -38759,7 +38875,7 @@ index 581a9d20..7bd43230 100644
      constexpr uint64_t kDeferredLightingVs1Hash = 0xA97B1F043F720396ull;
      uint64_t stencil_face_probe_instance = 0;
      if (stencil_face_probe != "original" && queued_command.pipeline_state &&
-@@ -31542,6 +31884,35 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -31542,6 +31888,35 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
      }
  
      const NativeCommand& command = *command_pointer;
@@ -38795,7 +38911,7 @@ index 581a9d20..7bd43230 100644
      const bool descriptor_draw = command.type == CommandType::kDrawPrimitive ||
                                   command.type == CommandType::kDrawPrimitiveUp ||
                                   command.type == CommandType::kDrawIndexedPrimitive;
-@@ -33478,6 +33849,119 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
+@@ -33478,6 +33853,119 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
        }
        std::fflush(stderr);
      }
@@ -38915,7 +39031,42 @@ index 581a9d20..7bd43230 100644
      if (legacy_diagnostics && is_draw && command.render_phase == RenderPhase::kRadarMap) {
        static std::atomic<uint64_t> radar_draw_count{0};
        const uint64_t radar_draw_index = ++radar_draw_count;
-@@ -38033,8 +38517,19 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
+@@ -37338,6 +37826,14 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
+        present](ui::Presenter::GuestOutputRefreshContext& context) -> bool {
+         auto& vulkan_context =
+             static_cast<ui::vulkan::VulkanPresenter::VulkanGuestOutputRefreshContext&>(context);
++#if REX_PLATFORM_PS5
++        const int64_t output_callback_begin_ns = rex::frame_stats::NowNs();
++        const auto note_output_callback = MakeScopeExit([output_callback_begin_ns] {
++          rex::frame_stats::g_output_callback_us.fetch_add(
++              uint64_t(rex::frame_stats::NowNs() - output_callback_begin_ns) / 1000,
++              std::memory_order_relaxed);
++        });
++#endif
+         const auto& dfn = vulkan_device->functions();
+         const VkDevice device = vulkan_device->device();
+         const bool native_profiler_enabled =
+@@ -37700,11 +38196,19 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
+           WriteBreadcrumb(command_buffer_, fmt::format("frame {} start: textures prepared, recording begins",
+                                                        submitted_frame));
+         }
++#if REX_PLATFORM_PS5
++        const int64_t record_commands_begin_ns = rex::frame_stats::NowNs();
++#endif
+         const bool frame_recorded = RecordNativeFrame(
+             command_buffer_, width, height, vulkan_context.image(), vulkan_context.image_view(),
+             submitted_frame, present_source, environmental_data, vulkan_context.hdr_output(),
+             vulkan_context.hdr_headroom(), presenter_transfer_written, presenter_written,
+             trace_stages, trace_sequence, present.diagnostic_force_content_probe != 0);
++#if REX_PLATFORM_PS5
++        rex::frame_stats::g_record_commands_us.fetch_add(
++            uint64_t(rex::frame_stats::NowNs() - record_commands_begin_ns) / 1000,
++            std::memory_order_relaxed);
++#endif
+         if (present.diagnostic_trace) {
+           REXLOG_INFO(
+               "gta4-tv-native-record: session={} present={} frame={} origin={} "
+@@ -38033,8 +38537,19 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
          return presenter_written;
        },
        ui::GuestOutputProvenance{
@@ -38938,7 +39089,7 @@ index 581a9d20..7bd43230 100644
            .title_present_id = present.diagnostic_present_id,
            .selected_generation = present_source ? present_source->generation : 0,
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h
-index 0b9e1311..5e4c85b8 100644
+index 0b9e1311..60179579 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h
 +++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h
 @@ -329,6 +329,8 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
@@ -38978,7 +39129,46 @@ index 0b9e1311..5e4c85b8 100644
    std::atomic<uint64_t> texture_resources_epoch_{1};
    TextureCaptureCacheSlot& TextureCaptureSlot(uint32_t handle) {
      return CaptureCacheWay(texture_capture_cache_, handle);
-@@ -2811,8 +2816,45 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
+@@ -2221,7 +2226,38 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
+   std::unordered_map<uint32_t, uint32_t> vector_font_ids_;
+   NativeVirtualResourceRegistry virtual_resource_registry_;
+   uint64_t next_texture_generation_ = 1;
++#if REX_PLATFORM_PS5
++  // [ps5 port] Taken for every command the game submits (12,000-16,000 a
++  // frame in the city) and almost never contended: a spin lock instead of
++  // two libkernel calls each time.
++  class CaptureMutex {
++   public:
++    void lock() {
++      int spins = 0;
++      while (locked_.exchange(true, std::memory_order_acquire)) {
++        while (locked_.load(std::memory_order_relaxed)) {
++          if (++spins < 1024) {
++            __builtin_ia32_pause();
++          } else {
++            std::this_thread::yield();
++            spins = 0;
++          }
++        }
++      }
++    }
++    bool try_lock() {
++      return !locked_.load(std::memory_order_relaxed) &&
++             !locked_.exchange(true, std::memory_order_acquire);
++    }
++    void unlock() { locked_.store(false, std::memory_order_release); }
++
++   private:
++    std::atomic<bool> locked_{false};
++  };
++  CaptureMutex command_capture_mutex_;
++#else
+   std::mutex command_capture_mutex_;
++#endif
+   // State commands absorbed since the last queued command (command_capture_mutex_).
+   std::vector<uint8_t> producer_pending_state_;
+   std::mutex device_snapshot_mutex_;
+@@ -2811,8 +2847,45 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
    std::atomic<uint64_t> buffer_fast_path_disable_count_{0};
    std::atomic<uint64_t> buffer_fast_path_request_count_{0};
    std::atomic<bool> buffer_fast_path_disabled_{false};
@@ -42220,10 +42410,20 @@ index eb0ad80b..d94f2fb2 100644
    if (vulkan_instance->extensions_.ext_KHR_surface) {
  #include <rex/ui/vulkan/functions/instance_khr_surface.inc>
 diff --git a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_presenter.cpp b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_presenter.cpp
-index 541be7e0..6b8b894b 100644
+index 541be7e0..abf49ea8 100644
 --- a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_presenter.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_presenter.cpp
-@@ -55,6 +55,98 @@
+@@ -35,6 +35,9 @@
+ #include <rex/logging.h>
+ #include <rex/math.h>
+ #include <rex/platform.h>
++#if REX_PLATFORM_PS5
++#include <rex/frame_stats.h>
++#endif
+ #if REX_PLATFORM_MAC || REX_PLATFORM_GNU_LINUX || REX_PLATFORM_ANDROID
+ #include <time.h>
+ #endif
+@@ -55,6 +58,98 @@
  #if REX_PLATFORM_MAC
  #include <rex/ui/surface_mac.h>
  #endif
@@ -42322,7 +42522,7 @@ index 541be7e0..6b8b894b 100644
  
  REXCVAR_DEFINE_BOOL(present_render_pass_clear, true, "UI/Presenter",
                      "Clear render pass during presentation");
-@@ -367,6 +459,11 @@ Surface::TypeFlags VulkanPresenter::GetSurfaceTypesSupportedByInstance(
+@@ -367,6 +462,11 @@ Surface::TypeFlags VulkanPresenter::GetSurfaceTypesSupportedByInstance(
    if (instance_extensions.ext_EXT_metal_surface) {
      type_flags |= Surface::kTypeFlag_CAMetalLayer;
    }
@@ -42334,7 +42534,7 @@ index 541be7e0..6b8b894b 100644
  #endif
    return type_flags;
  }
-@@ -821,6 +918,18 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
+@@ -821,6 +921,18 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
          vulkan_surface_create_result = ifn.vkCreateMetalSurfaceEXT(
              instance, &surface_create_info, nullptr, &paint_context_.vulkan_surface);
        } break;
@@ -42353,6 +42553,21 @@ index 541be7e0..6b8b894b 100644
  #endif
        default:
          assert_unhandled_case(surface_type);
+@@ -1144,7 +1256,14 @@ bool VulkanPresenter::RefreshGuestOutputImpl(
+     hdr_headroom = std::max(1.0f, window->GetHDRHeadroom());
+     sdr_white_level = std::max(1.0f, window->GetSDRWhiteLevel());
+   }
++#if REX_PLATFORM_PS5
++  const int64_t acquire_begin_ns = rex::frame_stats::NowNs();
++#endif
+   auto image_access = image_instance.image->AcquireAccess();
++#if REX_PLATFORM_PS5
++  rex::frame_stats::g_output_image_wait_us.fetch_add(
++      uint64_t(rex::frame_stats::NowNs() - acquire_begin_ns) / 1000, std::memory_order_relaxed);
++#endif
+   if (!image_access.ticket().valid()) return false;
+   VulkanGuestOutputRefreshContext context(
+       is_8bpc_out_ref, image_instance.image->image(), image_instance.image->view(),
 diff --git a/glue/rexglue-sdk-main/src/ui/window.cpp b/glue/rexglue-sdk-main/src/ui/window.cpp
 index 35162382..5fcfe7c7 100644
 --- a/glue/rexglue-sdk-main/src/ui/window.cpp
@@ -42438,7 +42653,7 @@ index 87f97744..5acee304 100644
    if (allowed_types & Surface::kTypeFlag_AndroidNativeWindow) {
      auto* native_window = static_cast<ANativeWindow*>(GetNativeWindowHandle());
 diff --git a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
-index ac2d8dc4..a01d3f83 100644
+index ac2d8dc4..57d33702 100644
 --- a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 @@ -11,6 +11,7 @@
@@ -42534,7 +42749,7 @@ index ac2d8dc4..a01d3f83 100644
  
      app->InvokeOnDestroy();
    }
-@@ -161,8 +203,309 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
+@@ -161,8 +203,319 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
  #include <SDL3/SDL_main.h>
  #endif
  
@@ -42685,6 +42900,9 @@ index ac2d8dc4..a01d3f83 100644
 +      const uint64_t rec_us = g_recorder_us.exchange(0), rec_n = g_recorder_frames.exchange(0);
 +      const uint64_t rec_max = g_recorder_max_us.exchange(0), wait_us = g_handoff_wait_us.exchange(0);
 +      const uint64_t gpu_wait_us = g_gpu_wait_us.exchange(0);
++      const uint64_t image_wait_us = g_output_image_wait_us.exchange(0);
++      const uint64_t record_commands_us = g_record_commands_us.exchange(0);
++      const uint64_t output_callback_us = g_output_callback_us.exchange(0);
 +      const uint64_t slot_wait_us = g_title_slot_wait_us.exchange(0), pacer_us = g_pacer_wait_us.exchange(0);
 +      const uint64_t guest_wait_us = uint64_t(double(g_title_guest_wait_ticks.exchange(0)) * 1e6 /
 +                                              double(rex::chrono::Clock::QueryHostTickFrequency()));
@@ -42700,14 +42918,21 @@ index ac2d8dc4..a01d3f83 100644
 +                    "(TV {:.1f} fps); "
 +                    "game {:.1f} ms of work (+{:.1f} waiting for the renderer, {:.1f} waiting on other "
 +                    "threads), recorder {:.1f} ms (worst {:.1f}, "
-+                    "waiting for the GPU {:.1f}), held for the frame limit {:.1f} ms, worker waiting on the "
-+                    "recorder {:.1f} ms",
++                    "waiting for the GPU {:.1f}, for its output image {:.1f}; recording {:.1f}, the rest "
++                    "of the output step {:.1f}), held for the frame limit "
++                    "{:.1f} ms, worker waiting on the recorder {:.1f} ms",
 +                    real, guest_s, step * 1000.0, frame_ms, double(shown - last_shown) / real,
 +                    std::max(0.0, frame_ms - per_frame(slot_wait_us) - per_frame(guest_wait_us) -
 +                                      per_frame(pacer_us)),
 +                    per_frame(slot_wait_us), per_frame(guest_wait_us),
 +                    rec_n ? double(rec_us) / 1000.0 / double(rec_n) : 0.0, double(rec_max) / 1000.0,
-+                    rec_n ? double(gpu_wait_us) / 1000.0 / double(rec_n) : 0.0, per_frame(pacer_us),
++                    rec_n ? double(gpu_wait_us) / 1000.0 / double(rec_n) : 0.0,
++                    rec_n ? double(image_wait_us) / 1000.0 / double(rec_n) : 0.0,
++                    rec_n ? double(record_commands_us) / 1000.0 / double(rec_n) : 0.0,
++                    rec_n ? double(output_callback_us > record_commands_us ? output_callback_us - record_commands_us : 0) /
++                                1000.0 / double(rec_n)
++                          : 0.0,
++                    per_frame(pacer_us),
 +                    per_frame(wait_us));
 +        const uint64_t kept = g_renderer_cpu_mask.load();
 +        REXLOG_INFO("ps5 cpus: game {:#x}, worker {:#x}, recorder {:#x} (kept on {:#x}{})",
