@@ -201,10 +201,10 @@ index 9ffeffdf..1f19e16d 100644
      endif()
  
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
-index 3b033069..442c60c9 100644
+index 3b033069..431f3a17 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
-@@ -443,6 +443,98 @@ elseif(ANDROID)
+@@ -443,6 +443,99 @@ elseif(ANDROID)
              -Wno-backend-plugin)
          target_link_options(LibertyRecomp PRIVATE "-fprofile-use=${LIBERTY_ANDROID_PGO}")
      endif()
@@ -225,6 +225,7 @@ index 3b033069..442c60c9 100644
 +        src/ps5/hub/hub_ui.cpp
 +        src/ps5/hub/hub_install.cpp
 +        src/ps5/hub/hub_installer_page.cpp
++        src/ps5/hub/hub_lang.cpp
 +        src/ps5/hub/hub_sfx.cpp
 +        src/ps5/hub/hub_trophies.cpp
 +        src/ps5/hub/hub_trophies_page.cpp
@@ -3477,10 +3478,10 @@ index 00000000..f0379480
 +}  // namespace gta4ps5::sound
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/trophies_game.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/trophies_game.cpp
 new file mode 100644
-index 00000000..30a115f3
+index 00000000..4ecf5f31
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/trophies_game.cpp
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,174 @@
 +// [ps5 port] see trophies_game.h
 +#include "trophies_game.h"
 +
@@ -3498,6 +3499,7 @@ index 00000000..30a115f3
 +#include <rex/ui/image_decode.h>
 +#include <rex/ui/immediate_drawer.h>
 +
++#include "../hub/hub_lang.h"
 +#include "../hub/hub_sfx.h"
 +#include "../hub/hub_trophies.h"
 +#include "sound.h"
@@ -3647,7 +3649,7 @@ index 00000000..30a115f3
 +  trophies::Card view;
 +  view.platinum = card.platinum;
 +  view.grade = card.platinum ? trophies::Grade::kPlatinum : trophies::GradeFor(card.achievement.gamerscore);
-+  view.name = card.platinum ? "Grand Theft Auto IV Platinum" : card.achievement.label;
++  view.name = card.platinum ? hub::lang::T("Grand Theft Auto IV Platinum") : card.achievement.label;
 +  view.picture = reinterpret_cast<ImTextureID>(card.platinum ? TitlePicture() : icons_.GetIcon(card.achievement));
 +  const Fonts f = GetFonts();
 +  trophies::DrawCard(ImGui::GetForegroundDrawList(), io.DisplaySize, view, age, f.body, f.bold);
@@ -3725,10 +3727,10 @@ index 00000000..18a0d8a1
 +}  // namespace gta4ps5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp
 new file mode 100644
-index 00000000..05d0f08c
+index 00000000..5d7c4c0a
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,89 @@
 +// GTA IV PS5 - the app's PS5 parts (see gta4_ps5_app.h).
 +#include <rex/platform.h>
 +#if REX_PLATFORM_PS5
@@ -3741,12 +3743,19 @@ index 00000000..05d0f08c
 +#include <rex/cvar.h>
 +#include <rex/logging.h>
 +#include <rex/runtime.h>
++#include <rex/system/flags.h>
 +
 +#include "../gta4_app.h"
 +#include "game/ps5_overlay.h"
 +#include "game/save_import.h"
 +#include "game/trophies_game.h"
++#include "hub/hub_lang.h"
 +#include "hub/ps5_hub.h"
++
++// The hub's Language (Game page): auto (the PS5's), english, french, german,
++// spanish or italian. The game is told it as the Xbox 360's language and
++// reads its text from the matching .gxt (the USA disc has all five).
++REXCVAR_DEFINE_STRING(ps5_language, "auto", "PS5", "Game and hub language: auto, english, french, german, spanish, italian");
 +
 +namespace gta4ps5 {
 +
@@ -3772,19 +3781,26 @@ index 00000000..05d0f08c
 +  hub::SetSaveImport({[] { return PendingSaveImports(kApp); },
 +                      [] {
 +                        const SaveImportResult r = ImportXbox360Saves(kApp, g_saves_root);
++                        namespace lang = hub::lang;
 +                        std::string message;
 +                        if (r.imported)
-+                          message = std::to_string(r.imported) + (r.imported == 1 ? " save imported." : " saves imported.") +
-+                                    " Load them from the game's menu.";
++                          message = lang::F(r.imported == 1 ? "{} save imported." : "{} saves imported.",
++                                            {std::to_string(r.imported)}) +
++                                    " " + lang::T("Load them from the game's menu.");
 +                        else
-+                          message = "No saves were imported.";
++                          message = lang::T("No saves were imported.");
 +                        for (size_t i = 0; i < r.errors.size() && i < 4; ++i) message += "\n" + r.errors[i];
-+                        if (r.errors.size() > 4) message += "\n...the log lists the rest.";
++                        if (r.errors.size() > 4) message += std::string("\n") + lang::T("...the log lists the rest.");
 +                        return message;
 +                      }});
 +  hub::Show(drawer, immediate, hub_paths, [config, launch = std::move(launch)] {
 +    // the hub's settings, for this start
 +    rex::cvar::LoadConfig(config);
++    // the language: the game reads it as the console's (XCONFIG user language)
++    const hub::lang::Lang language = hub::lang::FromSetting(REXCVAR_GET(ps5_language));
++    REXCVAR_SET(user_language, hub::lang::XboxLanguage(language));
++    REXLOG_INFO("PS5 hub: language {} (setting {}, Xbox language {})", hub::lang::Name(language),
++                REXCVAR_GET(ps5_language), REXCVAR_GET(user_language));
 +    REXLOG_INFO("PS5 hub: START GAME (GTA IV PS5 {})", BuildVersion());
 +    launch();
 +  });
@@ -22037,14 +22053,16 @@ index 00000000..a631ae40
 +*/
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
 new file mode 100644
-index 00000000..ae4d537a
+index 00000000..2892f63f
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
-@@ -0,0 +1,954 @@
+@@ -0,0 +1,958 @@
 +// GTA IV PS5 - the hub's check of the game's files and its installer (see
 +// hub_install.h). The install itself is LibertyRecomp's (install/), written by
 +// the installer payload (ps5/payload/installer) when a payload loader runs it.
 +#include "hub_install.h"
++
++#include "hub_lang.h"
 +
 +#include <algorithm>
 +#include <cctype>
@@ -22193,12 +22211,12 @@ index 00000000..ae4d537a
 +}  // namespace
 +#endif
 +
-+std::string Drive::Name() const {
-+  if (type.empty()) return "the app's drive";
-+  if (type == "ufs") return "internal storage";
-+  if (type.find("exfat") != std::string::npos) return "an exFAT drive";
-+  if (type.find("msdos") != std::string::npos || type.find("fat") != std::string::npos) return "a FAT drive";
-+  return "a " + type + " drive";
++std::string Drive::Name() const {  // (shown in the hub: in its language)
++  if (type.empty()) return hub::lang::T("the app's drive");
++  if (type == "ufs") return hub::lang::T("internal storage");
++  if (type.find("exfat") != std::string::npos) return hub::lang::T("an exFAT drive");
++  if (type.find("msdos") != std::string::npos || type.find("fat") != std::string::npos) return hub::lang::T("a FAT drive");
++  return hub::lang::F("a {} drive", {type});
 +}
 +
 +Drive DriveOf(const fs::path& path) {
@@ -22893,14 +22911,15 @@ index 00000000..ae4d537a
 +    REXLOG_INFO("PS5 installer: disc '{}', title update '{}'", found.disc.string(), found.update.string());
 +    if (found.disc.empty()) {
 +      Set(Phase::kProblem,
-+          "There's no disc image in the install folder. Copy your GTA IV disc image (.iso) into "
-+          "/data/homebrew/PPSA94004/install/ and press Triangle.");
++          hub::lang::T("There's no disc image in the install folder. Copy your GTA IV disc image (.iso) into "
++                       "/data/homebrew/PPSA94004/install/ and press Triangle."));
 +      return;
 +    }
 +    const auto inspected = gta4::install::InspectGameSource(found.disc);
 +    if (!inspected.supported()) {
-+      Set(Phase::kProblem, "This disc image can't be used: " + inspected.rejection_reason +
-+                               "\nIt has to be the USA disc of GTA IV, the original release.");
++      Set(Phase::kProblem,
++          hub::lang::F("This disc image can't be used: {}\nIt has to be the USA disc of GTA IV, the original release.",
++                       {inspected.rejection_reason}));
 +      return;
 +    }
 +    {
@@ -22909,8 +22928,8 @@ index 00000000..ae4d537a
 +    }
 +    if (found.update.empty()) {
 +      Set(Phase::kProblem,
-+          "Title Update 8 is missing. Copy TU_1A581VI_000000K000000.0000000000205 into the install folder, next "
-+          "to the disc image, and press Triangle.");
++          hub::lang::T("Title Update 8 is missing. Copy TU_1A581VI_000000K000000.0000000000205 into the install "
++                       "folder, next to the disc image, and press Triangle."));
 +      return;
 +    }
 +    drive = DriveOf(root);
@@ -22925,8 +22944,9 @@ index 00000000..ae4d537a
 +    // (an earlier try's files in the staging folder are removed first: they count as free)
 +    const uint64_t needed = SpaceNeeded(found.disc_bytes);
 +    if (drive.free && drive.free < needed && drive.free + FolderSize(root / ".install-staging") < needed) {
-+      Set(Phase::kProblem, "There isn't enough free space. The install needs about " + Bytes(needed) +
-+                               " and the drive has " + Bytes(drive.free) + " free.");
++      Set(Phase::kProblem,
++          hub::lang::F("There isn't enough free space. The install needs about {} and the drive has {} free.",
++                       {hub::lang::Units(Bytes(needed)), hub::lang::Units(Bytes(drive.free))}));
 +      return;
 +    }
 +    Set(Phase::kReady);
@@ -23121,10 +23141,10 @@ index 00000000..07ec1bbe
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
 new file mode 100644
-index 00000000..b642cfcd
+index 00000000..30e688ed
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
-@@ -0,0 +1,342 @@
+@@ -0,0 +1,352 @@
 +// GTA IV PS5 - the hub's installer (see hub_ui.h, hub_install.h): PLAY
 +// opens it while the game isn't installed. It shows what's in install/ and
 +// the disc image's check, then installs with a progress bar. All on the
@@ -23134,10 +23154,14 @@ index 00000000..b642cfcd
 +#include <cstdio>
 +#include <string>
 +
++#include "hub_lang.h"
 +#include "hub_style.h"
 +#include "hub_ui.h"
 +
 +namespace gta4ps5::hub {
++
++using lang::F;
++using lang::T;
 +
 +namespace {
 +
@@ -23145,16 +23169,12 @@ index 00000000..b642cfcd
 +
 +enum RowStatus { kRowChecking, kRowOk, kRowBad, kRowNone };
 +
-+std::string Minutes(float seconds) {
-+  const int m = int(std::ceil(seconds / 60.0f));
-+  if (m <= 1) return "Under a minute";
-+  return std::to_string(m) + " min";
-+}
++int Minutes(float seconds) { return int(std::ceil(seconds / 60.0f)); }
 +
 +std::string Rate(float bytes_per_second) {
 +  char buf[32];
 +  std::snprintf(buf, sizeof(buf), "%.0f MB/s", double(bytes_per_second) / double(1 << 20));
-+  return buf;
++  return lang::Units(buf);
 +}
 +
 +}  // namespace
@@ -23211,10 +23231,10 @@ index 00000000..b642cfcd
 +// (a grey heading, the name, the result at the right; a rule under it).
 +void Hub::Row3(float y, const char* label, const std::string& name, int status, const std::string& note) {
 +  const float x = kListX, w = kPanelX - 90 - kListX, h = 104;
-+  TextMid(Bold(), 21, x, y + 24, kDimGray, Upper(label), 0, 1.6f);
++  TextMid(Bold(), 21, x, y + 24, kDimGray, Upper(T(label)), 0, 1.6f);
 +  const float note_w = note.empty() ? 0 : TextWidth(Bold(), 27, note) + 60;
 +  TextMid(Bold(), 34, x, y + 64, name.empty() ? kDimGray : kText,
-+          Fit(Bold(), 34, name.empty() ? "Not found" : name, w - std::max(note_w, 90.0f)));
++          Fit(Bold(), 34, name.empty() ? T("Not found") : name, w - std::max(note_w, 90.0f)));
 +  const float cy = y + 64, icon_x = x + w - 18;
 +  switch (status) {
 +    case kRowChecking: Spinner(icon_x, cy, 13, kMenuGray); break;
@@ -23246,7 +23266,7 @@ index 00000000..b642cfcd
 +      job_ = std::make_unique<install::Job>(paths_.app, InstallRoot());
 +      job_phase_ = Phase::kChecking;
 +      shown_progress_ = 0;
-+      Toast("Install stopped. Nothing was kept.");
++      Toast(T("Install stopped. Nothing was kept."));
 +      return;
 +    }
 +  }
@@ -23255,47 +23275,49 @@ index 00000000..b642cfcd
 +
 +  // ---- the setup: what's there, and whether it can install
 +  if (st.phase == Phase::kChecking || st.phase == Phase::kReady || st.phase == Phase::kProblem) {
-+    Heading("Your game files", "One time only: the game is copied off your Xbox 360 disc image.");
++    Heading(T("Your game files"), T("One time only: the game is copied off your Xbox 360 disc image."));
 +    const bool checking = st.phase == Phase::kChecking;
 +    const bool disc_bad = st.phase == Phase::kProblem && (found.disc.empty() || st.disc.empty());
 +    float y = kListY + 130;
-+    Row3(y, found.disc.empty() || found.disc.has_extension() ? "DISC IMAGE" : "GAME FOLDER",
++    Row3(y, found.disc.empty() || found.disc.has_extension() ? "Disc Image" : "Game Folder",
 +         found.disc.filename().string(), checking ? kRowChecking : disc_bad ? kRowBad : kRowOk,
-+         checking ? "Checking" : disc_bad ? (found.disc.empty() ? "Missing" : "Can't use") : st.disc);
++         checking ? T("Checking") : disc_bad ? T(found.disc.empty() ? "Missing" : "Can't use") : st.disc);
 +    y += 110;
-+    Row3(y, "TITLE UPDATE 8", found.update.filename().string(), found.update.empty() ? kRowBad : kRowOk,
-+         found.update.empty() ? "Missing" : install::Bytes(found.update_bytes));
++    Row3(y, "Title Update 8", found.update.filename().string(), found.update.empty() ? kRowBad : kRowOk,
++         found.update.empty() ? T("Missing") : lang::Units(install::Bytes(found.update_bytes)));
 +    y += 110;
 +    // (the free space, when it can be known: a PS5 title can't ask)
 +    const bool room = !free_space_ || free_space_ >= needed;
-+    Row3(y, "SPACE", "Needs about " + install::Bytes(needed) + " free",
-+         !free_space_ ? kRowNone : room ? kRowOk : kRowBad, free_space_ ? install::Bytes(free_space_) + " free" : "");
++    Row3(y, "Space", F("Needs about {} free", {lang::Units(install::Bytes(needed))}),
++         !free_space_ ? kRowNone : room ? kRowOk : kRowBad,
++         free_space_ ? F("{} free", {lang::Units(install::Bytes(free_space_))}) : "");
 +    Panel([&](float px, float py, float pw) {
 +      py += 130;  // (under the heading's line)
 +      const ImU32 text = Rgba(196, 196, 196);
 +      if (checking) {
-+        TextMid(Bold(), 40, px, py + 20, kText, "Checking");
++        TextMid(Bold(), 40, px, py + 20, kText, T("Checking"));
 +        Wrapped(Regular(), 28, px, py + 62, pw, text,
-+                "Making sure the disc image is the USA disc of GTA IV. This takes a few seconds.", 1.38f);
++                T("Making sure the disc image is the USA disc of GTA IV. This takes a few seconds."), 1.38f);
 +      } else if (st.phase == Phase::kReady) {
-+        TextMid(Bold(), 40, px, py + 20, kAccent, "Ready");
++        TextMid(Bold(), 40, px, py + 20, kAccent, T("Ready"));
 +        py += 62;
 +        py += Wrapped(Regular(), 28, px, py, pw, text,
-+                      "Press Cross to install. Keep the app open until it's done. Your disc image isn't changed.",
++                      T("Press Cross to install. Keep the app open until it's done. Your disc image isn't changed."),
 +                      1.38f) + 26;
-+        TextMid(Bold(), 21, px, py + 12, kDimGray, "INSTALLS TO", 0, 1.6f);
++        TextMid(Bold(), 21, px, py + 12, kDimGray, Upper(T("Installs To")), 0, 1.6f);
 +        const std::string folder = drive_.folder.empty() ? "/data/homebrew/PPSA94004/UserData" : drive_.folder;
 +        py += 36;
 +        py += Wrapped(Bold(), 27, px, py, pw, kText, folder, 1.25f);
 +        if (!drive_.type.empty()) {
-+          std::string on = "On " + drive_.Name() + (drive_.device.empty() ? "" : " (" + drive_.type + ", " + drive_.device + ")");
++          std::string on =
++              F("On {}", {drive_.Name()}) + (drive_.device.empty() ? "" : " (" + drive_.type + ", " + drive_.device + ")");
 +          Wrapped(Regular(), 26, px, py + 6, pw, kMenuGray, on);
 +        }
 +      } else {
-+        TextMid(Bold(), 40, px, py + 20, kBad, "Can't install yet");
++        TextMid(Bold(), 40, px, py + 20, kBad, T("Can't install yet"));
 +        py += 62;
 +        py += Wrapped(Regular(), 28, px, py, pw, text, st.problem, 1.38f) + 26;
-+        TextMid(Bold(), 21, px, py + 12, kDimGray, "THE INSTALL FOLDER", 0, 1.6f);
++        TextMid(Bold(), 21, px, py + 12, kDimGray, Upper(T("The Install Folder")), 0, 1.6f);
 +        TextMid(Bold(), 27, px, py + 52, kText, "/data/homebrew/PPSA94004/install/");
 +      }
 +    });
@@ -23304,14 +23326,14 @@ index 00000000..b642cfcd
 +
 +  // ---- installing, done, or stopped
 +  if (st.phase == Phase::kFailed) {
-+    Heading("The install stopped", "What was copied has been removed, so nothing is left half done.");
++    Heading(T("The install stopped"), T("What was copied has been removed, so nothing is left half done."));
 +    const float x = kListX, w = 1100;
 +    float y = kListY + 140;
-+    TextMid(Bold(), 21, x, y + 12, kBad, "WHAT HAPPENED", 0, 1.6f);
++    TextMid(Bold(), 21, x, y + 12, kBad, Upper(T("What Happened")), 0, 1.6f);
 +    y += 40;
 +    y += Wrapped(Regular(), 30, x, y, w, kText, st.problem, 1.38f) + 30;
 +    Wrapped(Regular(), 27, x, y, w, kMenuGray,
-+            "Press Cross to try again. If it stops again, send the log from /data/homebrew/PPSA94004/logs.", 1.38f);
++            T("Press Cross to try again. If it stops again, send the log from /data/homebrew/PPSA94004/logs."), 1.38f);
 +    return;
 +  }
 +
@@ -23319,23 +23341,23 @@ index 00000000..b642cfcd
 +  Ease(shown_progress_, done ? 1.0f : st.progress, 3.5f);
 +  if (done && shown_progress_ > 0.98f) shown_progress_ = 1;
 +  const float p = std::clamp(shown_progress_, 0.0f, 1.0f);
-+  if (done) Heading("Installed", "GTA IV is set up on your PS5. Press Cross to play.");
-+  else Heading("Installing", "Keep the app open until it's done. The PS5 won't go to sleep.");
++  if (done) Heading(T("Installed"), T("GTA IV is set up on your PS5. Press Cross to play."));
++  else Heading(T("Installing"), T("Keep the app open until it's done. The PS5 won't go to sleep."));
 +  // the percentage, big
 +  char pct[8];
 +  std::snprintf(pct, sizeof(pct), "%d%%", done ? 100 : std::min(99, int(p * 100 + 0.0001f)));
 +  TextMid(Bold(), 120, kPageL - 4, 462, kText, pct);
 +  // the step
-+  const char* step = done ? "ALL DONE"
-+                     : st.stopping ? "STOPPING"
-+                     : st.step >= 3 ? "FINISHING"
-+                     : st.step == 2 ? "STEP 2 OF 2"
-+                                    : "STEP 1 OF 2";
-+  const char* doing = done ? "The game's files are in place"
-+                      : st.stopping ? "Removing what was copied"
-+                      : st.step >= 3 ? "Checking the game and putting it in place"
-+                      : st.step == 2 ? "Unpacking the game's archives"
-+                                     : "Copying the game from your disc image";
++  const std::string step = Upper(T(done ? "All Done"
++                                   : st.stopping ? "Stopping"
++                                   : st.step >= 3 ? "Finishing"
++                                   : st.step == 2 ? "Step 2 of 2"
++                                                  : "Step 1 of 2"));
++  const char* doing = T(done ? "The game's files are in place"
++                        : st.stopping ? "Removing what was copied"
++                        : st.step >= 3 ? "Checking the game and putting it in place"
++                        : st.step == 2 ? "Unpacking the game's archives"
++                                       : "Copying the game from your disc image");
 +  TextMid(Bold(), 21, kPageL, 566, kDimGray, step, 0, 1.6f);
 +  TextMid(Bold(), 34, kPageL, 604, kText, doing);
 +  // the bar
@@ -23353,22 +23375,29 @@ index 00000000..b642cfcd
 +    dl_->PopClipRect();
 +  }
 +  // the numbers under it
-+  std::string left = install::Bytes(st.written) + " written";
-+  if (done) left = "Took " + Minutes(st.seconds > 0 ? st.seconds : 1);
++  std::string left = F("{} written", {lang::Units(install::Bytes(st.written))});
++  if (done) {
++    const int m = Minutes(st.seconds > 0 ? st.seconds : 1);
++    left = m <= 1 ? std::string(T("Took under a minute")) : F("Took {} min", {std::to_string(m)});
++  }
 +  Text(Regular(), 27, bx, by + 34, kMenuGray, left);
 +  // (stopping, or checking at the end: nothing more being written, no speed or time left)
 +  if (!done && !st.stopping && st.step < 3) {
 +    std::string right;
 +    if (st.rate > 0) right = Rate(st.rate);
-+    if (st.eta >= 0) right += (right.empty() ? "" : "  \xC2\xB7  ") + std::string("About ") + Minutes(st.eta) + " left";
-+    else if (st.seconds > 2) right += (right.empty() ? "" : "  \xC2\xB7  ") + std::string("Working out the time left");
++    if (st.eta >= 0) {
++      const int m = Minutes(st.eta);
++      right += (right.empty() ? "" : "  \xC2\xB7  ") +
++               (m <= 1 ? std::string(T("Less than a minute left")) : F("About {} min left", {std::to_string(m)}));
++    } else if (st.seconds > 2) {
++      right += (right.empty() ? "" : "  \xC2\xB7  ") + std::string(T("Working out the time left"));
++    }
 +    Text(Regular(), 27, bx + bw, by + 34, kMenuGray, right, 1);
 +    // (what the time goes to: reading the disc image or writing the game)
 +    if (st.read_rate > 0 || st.write_rate > 0) {
-+      char io[96];
-+      std::snprintf(io, sizeof(io), "Reading at %.0f MB/s  \xC2\xB7  writing at %.0f MB/s", double(st.read_rate) / (1 << 20),
-+                    double(st.write_rate) / (1 << 20));
-+      Text(Regular(), 23, bx, by + 74, kDimGray, std::string(io) + (st.drive.empty() ? "" : " to " + st.drive));
++      Text(Regular(), 23, bx, by + 74, kDimGray,
++           F("Reading at {}  \xC2\xB7  writing at {}", {Rate(st.read_rate), Rate(st.write_rate)}) +
++               (st.drive.empty() ? "" : F(" to {}", {st.drive})));
 +    }
 +    // something to know about this install (no payload loader: installing in the app)
 +    float dy = by + 108;
@@ -23444,11 +23473,12 @@ index 00000000..b642cfcd
 +    case Phase::kInstalling:
 +      if (p & kCircle) {
 +        Play(Sound::kSelect);
-+        Confirm("Stop installing?", "What's been copied so far is removed. You can start over later.", "Stop",
++        Confirm(T("Stop installing?"), T("What's been copied so far is removed. You can start over later."),
++                T("Stop"),
 +                [this] {
 +                  if (job_) job_->Cancel();
 +                },
-+                "Keep Going", nullptr);
++                T("Keep Going"), nullptr);
 +      }
 +      break;
 +    case Phase::kDone:
@@ -23467,6 +23497,846 @@ index 00000000..b642cfcd
 +}
 +
 +}  // namespace gta4ps5::hub
+diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp
+new file mode 100644
+index 00000000..b72a797b
+--- /dev/null
++++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp
+@@ -0,0 +1,788 @@
++// GTA IV PS5 - the hub's languages (see hub_lang.h).
++#include "hub_lang.h"
++
++#include <atomic>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <ctime>
++#include <string_view>
++#include <unordered_map>
++#include <utility>
++#include <vector>
++
++#if defined(__PROSPERO__)
++extern "C" int sceSystemServiceParamGetInt(int param_id, int* value);
++#endif
++
++namespace gta4ps5::hub::lang {
++
++namespace {
++
++std::atomic<int> g_lang{kEnglish};
++
++// English, then French, German, Spanish and Italian. French puts a
++// no-break space ( ) before : ; ? ! and %.
++struct Entry {
++  const char* text[kLangCount];
++};
++
++// clang-format off
++const Entry kTable[] = {
++    // ---- the tabs and the footer
++    {{"Home", "Accueil", "Start", "Inicio", "Home"}},
++    {{"Display", "Affichage", "Anzeige", "Pantalla", "Schermo"}},
++    {{"Game", "Jeu", "Spiel", "Juego", "Gioco"}},
++    {{"Saves", "Sauvegardes", "Spielstände", "Partidas", "Salvataggi"}},
++    {{"Trophies", "Trophées", "Trophäen", "Trofeos", "Trofei"}},
++    {{"About", "À propos", "Info", "Acerca de", "Info"}},
++    {{"Debug", "Débogage", "Debug", "Depuración", "Debug"}},
++    {{"Install|tab", "Installation", "Installation", "Instalación", "Installazione"}},
++    {{"Play", "Jouer", "Spielen", "Jugar", "Gioca"}},
++    {{"Install", "Installer", "Installieren", "Instalar", "Installa"}},
++    {{"Back", "Retour", "Zurück", "Volver", "Indietro"}},
++    {{"Reset All", "Tout réinitialiser", "Alles zurücksetzen", "Restablecer todo", "Ripristina tutto"}},
++    {{"Adjust", "Modifier", "Ändern", "Cambiar", "Modifica"}},
++    {{"Move", "Naviguer", "Navigieren", "Navegar", "Naviga"}},
++    {{"Back Up", "Copier", "Sichern", "Copiar", "Backup"}},
++    {{"Import", "Importer", "Importieren", "Importar", "Importa"}},
++    {{"Restore", "Restaurer", "Wiederherstellen", "Restaurar", "Ripristina"}},
++    {{"Tab", "Onglet", "Seite", "Pestaña", "Scheda"}},
++    {{"Look Again", "Revérifier", "Neu prüfen", "Volver a buscar", "Ricontrolla"}},
++    {{"Cancel", "Annuler", "Abbrechen", "Cancelar", "Annulla"}},
++    {{"Try Again", "Réessayer", "Nochmal", "Reintentar", "Riprova"}},
++    {{"Reset", "Réinitialiser", "Zurücksetzen", "Restablecer", "Ripristina"}},
++    {{"Stop", "Arrêter", "Stoppen", "Detener", "Interrompi"}},
++    {{"Keep Going", "Continuer", "Weitermachen", "Continuar", "Continua"}},
++
++    // ---- settings: names and values
++    {{"Language", "Langue", "Sprache", "Idioma", "Lingua"}},
++    {{"Resolution", "Résolution", "Auflösung", "Resolución", "Risoluzione"}},
++    {{"Draw Distance", "Distance d'affichage", "Sichtweite", "Distancia de dibujado", "Distanza visiva"}},
++    {{"Frame Limit", "Limite d'images", "Bildlimit", "Límite de fotogramas", "Limite fotogrammi"}},
++    {{"Frame Generation", "Génération d'images", "Bildgenerierung", "Generación de fotogramas", "Generazione fotogrammi"}},
++    {{"Anti-Aliasing", "Anticrénelage", "Kantenglättung", "Antialiasing", "Antialiasing"}},
++    {{"Motion Blur", "Flou de mouvement", "Bewegungsunschärfe", "Desenfoque de movimiento", "Sfocatura di movimento"}},
++    {{"Reflections", "Reflets", "Spiegelungen", "Reflejos", "Riflessi"}},
++    {{"Shadow Distance", "Distance des ombres", "Schattenweite", "Distancia de sombras", "Distanza ombre"}},
++    {{"Small Object Shadows", "Ombres des petits objets", "Schatten kleiner Objekte", "Sombras de objetos pequeños", "Ombre oggetti piccoli"}},
++    {{"Car Reflections", "Reflets des voitures", "Fahrzeugspiegelungen", "Reflejos de coches", "Riflessi auto"}},
++    {{"Skip Intro", "Passer l'intro", "Intro überspringen", "Saltar intro", "Salta intro"}},
++    {{"DualSense Features", "Fonctions DualSense", "DualSense-Funktionen", "Funciones DualSense", "Funzioni DualSense"}},
++    {{"Menu Music", "Musique du menu", "Menümusik", "Música del menú", "Musica del menu"}},
++    {{"Light Color Fix", "Correction des lumières", "Lichtfarben-Fix", "Corrección de luces", "Correzione luci"}},
++    {{"Save Logs", "Enregistrer les journaux", "Logs speichern", "Guardar registros", "Salva log"}},
++    {{"Log Detail", "Détail des journaux", "Log-Detail", "Detalle del registro", "Dettaglio log"}},
++    {{"Renderer Threads", "Threads du rendu", "Renderer-Threads", "Hilos del renderizador", "Thread del renderer"}},
++    {{"Game Thread Capture", "Capture du thread de jeu", "Spielthread-Erfassung", "Captura del hilo del juego", "Cattura thread di gioco"}},
++    {{"Frame Time Capture", "Temps d'image", "Bildzeit-Aufzeichnung", "Tiempos de fotograma", "Tempi fotogramma"}},
++    {{"Freeze Reports", "Rapports de blocage", "Hänger-Berichte", "Informes de bloqueo", "Report blocchi"}},
++    {{"GPU Texture Unpacking", "Textures sur GPU", "Texturen auf GPU", "Texturas en GPU", "Texture su GPU"}},
++    {{"Frame Timeline", "Chronologie des images", "Bild-Zeitleiste", "Cronología de fotogramas", "Timeline fotogrammi"}},
++    {{"Auto", "Auto", "Auto", "Auto", "Auto"}},
++    {{"Off", "Désactivé", "Aus", "Desactivado", "Disattivato"}},
++    {{"On", "Activé", "An", "Activado", "Attivato"}},
++    {{"Original", "D'origine", "Original", "Original", "Originale"}},
++    {{"720p (Original)", "720p (d'origine)", "720p (Original)", "720p (original)", "720p (originale)"}},
++    {{"Shorter", "Plus courte", "Kürzer", "Más corta", "Più corta"}},
++    {{"1.5x", "1,5x", "1,5x", "1,5x", "1,5x"}},
++    {{"FSR 3 (Experimental)", "FSR 3 (expérimental)", "FSR 3 (experimentell)", "FSR 3 (experimental)", "FSR 3 (sperimentale)"}},
++    {{"Every Frame", "Chaque image", "Jedes Bild", "Cada fotograma", "Ogni fotogramma"}},
++    {{"Every Other Frame", "Une image sur deux", "Jedes zweite Bild", "Cada dos fotogramas", "Un fotogramma su due"}},
++    {{"Normal", "Normal", "Normal", "Normal", "Normale"}},
++    {{"Detailed", "Détaillé", "Ausführlich", "Detallado", "Dettagliato"}},
++    {{"Everything", "Tout", "Alles", "Todo", "Tutto"}},
++    {{"Own Cores", "Cœurs dédiés", "Eigene Kerne", "Núcleos propios", "Core dedicati"}},
++    {{"Anywhere", "Partout", "Überall", "Cualquiera", "Ovunque"}},
++    {{"Compare", "Comparer", "Vergleichen", "Comparar", "Confronta"}},
++    {{"Lean", "Allégée", "Schlank", "Ligera", "Leggera"}},
++    {{"Classic", "Classique", "Klassisch", "Clásica", "Classica"}},
++
++    // ---- settings: what each does
++    {{"The language of the game's text (menus, subtitles and missions) and of this hub. Auto follows the PS5's "
++      "language. Voices stay in English, as on the Xbox 360.",
++      "La langue des textes du jeu (menus, sous-titres et missions) et de ce hub. Auto suit la langue de la PS5. "
++      "Les voix restent en anglais, comme sur Xbox 360.",
++      "Die Sprache der Spieltexte (Menüs, Untertitel und Missionen) und dieses Hubs. Auto folgt der Sprache der "
++      "PS5. Die Stimmen bleiben auf Englisch, wie auf der Xbox 360.",
++      "El idioma de los textos del juego (menús, subtítulos y misiones) y de este hub. Auto sigue el idioma de la "
++      "PS5. Las voces siguen en inglés, como en Xbox 360.",
++      "La lingua dei testi del gioco (menu, sottotitoli e missioni) e di questo hub. Auto segue la lingua della "
++      "PS5. Le voci restano in inglese, come su Xbox 360."}},
++    {{"How sharp the game is drawn. 720p is the Xbox 360's. The PS5's graphics card has room for 4K; lower only "
++      "helps if the picture stutters.",
++      "La netteté de l'image du jeu. 720p est celle de la Xbox 360. La carte graphique de la PS5 a de la "
++      "marge pour la 4K ; plus bas n'aide que si l'image saccade.",
++      "Wie scharf das Spiel gezeichnet wird. 720p ist die Auflösung der Xbox 360. Die Grafikeinheit der PS5 "
++      "schafft 4K; weniger hilft nur, wenn das Bild ruckelt.",
++      "La nitidez con la que se dibuja el juego. 720p es la de Xbox 360. La gráfica de PS5 tiene margen para 4K; "
++      "bajarla solo ayuda si la imagen da tirones.",
++      "La nitidezza con cui viene disegnato il gioco. 720p è quella di Xbox 360. La scheda grafica di PS5 regge "
++      "il 4K; abbassarla serve solo se l'immagine scatta."}},
++    {{"How far out buildings and the city are drawn in detail. Original is the Xbox 360's. Shorter draws less of "
++      "the city and runs faster in busy streets, with more pop-in. Farther costs frame rate, and past 1.5x the "
++      "game can run short of memory.",
++      "Jusqu'où les bâtiments et la ville sont affichés en détail. D'origine correspond à la Xbox 360. Plus "
++      "courte affiche moins de ville et tourne plus vite dans les rues animées, avec plus d'apparitions soudaines. "
++      "Plus loin coûte des images par seconde, et au-delà de 1,5x le jeu peut manquer de mémoire.",
++      "Wie weit Gebäude und die Stadt detailliert gezeichnet werden. Original entspricht der Xbox 360. Kürzer "
++      "zeichnet weniger von der Stadt und läuft in belebten Straßen schneller, mit mehr Pop-in. Weiter kostet "
++      "Bildrate, und über 1,5x kann dem Spiel der Speicher ausgehen.",
++      "Hasta dónde se dibujan con detalle los edificios y la ciudad. Original es la de Xbox 360. Más corta dibuja "
++      "menos ciudad y va más fluida en calles concurridas, con más elementos que aparecen de golpe. Más lejos "
++      "cuesta fotogramas, y por encima de 1,5x el juego puede quedarse sin memoria.",
++      "Fino a che distanza edifici e città vengono disegnati nel dettaglio. Originale è quella di Xbox 360. Più "
++      "corta disegna meno città e va più veloce nelle strade affollate, con più pop-in. Più lontana costa "
++      "fotogrammi, e oltre 1,5x il gioco può restare senza memoria."}},
++    {{"The most frames a second the game draws. 30 is what the Xbox 360 aimed for and holds steady everywhere; 60 "
++      "runs at 50 to 60 in the busiest streets.",
++      "Le nombre maximal d'images par seconde. 30 est l'objectif de la Xbox 360 et reste stable "
++      "partout ; 60 tourne entre 50 et 60 dans les rues les plus animées.",
++      "Die meisten Bilder pro Sekunde, die das Spiel zeichnet. 30 war das Ziel der Xbox 360 und bleibt überall "
++      "stabil; 60 läuft in den belebtesten Straßen mit 50 bis 60.",
++      "El máximo de fotogramas por segundo. 30 es lo que buscaba Xbox 360 y se mantiene estable en todas partes; "
++      "60 va entre 50 y 60 en las calles más concurridas.",
++      "Il massimo di fotogrammi al secondo. 30 è l'obiettivo di Xbox 360 e resta stabile ovunque; 60 gira tra "
++      "50 e 60 nelle strade più affollate."}},
++    {{"Experimental, not ready yet: it can drop frames and make the game feel worse. AMD FSR 3 adds a frame "
++      "between each two the game draws, with a little more input lag. Also turns on FSR 3 anti-aliasing.",
++      "Expérimental, pas encore au point : peut perdre des images et rendre le jeu moins agréable. AMD FSR 3 "
++      "ajoute une image entre chaque paire d'images du jeu, avec un peu plus de latence. Active aussi "
++      "l'anticrénelage FSR 3.",
++      "Experimentell, noch nicht fertig: Es kann Bilder auslassen und das Spiel schlechter wirken lassen. AMD "
++      "FSR 3 fügt zwischen je zwei gezeichneten Bildern eines ein, mit etwas mehr Eingabeverzögerung. Schaltet "
++      "auch FSR-3-Kantenglättung ein.",
++      "Experimental, aún no está listo: puede perder fotogramas y empeorar la sensación de juego. AMD FSR 3 añade "
++      "un fotograma entre cada dos que dibuja el juego, con algo más de retraso de entrada. También activa el "
++      "antialiasing FSR 3.",
++      "Sperimentale, non ancora pronto: può perdere fotogrammi e peggiorare la sensazione di gioco. AMD FSR 3 "
++      "aggiunge un fotogramma tra ogni coppia disegnata dal gioco, con un po' più di input lag. Attiva anche "
++      "l'antialiasing FSR 3."}},
++    {{"Smooths jagged edges. FXAA is the lightest; SMAA is sharper and costs a little more.",
++      "Adoucit les bords crénelés. FXAA est le plus léger ; SMAA est plus net et coûte un peu plus.",
++      "Glättet gezackte Kanten. FXAA ist am leichtesten; SMAA ist schärfer und kostet etwas mehr.",
++      "Suaviza los bordes dentados. FXAA es el más ligero; SMAA es más nítido y cuesta un poco más.",
++      "Ammorbidisce i bordi seghettati. FXAA è il più leggero; SMAA è più nitido e costa un po' di più."}},
++    {{"The blur when driving fast or turning quickly.",
++      "Le flou quand on roule vite ou qu'on tourne rapidement.",
++      "Die Unschärfe bei schneller Fahrt oder schnellen Drehungen.",
++      "El desenfoque al conducir rápido o girar de golpe.",
++      "La sfocatura quando guidi veloce o giri rapidamente."}},
++    {{"How sharp water, mirror and car reflections are. Original is the Xbox 360's; 1080p is cleaner.",
++      "La netteté des reflets de l'eau, des miroirs et des voitures. D'origine correspond à la Xbox 360 ; "
++      "1080p est plus propre.",
++      "Wie scharf Spiegelungen auf Wasser, in Spiegeln und auf Autos sind. Original entspricht der Xbox 360; "
++      "1080p ist sauberer.",
++      "La nitidez de los reflejos del agua, los espejos y los coches. Original es la de Xbox 360; 1080p se ve más "
++      "limpio.",
++      "La nitidezza dei riflessi su acqua, specchi e auto. Originale è quella di Xbox 360; 1080p è più pulito."}},
++    {{"How far out shadows are drawn. Original is the Xbox 360's; 2x reaches further but costs frame rate in the "
++      "city.",
++      "Jusqu'où les ombres sont affichées. D'origine correspond à la Xbox 360 ; 2x va plus loin mais "
++      "coûte des images par seconde en ville.",
++      "Wie weit Schatten gezeichnet werden. Original entspricht der Xbox 360; 2x reicht weiter, kostet in der "
++      "Stadt aber Bildrate.",
++      "Hasta dónde se dibujan las sombras. Original es la de Xbox 360; 2x llega más lejos pero cuesta fotogramas "
++      "en la ciudad.",
++      "Fino a che distanza vengono disegnate le ombre. Originale è quella di Xbox 360; 2x arriva più lontano ma "
++      "costa fotogrammi in città."}},
++    {{"Shadows of small things like signs, bins and debris, about a fifth of what is drawn in busy streets. Off "
++      "skips them for a higher frame rate.",
++      "Les ombres des petites choses comme les panneaux, les poubelles et les débris, environ un cinquième de ce "
++      "qui est affiché dans les rues animées. Désactivé les ignore pour plus d'images par seconde.",
++      "Schatten kleiner Dinge wie Schilder, Mülltonnen und Trümmer, etwa ein Fünftel dessen, was in belebten "
++      "Straßen gezeichnet wird. Aus lässt sie weg, für eine höhere Bildrate.",
++      "Las sombras de cosas pequeñas como señales, papeleras y escombros, cerca de una quinta parte de lo que se "
++      "dibuja en calles concurridas. Desactivado las omite para ganar fotogramas.",
++      "Le ombre di piccoli oggetti come cartelli, bidoni e detriti, circa un quinto di ciò che viene disegnato "
++      "nelle strade affollate. Disattivato le salta per più fotogrammi al secondo."}},
++    {{"How often the reflections on cars and glass are redrawn. Every other frame looks the same in motion and "
++      "leaves more time for the rest of the frame.",
++      "La fréquence à laquelle les reflets sur les voitures et les vitres sont redessinés. Une image sur deux "
++      "paraît identique en mouvement et laisse plus de temps au reste de l'image.",
++      "Wie oft die Spiegelungen auf Autos und Glas neu gezeichnet werden. Jedes zweite Bild sieht in Bewegung "
++      "gleich aus und lässt dem Rest des Bildes mehr Zeit.",
++      "Cada cuánto se redibujan los reflejos en coches y cristales. Cada dos fotogramas se ve igual en movimiento "
++      "y deja más tiempo para el resto del fotograma.",
++      "Ogni quanto vengono ridisegnati i riflessi su auto e vetri. Un fotogramma su due sembra uguale in "
++      "movimento e lascia più tempo al resto del fotogramma."}},
++    {{"Goes straight to the game's start screen, past the logos and the legal screens.",
++      "Va directement à l'écran titre du jeu, sans les logos ni les mentions légales.",
++      "Geht direkt zum Startbildschirm des Spiels, vorbei an den Logos und Rechtshinweisen.",
++      "Va directo a la pantalla de inicio del juego, sin los logotipos ni los avisos legales.",
++      "Va direttamente alla schermata iniziale del gioco, saltando loghi e note legali."}},
++    {{"The light bar, haptics and the other things the PC port does with a PlayStation controller.",
++      "La barre lumineuse, les vibrations haptiques et les autres fonctions que la version PC utilise avec une "
++      "manette PlayStation.",
++      "Die Lichtleiste, Haptik und die anderen Dinge, die die PC-Version mit einem PlayStation-Controller macht.",
++      "La barra de luz, la respuesta háptica y lo demás que hace la versión de PC con un mando de PlayStation.",
++      "La barra luminosa, il feedback aptico e le altre funzioni che la versione PC usa con un controller "
++      "PlayStation."}},
++    {{"How loud the music is here in the hub. It changes right away.",
++      "Le volume de la musique ici, dans le hub. Le changement est immédiat.",
++      "Wie laut die Musik hier im Hub ist. Ändert sich sofort.",
++      "El volumen de la música aquí en el hub. Cambia al momento.",
++      "Il volume della musica qui nell'hub. Cambia subito."}},
++    {{"Keeps yellow and orange lights from coming out blue. Turn it off only to compare.",
++      "Empêche les lumières jaunes et orange de devenir bleues. À désactiver seulement pour comparer.",
++      "Verhindert, dass gelbe und orange Lichter blau erscheinen. Nur zum Vergleichen ausschalten.",
++      "Evita que las luces amarillas y naranjas salgan azules. Desactívalo solo para comparar.",
++      "Evita che le luci gialle e arancioni diventino blu. Disattivalo solo per confrontare."}},
++    {{"Writes what the game does to /app0/logs while it runs. Send these with a bug report. Takes effect the next "
++      "time the app starts.",
++      "Écrit ce que fait le jeu dans /app0/logs pendant qu'il tourne. Joignez ces fichiers à un rapport de bug. "
++      "Prend effet au prochain lancement de l'application.",
++      "Schreibt mit, was das Spiel tut, nach /app0/logs. Schick diese Dateien mit einem Fehlerbericht mit. Wirkt "
++      "ab dem nächsten Start der App.",
++      "Escribe lo que hace el juego en /app0/logs mientras funciona. Envíalos con cada informe de error. Se "
++      "aplica la próxima vez que se abra la aplicación.",
++      "Scrive ciò che fa il gioco in /app0/logs mentre è in esecuzione. Inviali con una segnalazione di bug. Ha "
++      "effetto al prossimo avvio dell'app."}},
++    {{"How much goes into the log. Normal is enough for most reports; Detailed and Everything help with crashes "
++      "and freezes but make big files and can slow the game.",
++      "Quantité d'informations dans le journal. Normal suffit pour la plupart des rapports ; Détaillé et Tout "
++      "aident pour les plantages et les blocages mais créent de gros fichiers et peuvent ralentir le jeu.",
++      "Wie viel ins Log kommt. Normal reicht für die meisten Berichte; Ausführlich und Alles helfen bei Abstürzen "
++      "und Hängern, erzeugen aber große Dateien und können das Spiel bremsen.",
++      "Cuánto se escribe en el registro. Normal basta para la mayoría de informes; Detallado y Todo ayudan con "
++      "cuelgues y bloqueos, pero crean archivos grandes y pueden ralentizar el juego.",
++      "Quanto finisce nel log. Normale basta per la maggior parte delle segnalazioni; Dettagliato e Tutto "
++      "aiutano con crash e blocchi ma creano file grandi e possono rallentare il gioco."}},
++    {{"Own Cores gives the game's render thread and the two renderer threads a CPU core each and moves everything "
++      "else off them (about 10% faster than Anywhere). Compare switches between two versions of Own Cores every 10 "
++      "seconds and notes each in the log.",
++      "Cœurs dédiés donne au thread de rendu du jeu et aux deux threads du moteur de rendu un cœur de processeur "
++      "chacun et en écarte tout le reste (environ 10 % plus rapide que Partout). Comparer alterne entre deux "
++      "versions de Cœurs dédiés toutes les 10 secondes et note chacune dans le journal.",
++      "Eigene Kerne gibt dem Render-Thread des Spiels und den beiden Renderer-Threads je einen CPU-Kern und hält "
++      "alles andere davon fern (etwa 10 % schneller als Überall). Vergleichen wechselt alle 10 Sekunden zwischen "
++      "zwei Varianten von Eigene Kerne und vermerkt jede im Log.",
++      "Núcleos propios da al hilo de renderizado del juego y a los dos hilos del renderizador un núcleo de CPU a "
++      "cada uno y aparta todo lo demás (alrededor de un 10 % más rápido que Cualquiera). Comparar alterna cada "
++      "10 segundos entre dos versiones de Núcleos propios y anota cada una en el registro.",
++      "Core dedicati dà al thread di rendering del gioco e ai due thread del renderer un core della CPU ciascuno e "
++      "sposta tutto il resto altrove (circa il 10% più veloce di Ovunque). Confronta alterna ogni 10 secondi due "
++      "versioni di Core dedicati e annota ciascuna nel log."}},
++    {{"How the game's render thread hands each draw to the renderer. Lean holds every buffer and texture once for "
++      "two frames instead of once per draw and fetches what a capture reads ahead of time. Same picture either way. "
++      "Compare stays on Lean and switches its fetching ahead off and on every 10 seconds, noting each in the log.",
++      "Comment le thread de rendu du jeu transmet chaque dessin au moteur de rendu. Allégée retient chaque tampon "
++      "et texture une fois pour deux images au lieu d'une fois par dessin, et charge à l'avance ce que la capture "
++      "va lire. Même image dans les deux cas. Comparer reste sur Allégée et active ou coupe ce chargement anticipé "
++      "toutes les 10 secondes, en le notant dans le journal.",
++      "Wie der Render-Thread des Spiels jeden Zeichenaufruf an den Renderer übergibt. Schlank hält jeden Puffer "
++      "und jede Textur einmal für zwei Bilder statt einmal pro Zeichenaufruf und lädt vorab, was die Erfassung "
++      "liest. Das Bild ist in beiden Fällen gleich. Vergleichen bleibt bei Schlank und schaltet das Vorabladen "
++      "alle 10 Sekunden aus und ein, jeweils mit Vermerk im Log.",
++      "Cómo pasa el hilo de renderizado del juego cada dibujo al renderizador. Ligera retiene cada búfer y textura "
++      "una vez cada dos fotogramas en lugar de una vez por dibujo, y adelanta la lectura de lo que va a capturar. "
++      "La imagen es la misma en ambos casos. Comparar se queda en Ligera y activa y desactiva esa lectura "
++      "anticipada cada 10 segundos, anotándolo en el registro.",
++      "Come il thread di rendering del gioco passa ogni disegno al renderer. Leggera trattiene ogni buffer e "
++      "texture una volta ogni due fotogrammi invece che a ogni disegno e legge in anticipo ciò che la cattura "
++      "userà. L'immagine è la stessa in entrambi i casi. Confronta resta su Leggera e attiva e disattiva la "
++      "lettura anticipata ogni 10 secondi, annotandolo nel log."}},
++    {{"Records every frame's time to a CSV file in /app0/logs, for checking stutter and slowdowns.",
++      "Enregistre le temps de chaque image dans un fichier CSV dans /app0/logs, pour étudier les saccades et les "
++      "ralentissements.",
++      "Zeichnet die Zeit jedes Bildes in einer CSV-Datei in /app0/logs auf, um Ruckler und Einbrüche zu prüfen.",
++      "Guarda el tiempo de cada fotograma en un archivo CSV en /app0/logs, para revisar tirones y bajones.",
++      "Registra il tempo di ogni fotogramma in un file CSV in /app0/logs, per controllare scatti e "
++      "rallentamenti."}},
++    {{"When the game stops drawing for a few seconds, writes where every thread is to the log.",
++      "Quand le jeu cesse d'afficher pendant quelques secondes, écrit dans le journal où en est chaque thread.",
++      "Wenn das Spiel einige Sekunden lang nichts mehr zeichnet, schreibt es ins Log, wo jeder Thread steht.",
++      "Si el juego deja de dibujar durante unos segundos, escribe en el registro dónde está cada hilo.",
++      "Quando il gioco smette di disegnare per qualche secondo, scrive nel log dove si trova ogni thread."}},
++    {{"Unpacks the game's textures on the graphics card. Off does it on the CPU the old way: slower, but a test "
++      "for broken or missing textures.",
++      "Décompresse les textures du jeu sur la carte graphique. Désactivé le fait sur le processeur comme "
++      "avant : plus lent, mais utile pour tester des textures cassées ou manquantes.",
++      "Entpackt die Texturen des Spiels auf der Grafikeinheit. Aus macht es wie früher auf der CPU: langsamer, "
++      "aber ein Test bei kaputten oder fehlenden Texturen.",
++      "Desempaqueta las texturas del juego en la gráfica. Desactivado lo hace en la CPU como antes: más lento, "
++      "pero sirve para probar texturas rotas o que faltan.",
++      "Decomprime le texture del gioco sulla scheda grafica. Disattivato lo fa sulla CPU come prima: più lento, "
++      "ma utile per verificare texture rotte o mancanti."}},
++    {{"Logs when each stage of every frame finished, to find what holds the frame rate back. The log grows "
++      "quickly with it on.",
++      "Note quand chaque étape de chaque image se termine, pour trouver ce qui limite les images par seconde. Le "
++      "journal grossit vite quand c'est activé.",
++      "Protokolliert, wann jede Stufe jedes Bildes fertig war, um zu finden, was die Bildrate bremst. Das Log "
++      "wächst damit schnell.",
++      "Anota cuándo termina cada etapa de cada fotograma, para encontrar qué frena los fotogramas. El registro "
++      "crece rápido si está activado.",
++      "Annota quando finisce ogni fase di ogni fotogramma, per capire cosa frena il frame rate. Con questa "
++      "opzione il log cresce in fretta."}},
++
++    // ---- Reset All
++    {{"Reset all settings?", "Tout réinitialiser ?", "Alle Einstellungen zurücksetzen?",
++      "¿Restablecer todos los ajustes?", "Ripristinare tutte le impostazioni?"}},
++    {{"Everything on the Display, Game and Debug pages goes back to the recommended settings. The language stays "
++      "as it is.",
++      "Tout ce qui se trouve dans Affichage, Jeu et Débogage revient aux réglages recommandés. La langue ne change "
++      "pas.",
++      "Alles auf den Seiten Anzeige, Spiel und Debug wird auf die empfohlenen Einstellungen zurückgesetzt. Die "
++      "Sprache bleibt, wie sie ist.",
++      "Todo lo de Pantalla, Juego y Depuración vuelve a los ajustes recomendados. El idioma no cambia.",
++      "Tutto nelle schede Schermo, Gioco e Debug torna alle impostazioni consigliate. La lingua resta com'è."}},
++    {{"Settings reset", "Réglages réinitialisés", "Einstellungen zurückgesetzt", "Ajustes restablecidos",
++      "Impostazioni ripristinate"}},
++
++    // ---- Home
++    {{"Not installed yet", "Pas encore installé", "Noch nicht installiert", "Aún no instalado",
++      "Non ancora installato"}},
++    {{"Press X to set it up from your disc image and title update.",
++      "Appuyez sur X pour l'installer depuis votre image disque et la mise à jour du titre.",
++      "Drücke X, um es aus deinem Disc-Image und dem Title Update einzurichten.",
++      "Pulsa X para instalarlo desde tu imagen de disco y la actualización del título.",
++      "Premi X per installarlo dalla tua immagine disco e dall'aggiornamento del titolo."}},
++
++    // ---- Saves
++    {{"Restore a backup", "Restaurer une copie", "Backup wiederherstellen", "Restaurar una copia",
++      "Ripristina un backup"}},
++    {{"Your saves  {}", "Vos sauvegardes  {}", "Deine Spielstände  {}", "Tus partidas  {}",
++      "I tuoi salvataggi  {}"}},
++    {{"Back Up Now", "Faire une copie maintenant", "Jetzt sichern", "Hacer copia ahora", "Esegui backup ora"}},
++    {{"Import Xbox 360 Saves", "Importer des sauvegardes Xbox 360", "Xbox-360-Spielstände importieren",
++      "Importar partidas de Xbox 360", "Importa salvataggi Xbox 360"}},
++    {{"{} waiting", "{} en attente", "{} bereit", "{} pendientes", "{} in attesa"}},
++    {{"None waiting", "Aucune en attente", "Keine bereit", "Ninguna pendiente", "Nessuno in attesa"}},
++    {{"Copies all of your GTA IV saves into SaveBackups, named by the date and time.",
++      "Copie toutes vos sauvegardes de GTA IV dans SaveBackups, avec la date et l'heure pour nom.",
++      "Kopiert alle deine GTA-IV-Spielstände nach SaveBackups, benannt nach Datum und Uhrzeit.",
++      "Copia todas tus partidas de GTA IV en SaveBackups, con la fecha y la hora como nombre.",
++      "Copia tutti i tuoi salvataggi di GTA IV in SaveBackups, con data e ora come nome."}},
++    {{"Bring your Xbox 360 progress over. Copy the save files from your 360 (on its drive they're in "
++      "Content/<your profile>/545407F2/00000001) into this folder on the PS5:",
++      "Récupérez votre progression Xbox 360. Copiez les fichiers de sauvegarde de votre 360 (sur son disque, "
++      "ils sont dans Content/<votre profil>/545407F2/00000001) dans ce dossier de la PS5 :",
++      "Hol deinen Xbox-360-Fortschritt rüber. Kopiere die Spielstand-Dateien deiner 360 (auf ihrer Festplatte "
++      "unter Content/<dein Profil>/545407F2/00000001) in diesen Ordner auf der PS5:",
++      "Trae tu progreso de Xbox 360. Copia los archivos de guardado de tu 360 (en su disco están en "
++      "Content/<tu perfil>/545407F2/00000001) en esta carpeta de la PS5:",
++      "Porta qui i tuoi progressi di Xbox 360. Copia i file di salvataggio della tua 360 (sul suo disco sono in "
++      "Content/<il tuo profilo>/545407F2/00000001) in questa cartella della PS5:"}},
++    {{"Press Cross to import them. Your saves are backed up first, and imported files move to import/done.",
++      "Appuyez sur X pour les importer. Vos sauvegardes sont d'abord copiées, et les fichiers importés vont dans "
++      "import/done.",
++      "Drücke X, um sie zu importieren. Deine Spielstände werden vorher gesichert, und importierte Dateien kommen "
++      "nach import/done.",
++      "Pulsa X para importarlas. Antes se hace una copia de tus partidas, y los archivos importados pasan a "
++      "import/done.",
++      "Premi X per importarli. Prima viene fatto un backup dei tuoi salvataggi, e i file importati vengono "
++      "spostati in import/done."}},
++    {{"Files", "Fichiers", "Dateien", "Archivos", "File"}},
++    {{"Size", "Taille", "Größe", "Tamaño", "Dimensione"}},
++    {{"Type", "Type", "Typ", "Tipo", "Tipo"}},
++    {{"Changed", "Modifié", "Geändert", "Modificado", "Modificato"}},
++    {{"Restoring puts these saves back. The saves you have now are backed up first.",
++      "La restauration remet ces sauvegardes en place. Celles que vous avez maintenant sont copiées d'abord.",
++      "Beim Wiederherstellen kommen diese Spielstände zurück. Deine aktuellen Spielstände werden vorher gesichert.",
++      "Al restaurar vuelven estas partidas. Antes se hace una copia de las que tienes ahora.",
++      "Il ripristino rimette questi salvataggi. Prima viene fatto un backup di quelli che hai ora."}},
++    {{"Saved game", "Partie sauvegardée", "Spielstand", "Partida guardada", "Partita salvata"}},
++    {{"Game data", "Données de jeu", "Spieldaten", "Datos del juego", "Dati di gioco"}},
++    {{"Extra Data", "Données supplémentaires", "Zusatzdaten", "Datos extra", "Dati extra"}},
++    {{"Saves backed up", "Sauvegardes copiées", "Spielstände gesichert", "Copia hecha", "Backup completato"}},
++    {{"The backup couldn't be made", "La copie n'a pas pu être faite", "Das Backup konnte nicht erstellt werden",
++      "No se pudo hacer la copia", "Impossibile creare il backup"}},
++    {{"Backup restored", "Copie restaurée", "Backup wiederhergestellt", "Copia restaurada", "Backup ripristinato"}},
++    {{"Restoring didn't finish: your saves are in the newest backup",
++      "La restauration n'a pas abouti : vos sauvegardes sont dans la copie la plus récente",
++      "Wiederherstellen nicht fertig: Deine Spielstände sind im neuesten Backup",
++      "La restauración no terminó: tus partidas están en la copia más reciente",
++      "Ripristino non completato: i tuoi salvataggi sono nel backup più recente"}},
++    {{"Nothing to import", "Rien à importer", "Nichts zu importieren", "Nada que importar", "Niente da importare"}},
++    {{"Copy your Xbox 360 save files into /data/homebrew/PPSA94004/import/ on the PS5 first, then come back here.",
++      "Copiez d'abord vos fichiers de sauvegarde Xbox 360 dans /data/homebrew/PPSA94004/import/ sur la PS5, "
++      "puis revenez ici.",
++      "Kopiere zuerst deine Xbox-360-Spielstände nach /data/homebrew/PPSA94004/import/ auf der PS5 und komm dann "
++      "hierher zurück.",
++      "Primero copia tus archivos de guardado de Xbox 360 en /data/homebrew/PPSA94004/import/ en la PS5 y luego "
++      "vuelve aquí.",
++      "Prima copia i file di salvataggio Xbox 360 in /data/homebrew/PPSA94004/import/ sulla PS5, poi torna qui."}},
++    {{"Xbox 360 saves", "Sauvegardes Xbox 360", "Xbox-360-Spielstände", "Partidas de Xbox 360",
++      "Salvataggi Xbox 360"}},
++    {{"Restore this backup?", "Restaurer cette copie ?", "Dieses Backup wiederherstellen?",
++      "¿Restaurar esta copia?", "Ripristinare questo backup?"}},
++    {{"Your saves are replaced by the ones from {}. The saves you have now are backed up first, so nothing is "
++      "lost.",
++      "Vos sauvegardes sont remplacées par celles de {}. Celles que vous avez maintenant sont copiées d'abord, "
++      "rien n'est perdu.",
++      "Deine Spielstände werden durch die aus {} ersetzt. Deine aktuellen werden vorher gesichert, es geht also "
++      "nichts verloren.",
++      "Tus partidas se sustituyen por las de {}. Antes se hace una copia de las que tienes ahora, así que no se "
++      "pierde nada.",
++      "I tuoi salvataggi vengono sostituiti da quelli di {}. Prima viene fatto un backup di quelli attuali, quindi "
++      "non si perde nulla."}},
++    {{"{} save imported.", "{} sauvegarde importée.", "{} Spielstand importiert.", "{} partida importada.",
++      "{} salvataggio importato."}},
++    {{"{} saves imported.", "{} sauvegardes importées.", "{} Spielstände importiert.", "{} partidas importadas.",
++      "{} salvataggi importati."}},
++    {{"Load them from the game's menu.", "Chargez-les depuis le menu du jeu.", "Lade sie über das Menü des Spiels.",
++      "Cárgalas desde el menú del juego.", "Caricali dal menu del gioco."}},
++    {{"No saves were imported.", "Aucune sauvegarde n'a été importée.", "Es wurden keine Spielstände importiert.",
++      "No se importó ninguna partida.", "Nessun salvataggio importato."}},
++    {{"...the log lists the rest.", "...le journal indique le reste.", "...der Rest steht im Log.",
++      "...el resto aparece en el registro.", "...il resto è nel log."}},
++
++    // ---- Trophies
++    {{"Earned", "Obtenus", "Erhalten", "Obtenidos", "Ottenuti"}},
++    {{"Earned|date", "Obtenu le", "Erhalten am", "Obtenido el", "Ottenuto il"}},
++    {{"Not earned yet", "Pas encore obtenus", "Noch nicht erhalten", "Aún no obtenidos", "Non ancora ottenuti"}},
++    {{"Not earned yet|status", "Pas encore obtenu", "Noch nicht erhalten", "Aún no obtenido",
++      "Non ancora ottenuto"}},
++    {{"{} of {} earned", "{} sur {} obtenus", "{} von {} erhalten", "{} de {} obtenidos", "{} su {} ottenuti"}},
++    {{"Start the game once", "Lancez le jeu une fois", "Starte das Spiel einmal", "Inicia el juego una vez",
++      "Avvia il gioco una volta"}},
++    {{"The trophy list comes from the game itself: start it once, and the next time you open the hub your "
++      "trophies are here, with the ones you've earned.",
++      "La liste des trophées vient du jeu lui-même : lancez-le une fois, et la prochaine fois que vous "
++      "ouvrirez le hub, vos trophées seront ici, avec ceux que vous avez obtenus.",
++      "Die Trophäenliste kommt aus dem Spiel selbst: Starte es einmal, und wenn du den Hub das nächste Mal "
++      "öffnest, sind deine Trophäen hier, samt denen, die du erhalten hast.",
++      "La lista de trofeos sale del propio juego: inícialo una vez y, la próxima vez que abras el hub, tus "
++      "trofeos estarán aquí, con los que hayas obtenido.",
++      "L'elenco dei trofei viene dal gioco stesso: avvialo una volta e, la prossima volta che apri l'hub, i tuoi "
++      "trofei saranno qui, con quelli che hai ottenuto."}},
++    {{"Grand Theft Auto IV Platinum", "Platine Grand Theft Auto IV", "Grand Theft Auto IV Platin",
++      "Platino de Grand Theft Auto IV", "Platino di Grand Theft Auto IV"}},
++    {{"Hidden trophy", "Trophée caché", "Versteckte Trophäe", "Trofeo oculto", "Trofeo nascosto"}},
++    {{"Earn every other GTA IV trophy ({}).", "Obtenez tous les autres trophées de GTA IV ({}).",
++      "Erhalte alle anderen GTA-IV-Trophäen ({}).", "Consigue todos los demás trofeos de GTA IV ({}).",
++      "Ottieni tutti gli altri trofei di GTA IV ({})."}},
++    {{"Keep playing to find out what this one is.", "Continuez à jouer pour découvrir ce trophée.",
++      "Spiel weiter, um herauszufinden, was es ist.", "Sigue jugando para descubrir cuál es.",
++      "Continua a giocare per scoprire di cosa si tratta."}},
++    {{"Bronze Trophy", "Trophée de bronze", "Bronze-Trophäe", "Trofeo de bronce", "Trofeo di bronzo"}},
++    {{"Silver Trophy", "Trophée d'argent", "Silber-Trophäe", "Trofeo de plata", "Trofeo d'argento"}},
++    {{"Gold Trophy", "Trophée d'or", "Gold-Trophäe", "Trofeo de oro", "Trofeo d'oro"}},
++    {{"Platinum Trophy", "Trophée de platine", "Platin-Trophäe", "Trofeo de platino", "Trofeo di platino"}},
++    {{"Status", "Statut", "Status", "Estado", "Stato"}},
++    {{"{} to go", "Encore {}", "Noch {}", "Faltan {}", "Ne mancano {}"}},
++
++    // ---- About
++    {{"Created Liberty Recompiled, the GTA IV recompilation this is built on, with its contributors.",
++      "A créé Liberty Recompiled, la recompilation de GTA IV sur laquelle tout ceci repose, avec ses "
++      "contributeurs.",
++      "Hat Liberty Recompiled geschaffen, die GTA-IV-Rekompilierung, auf der das hier aufbaut, zusammen mit ihren "
++      "Mitwirkenden.",
++      "Creó Liberty Recompiled, la recompilación de GTA IV en la que se basa esto, junto a sus colaboradores.",
++      "Ha creato Liberty Recompiled, la ricompilazione di GTA IV su cui si basa tutto questo, insieme ai suoi "
++      "collaboratori."}},
++    {{"Brought it to PlayStation 5: the PS5 port and this hub.",
++      "L'a amené sur PlayStation 5 : le portage PS5 et ce hub.",
++      "Hat es auf die PlayStation 5 gebracht: die PS5-Portierung und diesen Hub.",
++      "Lo trajo a PlayStation 5: la versión de PS5 y este hub.",
++      "L'ha portato su PlayStation 5: il port per PS5 e questo hub."}},
++    {{"LibertyRecompAndroid: the fixes for running it on handheld hardware.",
++      "LibertyRecompAndroid : les correctifs pour le faire tourner sur des appareils portables.",
++      "LibertyRecompAndroid: die Fixes, damit es auf Handheld-Hardware läuft.",
++      "LibertyRecompAndroid: los arreglos para que funcione en dispositivos portátiles.",
++      "LibertyRecompAndroid: le correzioni per farlo girare su dispositivi portatili."}},
++    {{"The static recompiler and runtime that turn the Xbox 360 game into a native program.",
++      "Le recompilateur statique et l'environnement d'exécution qui transforment le jeu Xbox 360 en programme "
++      "natif.",
++      "Der statische Recompiler und die Laufzeitumgebung, die das Xbox-360-Spiel in ein natives Programm "
++      "verwandeln.",
++      "El recompilador estático y el entorno de ejecución que convierten el juego de Xbox 360 en un programa "
++      "nativo.",
++      "Il ricompilatore statico e il runtime che trasformano il gioco Xbox 360 in un programma nativo."}},
++    {{"Built With", "Réalisé avec", "Erstellt mit", "Hecho con", "Realizzato con"}},
++    {{"stb_image, stb_vorbis, dr_mp3 and dr_flac", "stb_image, stb_vorbis, dr_mp3 et dr_flac",
++      "stb_image, stb_vorbis, dr_mp3 und dr_flac", "stb_image, stb_vorbis, dr_mp3 y dr_flac",
++      "stb_image, stb_vorbis, dr_mp3 e dr_flac"}},
++    {{"Oswald and Inter (SIL Open Font License)", "Oswald et Inter (SIL Open Font License)",
++      "Oswald und Inter (SIL Open Font License)", "Oswald e Inter (SIL Open Font License)",
++      "Oswald e Inter (SIL Open Font License)"}},
++    {{"Please Note", "À noter", "Bitte beachten", "Ten en cuenta", "Nota bene"}},
++    {{"An early beta. An unofficial fan project, not affiliated with or endorsed by Rockstar Games, Take-Two "
++      "Interactive, Microsoft or Sony. Grand Theft Auto and all related names belong to their owners. No game "
++      "files are included: you need your own copy of GTA IV for Xbox 360.",
++      "Une bêta précoce. Un projet de fan non officiel, sans lien avec Rockstar Games, Take-Two Interactive, "
++      "Microsoft ou Sony, ni approuvé par eux. Grand Theft Auto et tous les noms associés appartiennent à leurs "
++      "propriétaires. Aucun fichier du jeu n'est inclus : il vous faut votre propre copie de GTA IV pour "
++      "Xbox 360.",
++      "Eine frühe Beta. Ein inoffizielles Fanprojekt, weder mit Rockstar Games, Take-Two Interactive, Microsoft "
++      "oder Sony verbunden noch von ihnen unterstützt. Grand Theft Auto und alle zugehörigen Namen gehören ihren "
++      "Inhabern. Es sind keine Spieldateien enthalten: Du brauchst deine eigene Kopie von GTA IV für die "
++      "Xbox 360.",
++      "Una beta temprana. Un proyecto de fans no oficial, sin relación con Rockstar Games, Take-Two Interactive, "
++      "Microsoft ni Sony, ni respaldado por ellos. Grand Theft Auto y todos los nombres relacionados pertenecen a "
++      "sus dueños. No incluye archivos del juego: necesitas tu propia copia de GTA IV para Xbox 360.",
++      "Una beta iniziale. Un progetto amatoriale non ufficiale, non affiliato né approvato da Rockstar Games, "
++      "Take-Two Interactive, Microsoft o Sony. Grand Theft Auto e tutti i nomi correlati appartengono ai "
++      "rispettivi proprietari. Non è incluso alcun file del gioco: ti serve una tua copia di GTA IV per "
++      "Xbox 360."}},
++    {{"PS5 beta {}", "Bêta PS5 {}", "PS5-Beta {}", "Beta de PS5 {}", "Beta PS5 {}"}},
++
++    // ---- the installer
++    {{"Your game files", "Vos fichiers de jeu", "Deine Spieldateien", "Tus archivos del juego",
++      "I tuoi file di gioco"}},
++    {{"One time only: the game is copied off your Xbox 360 disc image.",
++      "Une seule fois : le jeu est copié depuis votre image disque Xbox 360.",
++      "Nur einmal: Das Spiel wird aus deinem Xbox-360-Disc-Image kopiert.",
++      "Solo una vez: el juego se copia desde tu imagen de disco de Xbox 360.",
++      "Una volta sola: il gioco viene copiato dalla tua immagine disco Xbox 360."}},
++    {{"Disc Image", "Image disque", "Disc-Image", "Imagen de disco", "Immagine disco"}},
++    {{"Game Folder", "Dossier du jeu", "Spielordner", "Carpeta del juego", "Cartella del gioco"}},
++    {{"Checking", "Vérification", "Prüfung läuft", "Comprobando", "Verifica in corso"}},
++    {{"Missing", "Absent", "Fehlt", "Falta", "Mancante"}},
++    {{"Can't use", "Inutilisable", "Unbrauchbar", "No sirve", "Non utilizzabile"}},
++    {{"Space", "Espace", "Speicherplatz", "Espacio", "Spazio"}},
++    {{"Needs about {} free", "Il faut environ {} libres", "Braucht etwa {} frei", "Necesita unos {} libres",
++      "Servono circa {} liberi"}},
++    {{"{} free", "{} libres", "{} frei", "{} libres", "{} liberi"}},
++    {{"Not found", "Introuvable", "Nicht gefunden", "No encontrado", "Non trovato"}},
++    {{"Making sure the disc image is the USA disc of GTA IV. This takes a few seconds.",
++      "Vérification que l'image disque est bien le disque américain de GTA IV. Cela prend quelques secondes.",
++      "Prüft, ob das Disc-Image die US-Disc von GTA IV ist. Das dauert ein paar Sekunden.",
++      "Comprobando que la imagen de disco es el disco estadounidense de GTA IV. Tarda unos segundos.",
++      "Verifica che l'immagine disco sia il disco USA di GTA IV. Ci vuole qualche secondo."}},
++    {{"Ready", "Prêt", "Bereit", "Listo", "Pronto"}},
++    {{"Press Cross to install. Keep the app open until it's done. Your disc image isn't changed.",
++      "Appuyez sur X pour installer. Laissez l'application ouverte jusqu'à la fin. Votre image disque n'est pas "
++      "modifiée.",
++      "Drücke X zum Installieren. Lass die App offen, bis es fertig ist. Dein Disc-Image wird nicht verändert.",
++      "Pulsa X para instalar. Deja la aplicación abierta hasta que termine. Tu imagen de disco no se modifica.",
++      "Premi X per installare. Tieni aperta l'app finché non ha finito. La tua immagine disco non viene "
++      "modificata."}},
++    {{"Installs To", "Installé dans", "Installiert nach", "Se instala en", "Installato in"}},
++    {{"On {}", "Sur {}", "Auf {}", "En {}", "In {}"}},
++    {{"the app's drive", "le disque de l'application", "dem Laufwerk der App", "la unidad de la aplicación",
++      "unità dell'app"}},
++    {{"internal storage", "le stockage interne", "dem internen Speicher", "el almacenamiento interno",
++      "memoria interna"}},
++    {{"an exFAT drive", "un disque exFAT", "einem exFAT-Laufwerk", "una unidad exFAT", "unità exFAT"}},
++    {{"a FAT drive", "un disque FAT", "einem FAT-Laufwerk", "una unidad FAT", "unità FAT"}},
++    {{"a {} drive", "un disque {}", "einem {}-Laufwerk", "una unidad {}", "unità {}"}},
++    {{"Can't install yet", "Pas encore installable", "Noch keine Installation möglich",
++      "Aún no se puede instalar", "Non è ancora possibile installare"}},
++    {{"The Install Folder", "Le dossier d'installation", "Der Installationsordner", "La carpeta de instalación",
++      "La cartella di installazione"}},
++    {{"The install stopped", "L'installation s'est arrêtée", "Die Installation wurde abgebrochen",
++      "La instalación se detuvo", "L'installazione si è interrotta"}},
++    {{"What was copied has been removed, so nothing is left half done.",
++      "Ce qui avait été copié a été supprimé, rien n'est laissé à moitié.",
++      "Was kopiert wurde, ist wieder entfernt, es bleibt nichts halb fertig.",
++      "Lo que se copió se ha borrado, así que no queda nada a medias.",
++      "Ciò che era stato copiato è stato rimosso, quindi non resta nulla a metà."}},
++    {{"What Happened", "Ce qui s'est passé", "Was passiert ist", "Qué ha pasado", "Cosa è successo"}},
++    {{"Press Cross to try again. If it stops again, send the log from /data/homebrew/PPSA94004/logs.",
++      "Appuyez sur X pour réessayer. Si ça s'arrête encore, envoyez le journal de /data/homebrew/PPSA94004/logs.",
++      "Drücke X für einen neuen Versuch. Wenn es wieder abbricht, schick das Log aus "
++      "/data/homebrew/PPSA94004/logs.",
++      "Pulsa X para reintentarlo. Si vuelve a detenerse, envía el registro de /data/homebrew/PPSA94004/logs.",
++      "Premi X per riprovare. Se si ferma di nuovo, invia il log da /data/homebrew/PPSA94004/logs."}},
++    {{"Installed", "Installé", "Installiert", "Instalado", "Installato"}},
++    {{"GTA IV is set up on your PS5. Press Cross to play.", "GTA IV est installé sur votre PS5. Appuyez sur X pour "
++      "jouer.", "GTA IV ist auf deiner PS5 eingerichtet. Drücke X zum Spielen.",
++      "GTA IV está instalado en tu PS5. Pulsa X para jugar.", "GTA IV è installato sulla tua PS5. Premi X per "
++      "giocare."}},
++    {{"Installing", "Installation en cours", "Wird installiert", "Instalando", "Installazione in corso"}},
++    {{"Keep the app open until it's done. The PS5 won't go to sleep.",
++      "Laissez l'application ouverte jusqu'à la fin. La PS5 ne se mettra pas en veille.",
++      "Lass die App offen, bis es fertig ist. Die PS5 geht nicht in den Ruhemodus.",
++      "Deja la aplicación abierta hasta que termine. La PS5 no entrará en reposo.",
++      "Tieni aperta l'app finché non ha finito. La PS5 non andrà in standby."}},
++    {{"All Done", "Terminé", "Fertig", "Terminado", "Completato"}},
++    {{"Stopping", "Arrêt", "Wird gestoppt", "Deteniendo", "Interruzione"}},
++    {{"Finishing", "Finalisation", "Abschluss", "Terminando", "Completamento"}},
++    {{"Step 1 of 2", "Étape 1 sur 2", "Schritt 1 von 2", "Paso 1 de 2", "Passo 1 di 2"}},
++    {{"Step 2 of 2", "Étape 2 sur 2", "Schritt 2 von 2", "Paso 2 de 2", "Passo 2 di 2"}},
++    {{"The game's files are in place", "Les fichiers du jeu sont en place", "Die Spieldateien sind an Ort und Stelle",
++      "Los archivos del juego están en su sitio", "I file del gioco sono al loro posto"}},
++    {{"Removing what was copied", "Suppression de ce qui a été copié", "Entferne, was kopiert wurde",
++      "Borrando lo que se copió", "Rimozione di ciò che è stato copiato"}},
++    {{"Checking the game and putting it in place", "Vérification du jeu et mise en place",
++      "Prüfe das Spiel und lege es ab", "Comprobando el juego y colocándolo", "Verifica del gioco e sistemazione"}},
++    {{"Unpacking the game's archives", "Décompression des archives du jeu", "Entpacke die Archive des Spiels",
++      "Descomprimiendo los archivos del juego", "Estrazione degli archivi del gioco"}},
++    {{"Copying the game from your disc image", "Copie du jeu depuis votre image disque",
++      "Kopiere das Spiel aus deinem Disc-Image", "Copiando el juego desde tu imagen de disco",
++      "Copia del gioco dalla tua immagine disco"}},
++    {{"{} written", "{} écrits", "{} geschrieben", "{} escritos", "{} scritti"}},
++    {{"Took under a minute", "Moins d'une minute", "Unter einer Minute", "Tardó menos de un minuto",
++      "Meno di un minuto"}},
++    {{"Took {} min", "Durée : {} min", "Dauer: {} Min.", "Tardó {} min", "Durata: {} min"}},
++    {{"Less than a minute left", "Moins d'une minute restante", "Weniger als eine Minute übrig",
++      "Queda menos de un minuto", "Manca meno di un minuto"}},
++    {{"About {} min left", "Encore {} min environ", "Noch etwa {} Min.", "Quedan unos {} min",
++      "Mancano circa {} min"}},
++    {{"Working out the time left", "Calcul du temps restant", "Restzeit wird berechnet",
++      "Calculando el tiempo restante", "Calcolo del tempo rimanente"}},
++    {{"Reading at {}  \xC2\xB7  writing at {}", "Lecture à {}  \xC2\xB7  écriture à {}",
++      "Lesen mit {}  \xC2\xB7  Schreiben mit {}", "Leyendo a {}  \xC2\xB7  escribiendo a {}",
++      "Lettura a {}  \xC2\xB7  scrittura a {}"}},
++    {{" to {}", " vers {}", " auf {}", " en {}", " in {}"}},
++    {{"Install stopped. Nothing was kept.", "Installation arrêtée. Rien n'a été conservé.",
++      "Installation gestoppt. Nichts wurde behalten.", "Instalación detenida. No se ha guardado nada.",
++      "Installazione interrotta. Non è stato tenuto nulla."}},
++    {{"Stop installing?", "Arrêter l'installation ?", "Installation stoppen?", "¿Detener la instalación?",
++      "Interrompere l'installazione?"}},
++    {{"What's been copied so far is removed. You can start over later.",
++      "Ce qui a été copié jusqu'ici est supprimé. Vous pourrez recommencer plus tard.",
++      "Was bisher kopiert wurde, wird entfernt. Du kannst später neu anfangen.",
++      "Se borra lo copiado hasta ahora. Puedes empezar de nuevo más tarde.",
++      "Ciò che è stato copiato finora viene rimosso. Puoi ricominciare più tardi."}},
++    {{"There's no disc image in the install folder. Copy your GTA IV disc image (.iso) into "
++      "/data/homebrew/PPSA94004/install/ and press Triangle.",
++      "Il n'y a pas d'image disque dans le dossier d'installation. Copiez votre image disque de GTA IV (.iso) dans "
++      "/data/homebrew/PPSA94004/install/ et appuyez sur Triangle.",
++      "Im Installationsordner ist kein Disc-Image. Kopiere dein GTA-IV-Disc-Image (.iso) nach "
++      "/data/homebrew/PPSA94004/install/ und drücke Dreieck.",
++      "No hay ninguna imagen de disco en la carpeta de instalación. Copia tu imagen de disco de GTA IV (.iso) en "
++      "/data/homebrew/PPSA94004/install/ y pulsa Triángulo.",
++      "Nella cartella di installazione non c'è nessuna immagine disco. Copia la tua immagine disco di GTA IV (.iso) "
++      "in /data/homebrew/PPSA94004/install/ e premi Triangolo."}},
++    {{"This disc image can't be used: {}\nIt has to be the USA disc of GTA IV, the original release.",
++      "Cette image disque n'est pas utilisable : {}\nIl faut le disque américain de GTA IV, l'édition "
++      "d'origine.",
++      "Dieses Disc-Image ist nicht verwendbar: {}\nEs muss die US-Disc von GTA IV sein, die "
++      "Originalveröffentlichung.",
++      "Esta imagen de disco no sirve: {}\nTiene que ser el disco estadounidense de GTA IV, la edición original.",
++      "Questa immagine disco non si può usare: {}\nDeve essere il disco USA di GTA IV, l'edizione originale."}},
++    {{"Title Update 8 is missing. Copy TU_1A581VI_000000K000000.0000000000205 into the install folder, next to the "
++      "disc image, and press Triangle.",
++      "Il manque le Title Update 8. Copiez TU_1A581VI_000000K000000.0000000000205 dans le dossier d'installation, "
++      "à côté de l'image disque, et appuyez sur Triangle.",
++      "Title Update 8 fehlt. Kopiere TU_1A581VI_000000K000000.0000000000205 in den Installationsordner neben das "
++      "Disc-Image und drücke Dreieck.",
++      "Falta el Title Update 8. Copia TU_1A581VI_000000K000000.0000000000205 en la carpeta de instalación, junto a "
++      "la imagen de disco, y pulsa Triángulo.",
++      "Manca il Title Update 8. Copia TU_1A581VI_000000K000000.0000000000205 nella cartella di installazione, "
++      "accanto all'immagine disco, e premi Triangolo."}},
++    {{"There isn't enough free space. The install needs about {} and the drive has {} free.",
++      "Il n'y a pas assez d'espace libre. L'installation a besoin d'environ {} et le disque a {} de libre.",
++      "Nicht genug freier Speicher. Die Installation braucht etwa {}, das Laufwerk hat {} frei.",
++      "No hay suficiente espacio libre. La instalación necesita unos {} y la unidad tiene {} libres.",
++      "Spazio libero insufficiente. L'installazione richiede circa {} e l'unità ha {} liberi."}},
++};
++// clang-format on
++
++struct Found {
++  const Entry* entry;
++  const char* english;  // what English shows (the key without its note)
++};
++
++const std::unordered_map<std::string_view, Found>& Index() {
++  static const std::unordered_map<std::string_view, Found> index = [] {
++    static std::vector<std::string> heads;  // (kept: T hands out pointers into them)
++    heads.reserve(16);
++    std::unordered_map<std::string_view, Found> m;
++    for (const Entry& e : kTable) {
++      const char* key = e.text[kEnglish];
++      const char* shown = key;
++      if (const char* bar = std::strchr(key, '|')) {
++        heads.emplace_back(key, bar);
++        shown = heads.back().c_str();
++      }
++      m.emplace(key, Found{&e, shown});
++    }
++    return m;
++  }();
++  return index;
++}
++
++}  // namespace
++
++Lang System() {
++  int v = 1;  // (SCE_SYSTEM_PARAM_LANG_ENGLISH_US)
++#if defined(__PROSPERO__)
++  if (sceSystemServiceParamGetInt(1 /* SCE_SYSTEM_SERVICE_PARAM_ID_LANG */, &v) != 0) v = 1;
++#else
++  if (const char* e = std::getenv("HUB_SYSTEM_LANG")) v = std::atoi(e);  // (the preview)
++#endif
++  switch (v) {
++    case 2:   // French
++    case 22:  // French (Canada)
++      return kFrench;
++    case 3:   // Spanish
++    case 20:  // Spanish (Latin America)
++      return kSpanish;
++    case 4: return kGerman;
++    case 5: return kItalian;
++    default: return kEnglish;
++  }
++}
++
++Lang FromSetting(const std::string& value) {
++  if (value == "english") return kEnglish;
++  if (value == "french") return kFrench;
++  if (value == "german") return kGerman;
++  if (value == "spanish") return kSpanish;
++  if (value == "italian") return kItalian;
++  return System();
++}
++
++uint32_t XboxLanguage(Lang l) {
++  switch (l) {
++    case kFrench: return 4;
++    case kGerman: return 3;
++    case kSpanish: return 5;
++    case kItalian: return 6;
++    default: return 1;
++  }
++}
++
++const char* Name(Lang l) {
++  static const char* const names[kLangCount] = {"English", "Français", "Deutsch", "Español", "Italiano"};
++  return names[l < kLangCount ? l : kEnglish];
++}
++
++void Set(Lang l) { g_lang.store(l < kLangCount ? l : kEnglish, std::memory_order_relaxed); }
++Lang Current() { return Lang(g_lang.load(std::memory_order_relaxed)); }
++
++const char* T(const char* english) {
++  if (!english) return "";
++  const Lang l = Current();
++  const auto& index = Index();
++  if (auto it = index.find(english); it != index.end()) {
++    const char* text = it->second.entry->text[l];
++    return l != kEnglish && text && *text ? text : it->second.english;
++  }
++  return english;
++}
++
++bool Has(const char* english) { return english && Index().count(english); }
++
++std::string F(const char* english, std::initializer_list<std::string> args) {
++  std::string out = T(english);
++  size_t from = 0;
++  for (const std::string& a : args) {
++    const size_t at = out.find("{}", from);
++    if (at == std::string::npos) break;
++    out.replace(at, 2, a);
++    from = at + a.size();
++  }
++  return out;
++}
++
++std::string Units(std::string s) {
++  const Lang l = Current();
++  if (l == kEnglish) return s;
++  for (char& c : s)
++    if (c == '.') c = ',';
++  if (l == kFrench) {
++    for (const auto& [from, to] : {std::pair<const char*, const char*>{"GB", "Go"}, {"MB", "Mo"}, {"KB", "Ko"}}) {
++      for (size_t at = s.find(from); at != std::string::npos; at = s.find(from, at + 2)) s.replace(at, 2, to);
++    }
++    if (const size_t sp = s.find(' '); sp != std::string::npos) s.replace(sp, 1, " ");
++  }
++  return s;
++}
++
++std::string Date(int64_t t) {
++  if (t <= 0) return "-";
++  const std::time_t tt = std::time_t(t);
++  std::tm tm{};
++  localtime_r(&tt, &tm);
++  char buf[48];
++  const Lang l = Current();
++  const char* format = l == kEnglish ? "%b %d, %Y  %H:%M" : l == kGerman ? "%d.%m.%Y  %H:%M" : "%d/%m/%Y  %H:%M";
++  std::strftime(buf, sizeof(buf), format, &tm);
++  return buf;
++}
++
++}  // namespace gta4ps5::hub::lang
+diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.h
+new file mode 100644
+index 00000000..c2f93da1
+--- /dev/null
++++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.h
+@@ -0,0 +1,40 @@
++// GTA IV PS5 - languages: the hub's text in English, French, German, Spanish
++// and Italian (the five the Xbox 360 disc has the game's text in), and the
++// Language setting (ps5_language) that picks one for the hub and the game.
++#pragma once
++
++#include <cstdint>
++#include <initializer_list>
++#include <string>
++
++namespace gta4ps5::hub::lang {
++
++enum Lang { kEnglish, kFrench, kGerman, kSpanish, kItalian, kLangCount };
++
++// The PS5's own language, as one of the five (English when it's another).
++Lang System();
++// The setting's value ("auto", "english", "french"...): auto is the PS5's.
++Lang FromSetting(const std::string& value);
++// What the game is told (the Xbox 360's XCONFIG user language): the game
++// reads its text from the matching .gxt in common.rpf.
++uint32_t XboxLanguage(Lang l);
++// The language's name, in itself ("Français").
++const char* Name(Lang l);
++
++void Set(Lang l);
++Lang Current();
++
++// `english` in the hub's language (itself when there's no translation).
++// A key may carry a note after '|' ("Earned|date") when one English word
++// needs two translations; the note isn't shown.
++const char* T(const char* english);
++// Whether `english` has translations (tools/hub_preview checks the hub's text).
++bool Has(const char* english);
++// T, then each "{}" replaced by the next argument.
++std::string F(const char* english, std::initializer_list<std::string> args);
++// A size or rate as the language writes it ("1.5 GB" -> "1,5 Go").
++std::string Units(std::string s);
++// A date and time (unix time; "-" for none).
++std::string Date(int64_t t);
++
++}  // namespace gta4ps5::hub::lang
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.cpp
 new file mode 100644
 index 00000000..4276bd77
@@ -23675,10 +24545,10 @@ index 00000000..4f4ac5e2
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_style.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_style.h
 new file mode 100644
-index 00000000..370d5e7f
+index 00000000..2d761cfb
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_style.h
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,104 @@
 +// GTA IV PS5 - the PS5 hub's colours and small helpers
 +// (hub_ui.cpp).
 +#pragma once
@@ -23690,6 +24560,7 @@ index 00000000..370d5e7f
 +#include <filesystem>
 +#include <string>
 +
++#include "hub_lang.h"
 +#include "imgui.h"
 +
 +namespace gta4ps5::hub {
@@ -23738,9 +24609,27 @@ index 00000000..370d5e7f
 +const ImU32 kBarBack = Rgba(58, 58, 58);      // a level's bar, behind
 +const ImU32 kBad = Rgba(232, 58, 46);         // something wrong (the installer)
 +
-+inline std::string Upper(std::string s) {
-+  for (char& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
-+  return s;
++// Capitals, accented letters too (UTF-8: à..þ to À..Þ, œ to Œ, ß to SS).
++inline std::string Upper(const std::string& s) {
++  std::string out;
++  out.reserve(s.size() + 2);
++  for (size_t i = 0; i < s.size(); ++i) {
++    const unsigned char c = static_cast<unsigned char>(s[i]);
++    const unsigned char n = i + 1 < s.size() ? static_cast<unsigned char>(s[i + 1]) : 0;
++    if (c == 0xC3 && n >= 0xA0 && n <= 0xBE && n != 0xB7) {
++      out += char(0xC3), out += char(n - 0x20), ++i;
++    } else if (c == 0xC3 && n == 0x9F) {
++      out += "SS", ++i;
++    } else if (c == 0xC5 && n == 0x93) {
++      out += char(0xC5), out += char(0x92), ++i;
++    } else if (c >= 0xC0) {  // (another letter: as it is)
++      out += char(c);
++      while (i + 1 < s.size() && (static_cast<unsigned char>(s[i + 1]) & 0xC0) == 0x80) out += s[++i];
++    } else {
++      out += char(std::toupper(c));
++    }
++  }
++  return out;
 +}
 +
 +inline std::string Size(uint64_t bytes) {
@@ -23748,7 +24637,7 @@ index 00000000..370d5e7f
 +  if (bytes >= (1ull << 30)) std::snprintf(buf, sizeof(buf), "%.1f GB", double(bytes) / double(1ull << 30));
 +  else if (bytes >= (1ull << 20)) std::snprintf(buf, sizeof(buf), "%.1f MB", double(bytes) / double(1ull << 20));
 +  else std::snprintf(buf, sizeof(buf), "%.0f KB", double(bytes) / 1024.0);
-+  return buf;
++  return lang::Units(buf);
 +}
 +
 +// A folder's files: total size and count.
@@ -24207,10 +25096,10 @@ index 00000000..26b22864
 +}  // namespace gta4ps5::trophies
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies_page.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies_page.cpp
 new file mode 100644
-index 00000000..995f785d
+index 00000000..ebe44a36
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies_page.cpp
-@@ -0,0 +1,202 @@
+@@ -0,0 +1,196 @@
 +// GTA IV PS5 - the hub's Trophies page (see hub_ui.h, hub_trophies.h):
 +// how far along you are, then the trophies - earned (newest first), then not
 +// yet - with the focused one's details.
@@ -24228,15 +25117,7 @@ index 00000000..995f785d
 +
 +constexpr float kRowH = 62;
 +
-+std::string When(int64_t t) {
-+  if (t <= 0) return "-";
-+  const std::time_t tt = std::time_t(t);
-+  std::tm tm{};
-+  localtime_r(&tt, &tm);
-+  char buf[48];
-+  std::strftime(buf, sizeof(buf), "%b %d, %Y  %H:%M", &tm);
-+  return buf;
-+}
++std::string When(int64_t t) { return lang::Date(t); }
 +
 +const char* kGroupNames[] = {"Earned", "Not earned yet"};
 +
@@ -24319,7 +25200,7 @@ index 00000000..995f785d
 +  TextMid(Bold(), 64, x, y + 30, kText, pct);
 +  const float pw = TextWidth(Bold(), 64, pct);
 +  TextMid(Regular(), 28, x + pw + 26, y + 38, kMenuGray,
-+          std::to_string(trophies_.earned) + " of " + std::to_string(trophies_.earnable) + " earned");
++          lang::F("{} of {} earned", {std::to_string(trophies_.earned), std::to_string(trophies_.earnable)}));
 +  // each grade's cup and its count, at the right
 +  float rx = x + w;
 +  for (int g = 0; g < 3; ++g) {  // (bronze at the right, gold at the left)
@@ -24344,9 +25225,9 @@ index 00000000..995f785d
 +
 +void Hub::DrawTrophies() {
 +  if (!trophies_.loaded) {
-+    Empty("Start the game once",
-+          "The trophy list comes from the game itself: start it once, and the next time you open the hub your "
-+          "trophies are here, with the ones you've earned.");
++    Empty(lang::T("Start the game once"),
++          lang::T("The trophy list comes from the game itself: start it once, and the next time you open the hub "
++                  "your trophies are here, with the ones you've earned."));
 +    return;
 +  }
 +  const int n = int(trophy_items_.size());
@@ -24358,18 +25239,18 @@ index 00000000..995f785d
 +  for (int i = 0; i < n; ++i) {
 +    const int g = trophy_items_[size_t(i)].group;
 +    if (i == 0 || trophy_items_[size_t(i) - 1].group != g)
-+      rows.push_back({-1, std::string(kGroupNames[g]) + "  " + std::to_string(counts[g])});
++      rows.push_back({-1, std::string(lang::T(kGroupNames[g])) + "  " + std::to_string(counts[g])});
 +    rows.push_back({i});
 +  }
 +  auto name_of = [&](const TrophyItem& it) -> std::string {
-+    if (it.index < 0) return "Grand Theft Auto IV Platinum";
++    if (it.index < 0) return lang::T("Grand Theft Auto IV Platinum");
 +    const auto& t = trophies_.trophies[size_t(it.index)];
-+    return (!t.earned && t.hidden()) ? "Hidden trophy" : t.name;
++    return (!t.earned && t.hidden()) ? lang::T("Hidden trophy") : t.name;
 +  };
 +  auto text_of = [&](const TrophyItem& it) -> std::string {
-+    if (it.index < 0) return "Earn every other GTA IV trophy (" + std::to_string(trophies_.earnable) + ").";
++    if (it.index < 0) return lang::F("Earn every other GTA IV trophy ({}).", {std::to_string(trophies_.earnable)});
 +    const auto& t = trophies_.trophies[size_t(it.index)];
-+    if (!t.earned && t.hidden()) return "Keep playing to find out what this one is.";
++    if (!t.earned && t.hidden()) return lang::T("Keep playing to find out what this one is.");
 +    return t.earned || t.locked_description.empty() ? t.description : t.locked_description;
 +  };
 +  const float x = kListX, right = kPanelX - 90;
@@ -24398,14 +25279,16 @@ index 00000000..995f785d
 +    const trophies::Grade g = plat ? trophies::Grade::kPlatinum : t->grade();
 +    TrophyIcon(it.index, px, py, 112, 0);
 +    const float nx = px + 138, nw = pw - 138;
-+    TextMid(Bold(), 21, nx, py + 14, trophies::GradeColor(g), Upper(trophies::GradeName(g)) + " TROPHY", 0, 1.6f);
++    TextMid(Bold(), 21, nx, py + 14, trophies::GradeColor(g),
++            Upper(lang::T((std::string(trophies::GradeName(g)) + " Trophy").c_str())), 0, 1.6f);
 +    const float nh = Wrapped(Bold(), 36, nx, py + 34, nw, kText, name_of(it), 1.1f);
 +    py += std::max(112.0f, 34 + nh) + 24;
 +    py += Wrapped(Regular(), 28, px, py, pw, Rgba(196, 196, 196), text_of(it), 1.38f) + 22;
 +    std::vector<std::pair<std::string, std::string>> facts;
-+    if (earned) facts.push_back({"Earned", When(plat ? trophies_.last_earned : t->earned)});
-+    else if (plat) facts.push_back({"Status", std::to_string(trophies_.earnable - trophies_.earned) + " to go"});
-+    else facts.push_back({"Status", "Not earned yet"});
++    if (earned) facts.push_back({lang::T("Earned|date"), When(plat ? trophies_.last_earned : t->earned)});
++    else if (plat)
++      facts.push_back({lang::T("Status"), lang::F("{} to go", {std::to_string(trophies_.earnable - trophies_.earned)})});
++    else facts.push_back({lang::T("Status"), lang::T("Not earned yet|status")});
 +    if (t) facts.push_back({"Gamerscore", std::to_string(t->gamerscore) + "G"});
 +    Facts(px, py, pw, facts);
 +  }
@@ -24415,10 +25298,10 @@ index 00000000..995f785d
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..0f2c406c
+index 00000000..4abeebf8
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1302 @@
+@@ -0,0 +1,1338 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -24436,11 +25319,14 @@ index 00000000..0f2c406c
 +#include <sstream>
 +#include <utility>
 +
++#include "hub_lang.h"
 +#include "hub_style.h"
 +
 +namespace gta4ps5::hub {
 +
 +namespace fs = std::filesystem;
++using lang::F;
++using lang::T;
 +
 +static const char* const kTabNames[kTabCount] = {"Home", "Display", "Game", "Saves", "Trophies", "About", "Debug"};
 +
@@ -24480,15 +25366,7 @@ index 00000000..0f2c406c
 +  return t;
 +}
 +
-+std::string Date(int64_t t) {
-+  if (!t) return "-";
-+  const std::time_t tt = std::time_t(t);
-+  std::tm tm{};
-+  localtime_r(&tt, &tm);
-+  char buf[48];
-+  std::strftime(buf, sizeof(buf), "%b %d, %Y  %H:%M", &tm);
-+  return buf;
-+}
++std::string Date(int64_t t) { return lang::Date(t); }
 +
 +// The profile folders in UserData (16 hex digits: the game's saves are in them).
 +std::vector<fs::path> Profiles(const fs::path& user_data) {
@@ -24573,6 +25451,13 @@ index 00000000..0f2c406c
 +       "How often the reflections on cars and glass are redrawn. Every other frame looks the same "
 +       "in motion and leaves more time for the rest of the frame.",
 +       false, {"1", "2"}, {"Every Frame", "Every Other Frame"}, "2"},
++      // (the hub's language too; the game is told it as the Xbox 360's language:
++      // gta4_ps5_app.cpp)
++      {"GAME", "ps5_language", "Language", nullptr,
++       "The language of the game's text (menus, subtitles and missions) and of this hub. Auto follows the PS5's "
++       "language. Voices stay in English, as on the Xbox 360.",
++       true, {"auto", "english", "french", "german", "spanish", "italian"},
++       {"Auto", "English", "Fran\u00E7ais", "Deutsch", "Espa\u00F1ol", "Italiano"}, "auto"},
 +      {"GAME", "gta4_skip_intro", "Skip Intro", nullptr,
 +       "Goes straight to the game's start screen, past the logos and the legal screens.", false,
 +       {"false", "true"}, {"Off", "On"}, "false"},
@@ -24648,6 +25533,7 @@ index 00000000..0f2c406c
 +    v.erase(v.find_last_not_of(" \t\r") + 1);
 +    config_.emplace_back(k, v);
 +  }
++  lang::Set(lang::FromSetting(Value("ps5_language", "auto")));
 +  LoadSaves();
 +  LoadTrophies();
 +  // (the game's files come from Recomp Store: only whether they're there)
@@ -24708,9 +25594,9 @@ index 00000000..0f2c406c
 +  bool ok = true;
 +  for (const fs::path& profile : Profiles(paths_.user_data)) ok = CopyInto(profile, dest / profile.filename()) && ok;
 +  if (ok) {
-+    if (why.empty()) Toast("Saves backed up");
++    if (why.empty()) Toast(T("Saves backed up"));
 +  } else {
-+    Toast("The backup couldn't be made");
++    Toast(T("The backup couldn't be made"));
 +    Play(Sound::kError);
 +  }
 +  LoadSaves();
@@ -24723,10 +25609,10 @@ index 00000000..0f2c406c
 +    fs::remove_all(profile, ec);
 +  }
 +  if (CopyInto(paths_.app / "SaveBackups" / b.name, paths_.user_data)) {
-+    Toast("Backup restored");
++    Toast(T("Backup restored"));
 +    Play(Sound::kOn);
 +  } else {
-+    Toast("Restoring didn't finish: your saves are in the newest backup");
++    Toast(T("Restoring didn't finish: your saves are in the newest backup"));
 +    Play(Sound::kError);
 +  }
 +  LoadSaves();
@@ -24800,14 +25686,17 @@ index 00000000..0f2c406c
 +// The menu type, baked at the sizes the hub draws it at (on a 1080p screen
 +// and on a 4K one, where everything is twice as big): the tabs and titles,
 +// the rows, the headings and hints. The largest sizes hold only plain ASCII,
-+// and one only what's drawn that big (a percentage), to keep the atlas small.
++// and one only what's drawn that big (a percentage), to keep the atlas small;
++// 100 and 120 have the accented letters too (the tabs and titles at 4K, in
++// French, German, Spanish and Italian).
 +// The condensed letters get a little air between them (kBoldTrack and
 +// kRegularTrack, of the size): set as tight as the font comes, rows of it
 +// read cramped on a TV.
 +void AddMenuFonts(ImFontAtlas* atlas, const void* bold, int bold_bytes, const void* regular, int regular_bytes,
 +                  Assets& a) {
 +  constexpr float kBoldTrack = 0.03f, kRegularTrack = 0.02f;
-+  static const ImWchar kLatin[] = {0x0020, 0x00FF, 0x2010, 0x2027, 0};
++  static const ImWchar kLatin[] = {0x0020, 0x00FF, 0x0152, 0x0153, 0x2010, 0x2027, 0};
++  static const ImWchar kLetters[] = {0x0020, 0x007E, 0x00A0, 0x00FF, 0x0152, 0x0153, 0};
 +  static const ImWchar kAscii[] = {0x0020, 0x007E, 0};
 +  static const ImWchar kDigits[] = {'%', '%', '0', '9', 'H', 'H', 0};
 +  auto add = [atlas](const void* data, int bytes, float px, const ImWchar* ranges, float track) {
@@ -24823,8 +25712,9 @@ index 00000000..0f2c406c
 +  a.menu_regular_sizes.clear();
 +  for (float px : {24.0f, 32.0f, 42.0f, 52.0f, 62.0f, 72.0f, 84.0f})
 +    if (ImFont* f = add(bold, bold_bytes, px, kLatin, kBoldTrack)) a.menu_sizes.push_back(f);
-+  for (float px : {100.0f, 120.0f, 144.0f})
-+    if (ImFont* f = add(bold, bold_bytes, px, kAscii, kBoldTrack)) a.menu_sizes.push_back(f);
++  for (float px : {100.0f, 120.0f})
++    if (ImFont* f = add(bold, bold_bytes, px, kLetters, kBoldTrack)) a.menu_sizes.push_back(f);
++  if (ImFont* f = add(bold, bold_bytes, 144.0f, kAscii, kBoldTrack)) a.menu_sizes.push_back(f);
 +  if (ImFont* f = add(bold, bold_bytes, 244.0f, kDigits, kBoldTrack)) a.menu_sizes.push_back(f);
 +  for (float px : {24.0f, 30.0f, 36.0f, 42.0f, 48.0f, 56.0f, 64.0f})
 +    if (ImFont* f = add(regular, regular_bytes, px, kLatin, kRegularTrack)) a.menu_regular_sizes.push_back(f);
@@ -24855,8 +25745,15 @@ index 00000000..0f2c406c
 +    if (!t) return true;
 +    ImFontBaked* baked = face->GetFontBaked(face->LegacySize);
 +    if (!baked) return false;
-+    for (unsigned char c : *t)
-+      if (c >= 0x20 && c < 0x80 && !baked->FindGlyphNoFallback(ImWchar(c))) return false;
++    for (size_t i = 0; i < t->size();) {  // (UTF-8: up to three bytes a letter here)
++      const unsigned char c = static_cast<unsigned char>((*t)[i]);
++      unsigned int cp = c;
++      size_t n = 1;
++      if (c >= 0xE0 && i + 2 < t->size()) cp = ((c & 0x0Fu) << 12) | ((((*t)[i + 1]) & 0x3Fu) << 6) | (((*t)[i + 2]) & 0x3Fu), n = 3;
++      else if (c >= 0xC0 && i + 1 < t->size()) cp = ((c & 0x1Fu) << 6) | (((*t)[i + 1]) & 0x3Fu), n = 2;
++      i += n;
++      if (cp >= 0x20 && cp != '\n' && !baked->FindGlyphNoFallback(ImWchar(cp))) return false;
++    }
 +    return true;
 +  };
 +  for (ImFont* face : *sizes)
@@ -25060,7 +25957,7 @@ index 00000000..0f2c406c
 +float Hub::Hint(float right, uint32_t button, const char* label, int line) {
 +  constexpr float kSize = 23, kButton = 31, kGap = 12, kBetween = 46, kSpacing = 0.8f;
 +  const float cy = kHintsY + 40 * float(line);
-+  const std::string text = Upper(label);
++  const std::string text = Upper(T(label));
 +  const float tw = TextWidth(Regular(), kSize, text, kSpacing);
 +  const float gw = GlyphWidth(button, kButton);
 +  const float x = right - tw;
@@ -25162,13 +26059,19 @@ index 00000000..0f2c406c
 +  constexpr float kSize = 66, kGap = 60;
 +  float x = kPageL;
 +  if (installer_) {
-+    TextMid(Bold(), kSize, x, kTabsY, kAccent, "Install");
++    TextMid(Bold(), kSize, x, kTabsY, kAccent, T("Install|tab"));
 +    return;
 +  }
++  // (longer names in some languages: smaller, to fit the page's width)
++  float total = 0;
++  for (int i = 0; i < kTabCount; ++i) total += TextWidth(Bold(), kSize, T(kTabNames[i])) + (i ? kGap : 0);
++  const float fit = std::min(1.0f, (kPageR - kPageL) / std::max(1.0f, total));
++  const float size = kSize * fit, gap = kGap * fit;
 +  for (int i = 0; i < kTabCount; ++i) {
 +    Ease(tab_lit_[i], i == tab_ ? 1.0f : 0.0f, 16);
-+    TextMid(Bold(), kSize, x, kTabsY, Mix(Rgba(148, 148, 148), kAccent, tab_lit_[i]), kTabNames[i]);
-+    x += TextWidth(Bold(), kSize, kTabNames[i]) + kGap;
++    const char* name = T(kTabNames[i]);
++    TextMid(Bold(), size, x, kTabsY, Mix(Rgba(148, 148, 148), kAccent, tab_lit_[i]), name);
++    x += TextWidth(Bold(), size, name) + gap;
 +  }
 +}
 +
@@ -25220,7 +26123,7 @@ index 00000000..0f2c406c
 +    {  // L1 and R1 together: the tabs
 +      constexpr float kSize = 23, kButton = 31, kGap = 12, kSpacing = 0.8f;
 +      const float cy = kHintsY + 40;
-+      const std::string text = "TAB";
++      const std::string text = Upper(T("Tab"));
 +      const float tw = TextWidth(Regular(), kSize, text, kSpacing);
 +      const float x = r2 - tw;
 +      TextMid(Regular(), kSize, x, cy, kMenuGray, text, 0, kSpacing);
@@ -25263,7 +26166,7 @@ index 00000000..0f2c406c
 +    std::string text;
 +  };
 +  std::vector<Choice> choices = {{kCross, Upper(confirm_yes_)}};
-+  if (confirm_yes_ != "OK") choices.push_back({kCircle, Upper(confirm_no_label_.empty() ? "Cancel" : confirm_no_label_)});
++  if (confirm_yes_ != "OK") choices.push_back({kCircle, Upper(confirm_no_label_.empty() ? T("Cancel") : confirm_no_label_)});
 +  float total = 0;
 +  for (const Choice& c : choices) total += GlyphWidth(c.button, kButton) + kGap + TextWidth(Regular(), kSize, c.text, kSpacing);
 +  total += kBetween * float(choices.size() - 1);
@@ -25308,9 +26211,9 @@ index 00000000..0f2c406c
 +  if (!state_.installed) {
 +    const float in = Smooth((time_ - 0.2f) / 0.6f);
 +    const int v0 = dl_->VtxBuffer.Size;
-+    TextMid(Bold(), 40, kPageL, kRuleBottom - 104, Rgba(255, 255, 255), "Not installed yet");
++    TextMid(Bold(), 40, kPageL, kRuleBottom - 104, Rgba(255, 255, 255), T("Not installed yet"));
 +    TextMid(Regular(), 30, kPageL, kRuleBottom - 58, Rgba(200, 200, 200),
-+            "Press X to set it up from your disc image and title update.");
++            T("Press X to set it up from your disc image and title update."));
 +    Fade(v0, in);
 +  }
 +}
@@ -25346,6 +26249,13 @@ index 00000000..0f2c406c
 +namespace {
 +// A level (Menu Music): drawn as a bar, as the game's SFX and music levels.
 +bool IsLevel(const Hub::Setting& r) { return std::string_view(r.key) == "hub_music_volume"; }
++bool IsLanguage(const Hub::Setting& r) { return std::string_view(r.key) == "ps5_language"; }
++// A value as shown: Auto says which language it is.
++std::string ValueLabel(const Hub::Setting& r, int k) {
++  if (IsLanguage(r) && std::string_view(r.values[size_t(k)]) == "auto")
++    return std::string(T("Auto")) + " (" + lang::Name(lang::System()) + ")";
++  return T(r.labels[size_t(k)]);
++}
 +}  // namespace
 +
 +// Display, Game and Debug: the game's settings page - a label, its value
@@ -25362,7 +26272,10 @@ index 00000000..0f2c406c
 +    const auto& r = set[size_t(on[size_t(i)])];
 +    const float cy = ry + kRowH * 0.5f;
 +    const ImU32 col = Mix(kMenuGray, kAccent, over);
-+    TextMid(Bold(), kSize, kListX, cy, col, r.label);
++    // (a long name, in some languages: smaller, to stay clear of its value)
++    const std::string label = T(r.label);
++    const float room = kValueX - kListX - 28, lw = TextWidth(Bold(), kSize, label);
++    TextMid(Bold(), lw > room ? std::max(24.0f, kSize * room / lw) : kSize, kListX, cy, col, label);
 +    const int idx = SettingIndex(r);
 +    if (IsLevel(r)) {
 +      const float bw = 280, bh = 18, by = cy - bh * 0.5f;
@@ -25374,17 +26287,17 @@ index 00000000..0f2c406c
 +    // the value just changed: it slides in from the side it was changed toward
 +    const float in = i == sel ? Smooth(value_in_) : 1;
 +    const int v0 = dl_->VtxBuffer.Size;
-+    TextMid(Bold(), kSize, kValueX + (1 - in) * 16 * value_dir_, cy, col, r.labels[size_t(idx)]);
++    TextMid(Bold(), kSize, kValueX + (1 - in) * 16 * value_dir_, cy, col, ValueLabel(r, idx));
 +    Fade(v0, 0.2f + 0.8f * in);
 +  });
 +  // the focused setting, explained, and its choices
 +  const auto& r = set[size_t(on[size_t(sel)])];
 +  Panel([&](float px, float py, float pw) {
-+    py += Wrapped(Regular(), 29, px, py + 6, pw, Rgba(196, 196, 196), r.help, 1.32f) + 34;
++    py += Wrapped(Regular(), 29, px, py + 6, pw, Rgba(196, 196, 196), T(r.help), 1.32f) + 34;
 +    if (IsLevel(r) || r.labels.size() > 6) return;
 +    const int cur = SettingIndex(r);
 +    for (int k = 0; k < int(r.labels.size()); ++k) {
-+      TextMid(Bold(), 29, px, py + 18, k == cur ? kAccent : kDimGray, r.labels[size_t(k)]);
++      TextMid(Bold(), 29, px, py + 18, k == cur ? kAccent : kDimGray, ValueLabel(r, k));
 +      py += 44;
 +    }
 +  });
@@ -25399,26 +26312,26 @@ index 00000000..0f2c406c
 +  rows.push_back({0});
 +  rows.push_back({1});
 +  if (nb) {
-+    rows.push_back({-1, "Restore a backup"});
++    rows.push_back({-1, T("Restore a backup")});
 +    for (int i = 0; i < nb; ++i) rows.push_back({2 + i});
 +  }
 +  if (nf) {
-+    rows.push_back({-1, "Your saves  " + std::to_string(nf)});
++    rows.push_back({-1, F("Your saves  {}", {std::to_string(nf)})});
 +    for (int i = 0; i < nf; ++i) rows.push_back({2 + nb + i});
 +  }
 +  List(rows, sel, kRowH, [&](int i, float ry, float over) {
 +    std::string name, value;
 +    if (i == 0) {
-+      name = "Back Up Now";
++      name = T("Back Up Now");
 +    } else if (i == 1) {
-+      name = "Import Xbox 360 Saves";
-+      value = pending_imports_ ? std::to_string(pending_imports_) + " waiting" : "None waiting";
++      name = T("Import Xbox 360 Saves");
++      value = pending_imports_ ? F("{} waiting", {std::to_string(pending_imports_)}) : T("None waiting");
 +    } else if (i < 2 + nb) {
 +      const Backup& b = backups_[size_t(i - 2)];
 +      name = b.name, value = Size(b.bytes);
 +    } else {
 +      const SaveItem& f = save_items_[size_t(i - 2 - nb)];
-+      name = f.name, value = f.kind;
++      name = T(f.name.c_str()), value = T(f.kind.c_str());
 +    }
 +    const float cy = ry + kRowH * 0.5f;
 +    const ImU32 col = Mix(kMenuGray, kAccent, over);
@@ -25429,26 +26342,29 @@ index 00000000..0f2c406c
 +    const ImU32 text = Rgba(196, 196, 196);
 +    if (sel == 0) {
 +      Wrapped(Regular(), 29, px, py + 6, pw, text,
-+              "Copies all of your GTA IV saves into SaveBackups, named by the date and time.", 1.38f);
++              T("Copies all of your GTA IV saves into SaveBackups, named by the date and time."), 1.38f);
 +    } else if (sel == 1) {
 +      py += Wrapped(Regular(), 29, px, py + 6, pw, text,
-+                    "Bring your Xbox 360 progress over. Copy the save files from your 360 (on its drive they're "
-+                    "in Content/<your profile>/545407F2/00000001) into this folder on the PS5:", 1.38f) + 22;
++                    T("Bring your Xbox 360 progress over. Copy the save files from your 360 (on its drive they're "
++                      "in Content/<your profile>/545407F2/00000001) into this folder on the PS5:"), 1.38f) + 22;
 +      py += Wrapped(Bold(), 28, px, py, pw, kAccent, "/data/homebrew/PPSA94004/import/") + 26;
 +      Wrapped(Regular(), 27, px, py, pw, kMenuGray,
-+              "Press Cross to import them. Your saves are backed up first, and imported files move to "
-+              "import/done.", 1.38f);
++              T("Press Cross to import them. Your saves are backed up first, and imported files move to "
++                "import/done."), 1.38f);
 +    } else if (sel < 2 + nb) {
 +      const Backup& b = backups_[size_t(sel - 2)];
 +      py += Wrapped(Bold(), 36, px, py, pw, kText, b.name, 1.15f) + 22;
-+      py = Facts(px, py, pw, {{"Files", std::to_string(b.files)}, {"Size", Size(b.bytes)}});
++      py = Facts(px, py, pw, {{T("Files"), std::to_string(b.files)}, {T("Size"), Size(b.bytes)}});
 +      Wrapped(Regular(), 27, px, py + 16, pw, kMenuGray,
-+              "Restoring puts these saves back. The saves you have now are backed up first.", 1.38f);
++              T("Restoring puts these saves back. The saves you have now are backed up first."), 1.38f);
 +    } else {
 +      const SaveItem& f = save_items_[size_t(sel - 2 - nb)];
-+      py += Wrapped(Bold(), 36, px, py, pw, kText, f.name, 1.15f) + 22;
++      py += Wrapped(Bold(), 36, px, py, pw, kText, T(f.name.c_str()), 1.15f) + 22;
 +      Facts(px, py, pw,
-+            {{"Type", f.kind}, {"Files", std::to_string(f.files)}, {"Size", Size(f.bytes)}, {"Changed", Date(f.modified)}});
++            {{T("Type"), T(f.kind.c_str())},
++             {T("Files"), std::to_string(f.files)},
++             {T("Size"), Size(f.bytes)},
++             {T("Changed"), Date(f.modified)}});
 +    }
 +  });
 +}
@@ -25468,28 +26384,27 @@ index 00000000..0f2c406c
 +  for (const Credit& c : people) {
 +    TextMid(Bold(), 35, kListX, y + 18, kText, c.who);
 +    y += 46;
-+    y += Wrapped(Regular(), 28, kListX, y, 860, kMenuGray, c.what, 1.35f) + 30;
++    y += Wrapped(Regular(), 28, kListX, y, 860, kMenuGray, T(c.what), 1.35f) + 30;
 +  }
 +  const float px = kPanelX;
 +  float py = kPanelY + 4;
-+  TextMid(Bold(), 21, px, py + 12, kDimGray, "BUILT WITH", 0, 1.6f);
++  TextMid(Bold(), 21, px, py + 12, kDimGray, Upper(T("Built With")), 0, 1.6f);
 +  py += 44;
 +  const char* parts[] = {"PS5 Payload SDK", "Mesa RADV (Vulkan)", "Dear ImGui", "stb_image, stb_vorbis, dr_mp3 and dr_flac",
 +                         "TeX Gyre Heros (GUST Font License)", "Oswald and Inter (SIL Open Font License)"};
 +  for (const char* part : parts) {
-+    TextMid(Regular(), 28, px, py + 14, Rgba(196, 196, 196), part);
++    TextMid(Regular(), 28, px, py + 14, Rgba(196, 196, 196), T(part));
 +    py += 40;
 +  }
 +  py += 26;
-+  TextMid(Bold(), 21, px, py + 12, kDimGray, "PLEASE NOTE", 0, 1.6f);
++  TextMid(Bold(), 21, px, py + 12, kDimGray, Upper(T("Please Note")), 0, 1.6f);
 +  py += 44;
 +  Wrapped(Regular(), 26, px, py, kPanelW, kMenuGray,
-+          "An early beta. An unofficial fan project, not affiliated with or endorsed by Rockstar Games, Take-Two "
-+          "Interactive, Microsoft or Sony. Grand Theft Auto and all related names belong to their owners. No game "
-+          "files are included: you need your own copy of GTA IV for Xbox 360.",
++          T("An early beta. An unofficial fan project, not affiliated with or endorsed by Rockstar Games, Take-Two "
++            "Interactive, Microsoft or Sony. Grand Theft Auto and all related names belong to their owners. No game "
++            "files are included: you need your own copy of GTA IV for Xbox 360."),
 +          1.36f);
-+  if (!version_.empty())
-+    TextMid(Regular(), 24, px, kRuleBottom - 34, kDimGray, "PS5 beta " + version_);
++  if (!version_.empty()) TextMid(Regular(), 24, px, kRuleBottom - 34, kDimGray, F("PS5 beta {}", {version_}));
 +}
 +
 +// --------------------------------------------------------------- behaviour
@@ -25507,6 +26422,7 @@ index 00000000..0f2c406c
 +
 +void Hub::ResetSettings() {
 +  for (const Setting& r : Settings()) {
++    if (IsLanguage(r)) continue;  // (a choice, not a recommendation: it stays)
 +    Save(r.key, r.quoted ? std::string("\"") + r.fallback + "\"" : std::string(r.fallback));
 +  }
 +  // (what frame generation's setting sets with it: off)
@@ -25514,7 +26430,7 @@ index 00000000..0f2c406c
 +  Save("gta4_temporal_upscaler_quality", "\"native\"");
 +  value_in_ = 0;
 +  Play(Sound::kSelect);
-+  Toast("Settings reset");
++  Toast(T("Settings reset"));
 +}
 +
 +void Hub::Activate(int dir) {
@@ -25529,6 +26445,7 @@ index 00000000..0f2c406c
 +      const int n = int(r.values.size());
 +      const int idx = (SettingIndex(r) + dir + n) % n;
 +      Save(r.key, r.quoted ? std::string("\"") + r.values[size_t(idx)] + "\"" : std::string(r.values[size_t(idx)]));
++      if (IsLanguage(r)) lang::Set(lang::FromSetting(r.values[size_t(idx)]));  // (the hub, right away)
 +      if (std::string_view(r.key) == "gta4_native_frame_generation") {
 +        // Frame generation needs FSR 3.1 reconstruction; its Native preset
 +        // keeps the chosen resolution (anti-aliasing only).
@@ -25550,8 +26467,8 @@ index 00000000..0f2c406c
 +        pending_imports_ = save_import_.pending ? save_import_.pending() : 0;
 +        if (!pending_imports_) {
 +          Play(Sound::kError);
-+          Notice("Nothing to import", "Copy your Xbox 360 save files into /data/homebrew/PPSA94004/import/ on the "
-+                                      "PS5 first, then come back here.");
++          Notice(T("Nothing to import"), T("Copy your Xbox 360 save files into /data/homebrew/PPSA94004/import/ on "
++                                           "the PS5 first, then come back here."));
 +          break;
 +        }
 +        Play(Sound::kSelect);
@@ -25559,13 +26476,15 @@ index 00000000..0f2c406c
 +        const std::string message = save_import_.run();
 +        pending_imports_ = save_import_.pending ? save_import_.pending() : 0;
 +        LoadSaves();
-+        Notice("Xbox 360 saves", message);
++        Notice(T("Xbox 360 saves"), message);
 +      } else if (item - 2 < int(backups_.size())) {
 +        const Backup b = backups_[size_t(item - 2)];
 +        Play(Sound::kSelect);
-+        Confirm("Restore this backup?", "Your saves are replaced by the ones from " + b.name +
-+                                            ". The saves you have now are backed up first, so nothing is lost.",
-+                "Restore", [this, b] { RestoreSaves(b); });
++        Confirm(T("Restore this backup?"),
++                F("Your saves are replaced by the ones from {}. The saves you have now are backed up first, so "
++                  "nothing is lost.",
++                  {b.name}),
++                T("Restore"), [this, b] { RestoreSaves(b); });
 +      }
 +      break;
 +    }
@@ -25634,10 +26553,10 @@ index 00000000..0f2c406c
 +    case kDebugTab:
 +      if (p & kTriangle) {
 +        Play(Sound::kSelect);
-+        Confirm("Reset all settings?",
-+                "Everything on the Display, Game and Debug pages goes back to the recommended "
-+                "settings.",
-+                "Reset", [this] { ResetSettings(); });
++        Confirm(T("Reset all settings?"),
++                T("Everything on the Display, Game and Debug pages goes back to the recommended settings. The "
++                  "language stays as it is."),
++                T("Reset"), [this] { ResetSettings(); });
 +        return;
 +      }
 +      if (p & kLeft) Activate(-1);
