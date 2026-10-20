@@ -44,6 +44,11 @@ echo "==> [link] ${#inputs[@]} objects and libraries from CMake"
 export PS5_CLANG=${PS5_CLANG:-$(command -v clang-19 || command -v clang)}
 source "$tri/tools/radv-link.sh"
 radv_link_recipe "$stage" "$sdk_root" "$radv_archive"
+# The recipe's emulated TLS, with a fast path for finding the thread's block
+# (ps5_emutls.c): compiled over the recipe's object, which the link uses.
+"$PS5_CLANG" --target=x86_64-sie-ps5 -fPIC -fno-plt -fno-stack-protector \
+    -isysroot "$sdk_root" -isystem "$sdk_root/target/include" \
+    -O2 -c "$ps5dir/tools/ps5_emutls.c" -o "$stage/build/ps5-emutls-cxa.o"
 
 # stat("") / lstat("") as on Linux (ps5_stat.c, through --wrap).
 "$sdk_root/bin/prospero-clang" -c -O2 -fno-visibility-from-dllstorageclass -o "$stage/build/ps5_stat.o" "$ps5dir/tools/ps5_stat.c"
