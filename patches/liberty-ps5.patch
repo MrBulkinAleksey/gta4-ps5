@@ -301,7 +301,7 @@ index 3b033069..0a577834 100644
      add_library(gta4_recomp INTERFACE)
      target_include_directories(gta4_recomp INTERFACE
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/generated/gta4_init.h b/glue/rexglue-sdk-main/gta4-recomp/generated/gta4_init.h
-index 42ddaa34..a6bd461a 100644
+index 42ddaa34..e58fd9d5 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/generated/gta4_init.h
 +++ b/glue/rexglue-sdk-main/gta4-recomp/generated/gta4_init.h
 @@ -114,8 +114,16 @@ extern PPCFuncMapping PPCFuncMappings[];
@@ -330,8 +330,43 @@ index 42ddaa34..a6bd461a 100644
  #define REX_PHYS_HOST_OFFSET(addr) (((u32)(addr) >= 0xE0000000u) ? 0x1000u : 0u)
  #else
  #define REX_PHYS_HOST_OFFSET(addr) 0u
-@@ -392,6 +400,17 @@ inline thread_local i32 ppc_global_lock_depth_ = 0;
-     rex::thread::global_critical_region::mutex().unlock();                                  \
+@@ -370,28 +378,38 @@ inline void ppc_trap(PPCContext& ctx, u8* base, u16 trap_type) {
+ // Interrupt Locks
+ //=============================================================================
+ 
+-// Interrupt-disabled depth of the calling thread. The count under the global
+-// lock is non-zero exactly when the caller holds the lock, so mfmsr reads this
+-// instead of taking the lock: guest sections are a few instructions
+-// (mfmsr/mtmsrd around lwarx/stwcx.), and the extra lock round trip doubled
+-// their contention.
+-inline thread_local i32 ppc_global_lock_depth_ = 0;
+-
+-#define REX_CHECK_GLOBAL_LOCK() (ppc_global_lock_depth_ ? u64{0} : u64{0x8000})
++// Interrupt-disabled depth of the calling thread (ctx.global_lock_depth, in
++// the guest thread's context: a thread_local cost a system lookup on the PS5).
++// The count under the global lock is non-zero exactly when the caller holds the
++// lock, so mfmsr reads this instead of taking the lock: guest sections are a
++// few instructions (mfmsr/mtmsrd around lwarx/stwcx.), and the extra lock round
++// trip doubled their contention.
++#define REX_CHECK_GLOBAL_LOCK() (ctx.global_lock_depth ? u64{0} : u64{0x8000})
+ 
+ #define REX_ENTER_GLOBAL_LOCK()                          \
+   do {                                                   \
+     rex::thread::global_critical_region::LockSpinning(); \
+-    ++ppc_global_lock_depth_;                            \
++    ++ctx.global_lock_depth;                             \
+   } while (0)
+ 
+-#define REX_LEAVE_GLOBAL_LOCK()                                                             \
+-  do {                                                                                      \
+-    assert(ppc_global_lock_depth_ >= 1 && "LeaveGlobalLock called without EnterGlobalLock"); \
+-    --ppc_global_lock_depth_;                                                               \
+-    rex::thread::global_critical_region::mutex().unlock();                                  \
++#define REX_LEAVE_GLOBAL_LOCK()                                                            \
++  do {                                                                                     \
++    assert(ctx.global_lock_depth >= 1 && "LeaveGlobalLock called without EnterGlobalLock"); \
++    --ctx.global_lock_depth;                                                               \
++    rex::thread::global_critical_region::mutex().unlock();                                 \
    } while (0)
  
 +#if defined(__PROSPERO__) && defined(REX_PS5_GUEST_CODE)
@@ -3687,10 +3722,10 @@ index 00000000..18a0d8a1
 +}  // namespace gta4ps5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp
 new file mode 100644
-index 00000000..35a6fee5
+index 00000000..05d0f08c
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,75 @@
 +// GTA IV PS5 - the app's PS5 parts (see gta4_ps5_app.h).
 +#include <rex/platform.h>
 +#if REX_PLATFORM_PS5
@@ -3702,7 +3737,6 @@ index 00000000..35a6fee5
 +
 +#include <rex/cvar.h>
 +#include <rex/logging.h>
-+#include <rex/ps5_diag.h>
 +#include <rex/runtime.h>
 +
 +#include "../gta4_app.h"
@@ -3710,10 +3744,6 @@ index 00000000..35a6fee5
 +#include "game/save_import.h"
 +#include "game/trophies_game.h"
 +#include "hub/ps5_hub.h"
-+
-+REXCVAR_DEFINE_BOOL(ps5_fast_tls, true, "PS5",
-+                    "Find each thread's thread_local variables through a table instead of a "
-+                    "system call (ps5/tools/ps5_emutls.c); applied when the game starts");
 +
 +namespace gta4ps5 {
 +
@@ -3752,9 +3782,7 @@ index 00000000..35a6fee5
 +  hub::Show(drawer, immediate, hub_paths, [config, launch = std::move(launch)] {
 +    // the hub's settings, for this start
 +    rex::cvar::LoadConfig(config);
-+    if (ps5_emutls_set_fast) ps5_emutls_set_fast(REXCVAR_GET(ps5_fast_tls) ? 1 : 0);
-+    REXLOG_INFO("PS5 hub: START GAME (GTA IV PS5 {}; fast thread lookups {})", BuildVersion(),
-+                REXCVAR_GET(ps5_fast_tls) ? "on" : "off");
++    REXLOG_INFO("PS5 hub: START GAME (GTA IV PS5 {})", BuildVersion());
 +    launch();
 +  });
 +}
@@ -24384,10 +24412,10 @@ index 00000000..995f785d
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..23bb18bd
+index 00000000..b5ef4d6f
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1285 @@
+@@ -0,0 +1,1281 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -24563,10 +24591,6 @@ index 00000000..23bb18bd
 +       "How much goes into the log. Normal is enough for most reports; Detailed and Everything help with "
 +       "crashes and freezes but make big files and can slow the game.",
 +       true, {"info", "debug", "trace"}, {"Normal", "Detailed", "Everything"}, "info"},
-+      {"DEBUG", "ps5_fast_tls", "Fast Thread Lookups", nullptr,
-+       "Each thread finds its own variables through a quick table instead of asking the system "
-+       "every time, which takes load off the game's main thread. Off goes back to the old way.",
-+       false, {"true", "false"}, {"On", "Off"}, "true"},
 +      {"DEBUG", "ps5_renderer_cpus", "Renderer Threads", nullptr,
 +       "Own Cores gives the game's render thread and the two renderer threads a CPU core each and "
 +       "moves everything else off them (about 10% faster than Anywhere). Compare switches between "
@@ -32828,6 +32852,27 @@ index fd32c512..068e0a55 100644
  
  #if defined(__clang__)
  #define REX_COMPILER_CLANG 1
+diff --git a/glue/rexglue-sdk-main/include/rex/ppc/context.h b/glue/rexglue-sdk-main/include/rex/ppc/context.h
+index 2d571e3d..abeebda4 100644
+--- a/glue/rexglue-sdk-main/include/rex/ppc/context.h
++++ b/glue/rexglue-sdk-main/include/rex/ppc/context.h
+@@ -306,6 +306,16 @@ struct alignas(0x40) PPCContext {
+    */
+   uint32_t last_indirect_target = 0;
+ 
++  /**
++   * [ps5 port] Interrupt-disabled depth of this guest thread (its global
++   * critical region nesting): mfmsr reads it, mtmsrd counts it. Here rather
++   * than in a thread_local, which on the PS5 costs a lookup through the system
++   * three times per guest interlocked operation. A guest thread has one
++   * context, and the recompiled code takes and leaves the region within one
++   * function, so it is the same count.
++   */
++  int32_t global_lock_depth = 0;
++
+   PPCRegister f0;
+   PPCRegister f1;
+   PPCRegister f2;
 diff --git a/glue/rexglue-sdk-main/include/rex/ppc/function.h b/glue/rexglue-sdk-main/include/rex/ppc/function.h
 index 611a52f4..7038c1a2 100644
 --- a/glue/rexglue-sdk-main/include/rex/ppc/function.h
@@ -32883,10 +32928,10 @@ index 00000000..85c3c3ca
 +#endif  // __PROSPERO__
 diff --git a/glue/rexglue-sdk-main/include/rex/ps5_diag.h b/glue/rexglue-sdk-main/include/rex/ps5_diag.h
 new file mode 100644
-index 00000000..f89bf546
+index 00000000..d28a8865
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/ps5_diag.h
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,83 @@
 +#pragma once
 +/**
 + * [ps5 port] Progress counters for bringing the game up on the PS5: a
@@ -32940,8 +32985,7 @@ index 00000000..f89bf546
 +// words on its stack, and logs them relative to Anchor() so they can be
 +// symbolized against the linked ELF offline.
 +void RegisterThread(const char* what);
-+// Before the calling thread exits: out of the samples and the CPU moves, and
-+// its thread_locals out of the fast lookup table (ps5/tools/ps5_emutls.c).
++// Before the calling thread exits: out of the samples and the CPU moves.
 +void UnregisterThread();
 +// [ps5 port] Keeps every registered thread except the renderer's (the
 +// "worker" and "recorder", and `title_thread`) on `mask`, and the game's main
@@ -32971,16 +33015,6 @@ index 00000000..f89bf546
 +void NoteCriticalSectionInit(uint32_t guest, uint32_t lr);
 +uint32_t CriticalSectionInitBy(uint32_t guest);  // 0: never seen
 +}  // namespace rex::ps5diag
-+
-+// [ps5 port] The fast thread_local lookup (ps5/tools/ps5_emutls.c, linked by
-+// ps5_package.sh; weak so other links without it still resolve).
-+extern "C" {
-+__attribute__((weak)) void ps5_emutls_thread_start(void);
-+__attribute__((weak)) void ps5_emutls_thread_exit(void);
-+__attribute__((weak)) void ps5_emutls_set_fast(int on);
-+__attribute__((weak)) unsigned long ps5_emutls_stale_count(void);
-+__attribute__((weak)) void ps5_emutls_exit_rounds(unsigned long out[3]);
-+}
 diff --git a/glue/rexglue-sdk-main/include/rex/string/numeric.h b/glue/rexglue-sdk-main/include/rex/string/numeric.h
 index 8fb3d978..0aaf689b 100644
 --- a/glue/rexglue-sdk-main/include/rex/string/numeric.h
@@ -33174,10 +33208,10 @@ index 953ab146..c986c402 100644
    void (*entry_)(void*) = nullptr;
    void* arg_ = nullptr;
 diff --git a/glue/rexglue-sdk-main/include/rex/thread/mutex.h b/glue/rexglue-sdk-main/include/rex/thread/mutex.h
-index f02059b9..07809328 100644
+index f02059b9..41e38426 100644
 --- a/glue/rexglue-sdk-main/include/rex/thread/mutex.h
 +++ b/glue/rexglue-sdk-main/include/rex/thread/mutex.h
-@@ -17,8 +17,85 @@
+@@ -17,8 +17,80 @@
  #include <immintrin.h>
  #endif
  
@@ -33240,14 +33274,9 @@ index f02059b9..07809328 100644
 +  bool owned_by_current_thread() const { return owner_.load(std::memory_order_relaxed) == Self(); }
 +
 + private:
-+  // The thread pointer (%fs:0, the thread's control block): unique to each
-+  // running thread like pthread_self(), without a call into libkernel twice
-+  // per guest interlocked operation.
-+  static uintptr_t Self() {
-+    uintptr_t self;
-+    __asm__("movq %%fs:0, %0" : "=r"(self));
-+    return self;
-+  }
++  // (pthread_self(): 0.6b2 read the thread pointer at %fs:0 instead, and on
++  // the PS5 two threads could see the same value there - the lock let both in.)
++  static uintptr_t Self() { return reinterpret_cast<uintptr_t>(pthread_self()); }
 +  void LockSlow(uintptr_t self);
 +
 +  std::atomic<uintptr_t> owner_{0};
@@ -33263,7 +33292,7 @@ index f02059b9..07809328 100644
  // The global critical region mutex singleton.
  // This must guard any operation that may suspend threads or be sensitive to
  // being suspended such as global table locks and such.
-@@ -59,13 +136,17 @@ namespace rex::thread {
+@@ -59,13 +131,17 @@ namespace rex::thread {
  // };
  class global_critical_region {
   public:
@@ -33283,7 +33312,7 @@ index f02059b9..07809328 100644
      for (int i = 0; i < 128; ++i) {
        if (global_mutex.try_lock()) return;
  #if defined(__aarch64__)
-@@ -81,24 +162,24 @@ class global_critical_region {
+@@ -81,24 +157,24 @@ class global_critical_region {
    // Use this when keeping an instance is not possible. Otherwise, prefer
    // to keep an instance of global_critical_region near the members requiring
    // it to keep things readable.
@@ -36211,7 +36240,7 @@ index 00000000..3a63d8d3
 ++#define CONFIG_LIBZMQ_PROTOCOL 0
 ++#endif /* FFMPEG_CONFIG_H */
 diff --git a/glue/rexglue-sdk-main/resources/templates/codegen/init_h.inja b/glue/rexglue-sdk-main/resources/templates/codegen/init_h.inja
-index 05ba3178..7007cd31 100644
+index 05ba3178..7eb3a10b 100644
 --- a/glue/rexglue-sdk-main/resources/templates/codegen/init_h.inja
 +++ b/glue/rexglue-sdk-main/resources/templates/codegen/init_h.inja
 @@ -118,8 +118,16 @@ extern PPCFuncMapping PPCFuncMappings[];
@@ -36240,8 +36269,43 @@ index 05ba3178..7007cd31 100644
  #define REX_PHYS_HOST_OFFSET(addr) (((u32)(addr) >= 0xE0000000u) ? 0x1000u : 0u)
  #else
  #define REX_PHYS_HOST_OFFSET(addr) 0u
-@@ -358,6 +366,17 @@ inline thread_local i32 ppc_global_lock_depth_ = 0;
-     rex::thread::global_critical_region::mutex().unlock();                                  \
+@@ -336,28 +344,38 @@ inline void ppc_trap(PPCContext& ctx, u8* base, u16 trap_type) {
+ // Interrupt Locks
+ //=============================================================================
+ 
+-// Interrupt-disabled depth of the calling thread. The count under the global
+-// lock is non-zero exactly when the caller holds the lock, so mfmsr reads this
+-// instead of taking the lock: guest sections are a few instructions
+-// (mfmsr/mtmsrd around lwarx/stwcx.), and the extra lock round trip doubled
+-// their contention.
+-inline thread_local i32 ppc_global_lock_depth_ = 0;
+-
+-#define REX_CHECK_GLOBAL_LOCK() (ppc_global_lock_depth_ ? u64{0} : u64{0x8000})
++// Interrupt-disabled depth of the calling thread (ctx.global_lock_depth, in
++// the guest thread's context: a thread_local cost a system lookup on the PS5).
++// The count under the global lock is non-zero exactly when the caller holds the
++// lock, so mfmsr reads this instead of taking the lock: guest sections are a
++// few instructions (mfmsr/mtmsrd around lwarx/stwcx.), and the extra lock round
++// trip doubled their contention.
++#define REX_CHECK_GLOBAL_LOCK() (ctx.global_lock_depth ? u64{0} : u64{0x8000})
+ 
+ #define REX_ENTER_GLOBAL_LOCK()                          \
+   do {                                                   \
+     rex::thread::global_critical_region::LockSpinning(); \
+-    ++ppc_global_lock_depth_;                            \
++    ++ctx.global_lock_depth;                             \
+   } while (0)
+ 
+-#define REX_LEAVE_GLOBAL_LOCK()                                                             \
+-  do {                                                                                      \
+-    assert(ppc_global_lock_depth_ >= 1 && "LeaveGlobalLock called without EnterGlobalLock"); \
+-    --ppc_global_lock_depth_;                                                               \
+-    rex::thread::global_critical_region::mutex().unlock();                                  \
++#define REX_LEAVE_GLOBAL_LOCK()                                                            \
++  do {                                                                                     \
++    assert(ctx.global_lock_depth >= 1 && "LeaveGlobalLock called without EnterGlobalLock"); \
++    --ctx.global_lock_depth;                                                               \
++    rex::thread::global_critical_region::mutex().unlock();                                 \
    } while (0)
  
 +#if defined(__PROSPERO__) && defined(REX_PS5_GUEST_CODE)
@@ -37308,10 +37372,10 @@ index d639924c..7f325c0c 100644
  }  // namespace rex::thread
 diff --git a/glue/rexglue-sdk-main/src/core/ps5_diag.cpp b/glue/rexglue-sdk-main/src/core/ps5_diag.cpp
 new file mode 100644
-index 00000000..541440f3
+index 00000000..f016c969
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/src/core/ps5_diag.cpp
-@@ -0,0 +1,453 @@
+@@ -0,0 +1,449 @@
 +// [ps5 port] see rex/ps5_diag.h
 +#include <rex/ps5_diag.h>
 +
@@ -37700,10 +37764,7 @@ index 00000000..541440f3
 +
 +void UnregisterThread() {
 +  ThreadEntry* e = my_entry;
-+  if (!e) {
-+    if (ps5_emutls_thread_exit) ps5_emutls_thread_exit();
-+    return;
-+  }
++  if (!e) return;
 +  // No more samples or CPU moves for it: its pthread_t can be another
 +  // thread's soon, and a sample landing after its thread-specific data is
 +  // gone would take a lookup that allocates in a signal handler.
@@ -37713,7 +37774,6 @@ index 00000000..541440f3
 +  pthread_sigmask(SIG_BLOCK, &prof, nullptr);
 +  e->used.store(false, std::memory_order_release);
 +  my_entry = nullptr;
-+  if (ps5_emutls_thread_exit) ps5_emutls_thread_exit();
 +}
 +
 +extern "C" int32_t scePthreadSetaffinity(pthread_t thread, uint64_t mask);
@@ -37900,7 +37960,7 @@ index 00000000..95c028d7
 +}
 +#endif
 diff --git a/glue/rexglue-sdk-main/src/core/threading_posix.cpp b/glue/rexglue-sdk-main/src/core/threading_posix.cpp
-index 8c31d93a..4f8fa4e1 100644
+index 8c31d93a..919664a9 100644
 --- a/glue/rexglue-sdk-main/src/core/threading_posix.cpp
 +++ b/glue/rexglue-sdk-main/src/core/threading_posix.cpp
 @@ -27,15 +27,23 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
@@ -38351,19 +38411,7 @@ index 8c31d93a..4f8fa4e1 100644
    std::vector<PosixConditionBase*> conditions;
    conditions.reserve(wait_handle_count);
    for (size_t i = 0u; i < wait_handle_count; ++i) {
-@@ -1328,6 +1552,11 @@ class PosixThread : public PosixConditionHandle<Thread> {
- thread_local PosixThread* current_thread_ = nullptr;
- 
- void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
-+#if REX_PLATFORM_PS5
-+  // [ps5 port] Before this thread's first thread_local: a slot left under its
-+  // control block (a finished thread's) is cleared.
-+  if (ps5_emutls_thread_start) ps5_emutls_thread_start();
-+#endif
- #if !REX_PLATFORM_ANDROID
-   if (pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, nullptr) != 0) {
-     assert_always();
-@@ -1346,6 +1575,10 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+@@ -1346,6 +1570,10 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
  
    current_thread_ = thread;
    current_thread_condition_ = &thread->handle_;
@@ -38374,7 +38422,7 @@ index 8c31d93a..4f8fa4e1 100644
    {
      std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
      thread->handle_.suspend_count_ = create_suspended ? 1 : 0;
-@@ -1358,6 +1591,9 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+@@ -1358,6 +1586,9 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
    }
  
    start_routine();
@@ -38384,7 +38432,7 @@ index 8c31d93a..4f8fa4e1 100644
  
    {
      std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
-@@ -1430,7 +1666,11 @@ void Thread::Exit(int exit_code) {
+@@ -1430,7 +1661,11 @@ void Thread::Exit(int exit_code) {
  }
  
  void set_current_thread_name(const std::string_view name) {
@@ -45727,7 +45775,7 @@ index 87f97744..5acee304 100644
    if (allowed_types & Surface::kTypeFlag_AndroidNativeWindow) {
      auto* native_window = static_cast<ANativeWindow*>(GetNativeWindowHandle());
 diff --git a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
-index ac2d8dc4..2403a09e 100644
+index ac2d8dc4..6d6bbc30 100644
 --- a/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/windowed_app_main_sdl.cpp
 @@ -11,6 +11,7 @@
@@ -45823,7 +45871,7 @@ index ac2d8dc4..2403a09e 100644
  
      app->InvokeOnDestroy();
    }
-@@ -161,8 +203,349 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
+@@ -161,8 +203,345 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
  #include <SDL3/SDL_main.h>
  #endif
  
@@ -46050,17 +46098,13 @@ index ac2d8dc4..2403a09e 100644
 +      last_shown = shown;
 +      last_ns = now_ns;
 +    }
-+    unsigned long exit_rounds[3] = {0, 0, 0};
-+    if (ps5_emutls_exit_rounds) ps5_emutls_exit_rounds(exit_rounds);
 +    REXLOG_INFO(
 +        "ps5 diag {}s: faults {} (mmio {}, watch {}, unhandled {}), vblanks {}, interrupts {}, "
-+        "ring writes {}, ring batches {}; thread lookups found under a finished thread {}, thread "
-+        "exits {} (cleanup rounds 2: {}, 3: {})",
++        "ring writes {}, ring batches {}",
 +        tick * 10, counters[kAccessViolations].load(), counters[kMmioAccesses].load(),
 +        counters[kWatchFaults].load(), counters[kUnhandledFaults].load(), counters[kVblanks].load(),
 +        counters[kInterrupts].load(), counters[kWritePointer].load(),
-+        counters[kPrimaryBuffers].load(), ps5_emutls_stale_count ? ps5_emutls_stale_count() : 0ul,
-+        exit_rounds[0], exit_rounds[1], exit_rounds[2]);
++        counters[kPrimaryBuffers].load());
 +    // The game stopped presenting frames (the native renderer doesn't use the
 +    // GPU ring, so frames are what show it): guest threads stuck in one kernel
 +    // wait for over 5 s, and where every thread is. In play, threads waiting
