@@ -135,6 +135,11 @@ cp "$ps5dir/package/install/README.txt" "$app/install/README.txt"
 # The licences of the fonts built into the app (the hub's type and the overlay's).
 mkdir -p "$app/licenses"
 cp "$ps5dir"/assets/fonts/*.txt "$app/licenses/"
+# Pipelines a long session built (the renderer's InitializeNativePipelineCache
+# takes them in), so first sights of a car or a street don't stall the frame.
+if [[ -d $ps5dir/package/shader_cache_seed ]]; then
+    cp -r "$ps5dir/package/shader_cache_seed" "$app/shader_cache_seed"
+fi
 # FSR 3's motion-vector shaders (builds with FidelityFX on): the renderer looks
 # for them next to the executable.
 temporal=$build/glue/gta4-recomp/shaders/vulkan-temporal.bin
