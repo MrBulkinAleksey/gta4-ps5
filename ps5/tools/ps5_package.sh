@@ -57,6 +57,7 @@ link_pie() {  # extra objects, if any
     "$sdk_root/bin/prospero-lld" "${radv_linker_script[@]}" --eh-frame-hdr "${radv_link_flags[@]}" \
         --version-script "$tri/tooling/native/app-symbols.map" --exclude-libs=ALL \
         --wrap=stat --wrap=lstat \
+        --wrap=sceVideoOutIsOutputSupported --wrap=sceVideoOutConfigureOutput --wrap=sceVideoOutSetFlipRate \
         -e _start -o "$stage/build/llvm-pie.elf" \
         "$tri/build/obj/app_crt.o" "$tri/build/obj/app_cpp_runtime.o" "$stage/build/ps5_stat.o" "$@" \
         --start-group "${inputs[@]}" --end-group \
@@ -93,6 +94,10 @@ rm -rf -- "$app"
 mkdir -p "$app/sce_sys" "$app/sce_module"
 "$tool" self --sign --in "$stage/build/eboot.elf" --out "$app/eboot.bin" --magic 0x1D3D154F
 cp "$tri/runtime/libc.prx" "$app/sce_module/libc.prx"
+# attribute3 262208 (0x40 | 0x40000): 120 Hz output, with VRR left to the
+# system, as retail titles declare it. RADV asks VideoOut for the 120 Hz mode
+# when it's declared; the game only takes it when the hub's Refresh Rate is
+# 120 (src/ps5/game/ps5_display.cpp).
 cat > "$app/sce_sys/param.json" <<EOF
 {
   "ageLevel": { "default": 0 },
@@ -100,7 +105,7 @@ cat > "$app/sce_sys/param.json" <<EOF
   "applicationDrmType": "free",
   "attribute": 0,
   "attribute2": 0,
-  "attribute3": 0,
+  "attribute3": 262208,
   "conceptId": "${title_id:4}",
   "contentBadgeType": 1,
   "contentId": "UP9000-${title_id}_00-GTAIVPS500000000",

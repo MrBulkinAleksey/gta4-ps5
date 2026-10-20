@@ -201,10 +201,10 @@ index 9ffeffdf..1f19e16d 100644
      endif()
  
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
-index 3b033069..431f3a17 100644
+index 3b033069..8ec19eb2 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
-@@ -443,6 +443,99 @@ elseif(ANDROID)
+@@ -443,6 +443,104 @@ elseif(ANDROID)
              -Wno-backend-plugin)
          target_link_options(LibertyRecomp PRIVATE "-fprofile-use=${LIBERTY_ANDROID_PGO}")
      endif()
@@ -232,6 +232,7 @@ index 3b033069..431f3a17 100644
 +        src/ps5/hub/ps5_hub.cpp
 +        src/ps5/game/sound.cpp
 +        src/ps5/game/trophies_game.cpp
++        src/ps5/game/ps5_display.cpp
 +        src/ps5/game/ps5_overlay.cpp
 +        src/ps5/game/save_import.cpp)
 +    # (the fonts are built into it: a changed one rebuilds it)
@@ -288,8 +289,12 @@ index 3b033069..431f3a17 100644
 +        xxHash::xxhash
 +        SDL3::SDL3
 +        utf8cpp
-+        SceUserService ScePad SceAudioOut SceSystemService
++        SceUserService ScePad SceAudioOut SceSystemService SceVideoOut
 +    )
++    # The TV's refresh rate and frame pacing (src/ps5/game/ps5_display.cpp):
++    # RADV's VideoOut calls go through it. ps5_package.sh's link wraps them too.
++    target_link_options(gta4 PRIVATE
++        "LINKER:--wrap=sceVideoOutIsOutputSupported,--wrap=sceVideoOutConfigureOutput,--wrap=sceVideoOutSetFlipRate")
 +    rexglue_configure_target(gta4)
 +    # zlib for the installer's RPF extraction: the PS5 toolchain's static build.
 +    set(PS5_ZLIB_ROOT "${PS5_PAYLOAD_SDK}/../zlib/root/usr" CACHE PATH "PS5 zlib (include/, lib/libz.a)")
@@ -603,6 +608,151 @@ index 68fcf860..e8c5ee1c 100644
    c.event = g_fire_next_event.fetch_add(1, std::memory_order_relaxed); c.device = device;
    c.replay = list != 0; c.command_list = list; c.replay_ordinal = ordinal;
    if (replay_live) c.replay_live = *replay_live;
+diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_hooks.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_hooks.cpp
+index b63d73e6..206cdbc4 100644
+--- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_hooks.cpp
++++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_hooks.cpp
+@@ -53,6 +53,17 @@ constexpr uint32_t kDisplayOptionsCount = 0x831DAEFC;
+ constexpr uint32_t kDisplayOptionsCapacity = 0x831DAEFE;
+ constexpr uint32_t kCurrentScreenAddress = 0x82BFA124;
+ constexpr uint32_t kPauseMenuActiveAddress = 0x82BF9EF4;
++// The pause menu's header (sub_8214F230 steps it with Left/Right, sub_8214F7C0
++// draws it; both get it as r3): the tab it highlights, a screen id, at +24.
++constexpr uint32_t kPauseHeaderAddress = 0x831D5278;
++constexpr uint32_t kPauseHeaderTabOffset = 24;
++// What sub_8214F230 does besides the switch, for the same steps: the Brief
++// page's flag, the Display page's flag (not in a network game), and
++// sub_821B5A68 with this when the map or a network game's last tab is left.
++constexpr uint32_t kBriefTabFlagAddress = 0x82BF9D8D;
++constexpr uint32_t kDisplayTabFlagAddress = 0x82BF9EF6;
++constexpr uint32_t kMapLeaveArgument = 0x82B2F7E0;
++constexpr uint32_t kMapScreen = 3;
+ constexpr uint32_t kOptionRecordSize = 22;
+ constexpr uint32_t kOptionActionOffset = 0;
+ constexpr uint32_t kOptionLabelOffset = 1;
+@@ -1744,12 +1755,21 @@ void SetConfigPath(std::filesystem::path path) {
+ 
+ bool SwitchPauseTab(PPCContext& parent, uint8_t* base, policy::PauseTabDirection direction,
+                     uint32_t* previous_screen, uint32_t* target_screen) {
+-  const uint32_t current = REX_LOAD_U32(kCurrentScreenAddress);
++  // The header's tab, not only the screen: the header highlights its own
++  // copy, so a switch that only changed the screen left the highlight on the
++  // old tab (the page changed under it).
++  const uint32_t screen = REX_LOAD_U32(kCurrentScreenAddress);
++  const uint32_t current = REX_LOAD_U32(kPauseHeaderAddress + kPauseHeaderTabOffset);
+   uint32_t target = 0;
+   if (previous_screen) {
+-    *previous_screen = current;
++    *previous_screen = screen;
++  }
++  // (a page without the header, or one the header isn't on)
++  if (current != screen) {
++    return false;
+   }
+-  if (!policy::ResolvePauseTab(current, direction, target)) {
++  const bool network = (InvokeGuest(parent, base, sub_826C4CA8).r3.u32 & 0xFF) != 0;
++  if (!policy::ResolvePauseTab(current, direction, network, target)) {
+     return false;
+   }
+   if (target_screen) {
+@@ -1758,13 +1778,28 @@ bool SwitchPauseTab(PPCContext& parent, uint8_t* base, policy::PauseTabDirection
+   if (policy::ShouldRestorePrimaryBeforeSwitch(g_display_menu.page, target, kDisplayScreen)) {
+     PublishPrimaryPage(base);
+   }
++  // As the retail header's Left/Right does (sub_8214F230).
++  const bool next = direction == policy::PauseTabDirection::kNext;
++  if (target == 2 && (next ? current == 3 : current == 4)) {
++    REX_STORE_U8(kBriefTabFlagAddress, 0);
++  }
++  if (!network && target == kDisplayScreen) {
++    REX_STORE_U8(kDisplayTabFlagAddress, 1);
++  }
++  if (network && (next ? current == kDisplayScreen && target == 1 : current == 1)) {
++    InvokeGuest(parent, base, sub_821B5A68, kMapLeaveArgument);
++  }
++  REX_STORE_U32(kPauseHeaderAddress + kPauseHeaderTabOffset, target);
++  if (screen == kMapScreen) {
++    InvokeGuest(parent, base, sub_821B5A68, kMapLeaveArgument);
++  }
+   InvokeGuest(parent, base, __imp__sub_82256D08, g_last_frontend_channel, target, 0);
+   if (rex::input::IsInputTraceEnabled()) {
+     REXLOG_INFO(
+         "input-e2e: seq={} stage=pause-tab result=switched direction={} channel={} "
+-        "screen={}->{}",
++        "screen={}->{} network={}",
+         rex::input::NextInputTraceSequence(), static_cast<int32_t>(direction),
+-        g_last_frontend_channel, current, target);
++        g_last_frontend_channel, screen, target, network);
+   }
+   return true;
+ }
+diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_menu_policy.h b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_menu_policy.h
+index 7c8962a1..dad4815a 100644
+--- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_menu_policy.h
++++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_menu_policy.h
+@@ -31,7 +31,12 @@ enum class PauseTabShoulderEdge : uint8_t {
+   kSimultaneous,
+ };
+ 
+-constexpr std::array<uint32_t, 7> kPauseTabScreens = {3, 4, 5, 6, 7, 8, 9};
++// The pause menu's header tabs, as screen ids, in the order the retail
++// header's Left/Right steps through them (sub_8214F230's jump tables; the
++// header draws them in this order, sub_8214F7C0). A network game has tab 1
++// at the end and no tab 4. Screens 6 and 9 are pages without the header.
++constexpr std::array<uint32_t, 7> kPauseTabScreens = {3, 2, 4, 5, 7, 8, 0};
++constexpr std::array<uint32_t, 6> kNetworkPauseTabScreens = {3, 2, 5, 7, 8, 1};
+ 
+ constexpr bool IsPauseTabScreen(uint32_t screen) noexcept {
+   for (uint32_t candidate : kPauseTabScreens) {
+@@ -39,6 +44,11 @@ constexpr bool IsPauseTabScreen(uint32_t screen) noexcept {
+       return true;
+     }
+   }
++  for (uint32_t candidate : kNetworkPauseTabScreens) {
++    if (candidate == screen) {
++      return true;
++    }
++  }
+   return false;
+ }
+ 
+@@ -59,23 +69,29 @@ constexpr PauseTabShoulderEdge ClassifyPauseTabShoulderEdge(
+   return PauseTabShoulderEdge::kNone;
+ }
+ 
+-constexpr bool ResolvePauseTab(uint32_t current_screen, PauseTabDirection direction,
+-                               uint32_t& target_screen) noexcept {
+-  for (std::size_t index = 0; index < kPauseTabScreens.size(); ++index) {
+-    if (kPauseTabScreens[index] != current_screen) {
++template <std::size_t N>
++constexpr bool ResolvePauseTabIn(const std::array<uint32_t, N>& tabs, uint32_t current_screen,
++                                 PauseTabDirection direction, uint32_t& target_screen) noexcept {
++  for (std::size_t index = 0; index < tabs.size(); ++index) {
++    if (tabs[index] != current_screen) {
+       continue;
+     }
+     if (direction == PauseTabDirection::kPrevious) {
+-      target_screen = index == 0 ? kPauseTabScreens.back() : kPauseTabScreens[index - 1];
++      target_screen = index == 0 ? tabs.back() : tabs[index - 1];
+     } else {
+-      target_screen = index + 1 == kPauseTabScreens.size() ? kPauseTabScreens.front()
+-                                                           : kPauseTabScreens[index + 1];
++      target_screen = index + 1 == tabs.size() ? tabs.front() : tabs[index + 1];
+     }
+     return true;
+   }
+   return false;
+ }
+ 
++constexpr bool ResolvePauseTab(uint32_t current_screen, PauseTabDirection direction, bool network,
++                               uint32_t& target_screen) noexcept {
++  return network ? ResolvePauseTabIn(kNetworkPauseTabScreens, current_screen, direction, target_screen)
++                 : ResolvePauseTabIn(kPauseTabScreens, current_screen, direction, target_screen);
++}
++
+ struct StockLayout {
+   uint32_t rows = 0;
+   uint16_t count = 0;
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_gpu_pass_context.h b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_gpu_pass_context.h
 index 3fa04e1f..57c8ad5b 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_gpu_pass_context.h
@@ -648,6 +798,20 @@ index 64de44f5..1a33590d 100644
    using T = rex::graphics::gta4_native::CommandType;
    if (type != uint32_t(T::kDrawPrimitive) && type != uint32_t(T::kDrawPrimitiveUp) &&
        type != uint32_t(T::kDrawIndexedPrimitive)) return;
+diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_input_hooks.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_input_hooks.cpp
+index f8dc1eec..82daa9ec 100644
+--- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_input_hooks.cpp
++++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_input_hooks.cpp
+@@ -940,7 +940,8 @@ void ProcessPauseTabShoulders(PPCContext& parent, uint8_t* base,
+   const bool left_down = keyboard_left_down || gamepad_left_down;
+   const bool right_down = gamepad_right_down;
+ 
+-  if (!epoch.frontend_active ||
++  // (the pause menu only: screen 0 is one of its tabs, and the start screen's)
++  if (!epoch.frontend_active || LoadU8(base, kPauseMenuVisibleAddress) == 0 ||
+       !gta4::frontend_menu::policy::IsPauseTabScreen(screen)) {
+     g_pause_tab_input = {
+         .epoch = epoch.sequence,
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_loading_parallax_fix.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_loading_parallax_fix.cpp
 index c1faf846..f07d3c44 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_loading_parallax_fix.cpp
@@ -2507,6 +2671,179 @@ index 98543925..55fc045d 100644
        return false;
      }
      for (auto& child : nested) {
+diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_display.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_display.cpp
+new file mode 100644
+index 00000000..0fe0cd2d
+--- /dev/null
++++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_display.cpp
+@@ -0,0 +1,134 @@
++// GTA IV PS5 - the TV's refresh rate and frame pacing (see ps5_display.h).
++#include <rex/platform.h>
++#if REX_PLATFORM_PS5
++
++#include "ps5_display.h"
++
++#include <atomic>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++
++#include <rex/cvar.h>
++#include <rex/logging.h>
++
++REXCVAR_DEFINE_UINT32(ps5_refresh_rate, 60, "PS5",
++                      "The TV's refresh rate, 60 or 120 Hz (120 needs a TV that takes it); read when the app starts");
++REXCVAR_DECLARE(uint32_t, gta4_frame_limit);
++
++extern "C" {
++int __real_sceVideoOutIsOutputSupported(int32_t handle, uint32_t mode, const void* reserved1,
++                                        const void* reserved2, const void* reserved3);
++int __real_sceVideoOutConfigureOutput(int32_t handle, uint32_t mode, const void* reserved1,
++                                      const void* reserved2, const void* reserved3);
++int __real_sceVideoOutSetFlipRate(int32_t handle, int32_t rate);
++}
++
++namespace gta4ps5::display {
++namespace {
++
++constexpr uint32_t kHighFrameRateMode = 15;  // (videoout.h: 119.88 Hz)
++constexpr uint32_t kRestoreMode = 1;
++
++std::atomic<int32_t> g_handle{-1};
++std::atomic<bool> g_high{false};
++std::atomic<bool> g_game{false};
++std::atomic<int32_t> g_rate{-1};  // (the rate VideoOut has: -1 unknown)
++
++// The hub's setting, straight from its file: VideoOut opens before the config
++// is loaded (as ps5_save_logs in windowed_app_main_sdl.cpp).
++bool WantsHighRefresh() {
++  bool high = false;
++  if (std::FILE* f = std::fopen("/app0/UserData/LibertyRecomp/native.toml", "rb")) {
++    char line[512];
++    while (std::fgets(line, sizeof(line), f)) {
++      const char* start = line + std::strspn(line, " \t");
++      if (*start == '[') break;  // (top-level keys only)
++      if (std::strncmp(start, "ps5_refresh_rate", 16) != 0) continue;
++      const char* value = std::strchr(start, '=');
++      if (!value) continue;
++      value += 1 + std::strspn(value + 1, " \t\"");
++      high = std::strtoul(value, nullptr, 10) >= 100;
++    }
++    std::fclose(f);
++  }
++  return high;
++}
++
++// Vblanks a frame stays for, less one (sceVideoOutSetFlipRate's rate).
++int32_t WantedRate() {
++  if (!g_game.load(std::memory_order_acquire)) return 0;
++  const uint32_t fps = REXCVAR_GET(gta4_frame_limit);
++  if (g_high.load(std::memory_order_acquire)) {
++    if (fps == 40) return 2;
++    if (fps == 30 || fps == 60) return 1;
++    return 0;
++  }
++  return fps == 30 ? 1 : 0;
++}
++
++void Apply(const char* why) {
++  const int32_t handle = g_handle.load(std::memory_order_acquire);
++  const int32_t rate = WantedRate();
++  if (handle < 0 || g_rate.load(std::memory_order_acquire) == rate) return;
++  const int result = __real_sceVideoOutSetFlipRate(handle, rate);
++  if (result == 0) g_rate.store(rate, std::memory_order_release);
++  REXLOG_INFO("PS5 display: each frame shows for at least {} vblank{} at {} Hz ({}; {})", rate + 1,
++              rate ? "s" : "", g_high.load() ? "119.88" : "59.94", why,
++              result == 0 ? std::string("ok") : fmt::format("failed {:08X}", uint32_t(result)));
++}
++
++}  // namespace
++
++bool HighRefresh() { return g_high.load(std::memory_order_acquire); }
++
++void StartGamePacing() {
++  g_game.store(true, std::memory_order_release);
++  static std::atomic<bool> registered{false};
++  if (!registered.exchange(true))
++    rex::cvar::RegisterChangeCallback("gta4_frame_limit",
++                                      [](std::string_view, std::string_view) { Apply("frame limit changed"); });
++  Apply("game started");
++}
++
++}  // namespace gta4ps5::display
++
++using namespace gta4ps5::display;
++
++extern "C" int __wrap_sceVideoOutIsOutputSupported(int32_t handle, uint32_t mode, const void* reserved1,
++                                                   const void* reserved2, const void* reserved3) {
++  if (mode == kHighFrameRateMode && !WantsHighRefresh()) {
++    REXLOG_INFO("PS5 display: 60 Hz (the hub's Refresh Rate)");
++    return 0;
++  }
++  const int result = __real_sceVideoOutIsOutputSupported(handle, mode, reserved1, reserved2, reserved3);
++  if (mode == kHighFrameRateMode)
++    REXLOG_INFO("PS5 display: 120 Hz asked for; the TV {} it ({})", result > 0 ? "takes" : "doesn't take", result);
++  return result;
++}
++
++extern "C" int __wrap_sceVideoOutConfigureOutput(int32_t handle, uint32_t mode, const void* reserved1,
++                                                 const void* reserved2, const void* reserved3) {
++  const int result = __real_sceVideoOutConfigureOutput(handle, mode, reserved1, reserved2, reserved3);
++  if (mode == kHighFrameRateMode) {
++    g_high.store(result == 0, std::memory_order_release);
++    REXLOG_INFO("PS5 display: 120 Hz mode {} ({})", result == 0 ? "on" : "refused", result);
++  } else if (mode == kRestoreMode && g_high.exchange(false)) {
++    // (RADV measured the vblanks and found the TV still at 60 Hz)
++    REXLOG_INFO("PS5 display: the TV stayed at 60 Hz; 120 Hz mode off");
++  }
++  return result;
++}
++
++extern "C" int __wrap_sceVideoOutSetFlipRate(int32_t handle, int32_t rate) {
++  g_handle.store(handle, std::memory_order_release);
++  const int32_t wanted = WantedRate();
++  const int result = __real_sceVideoOutSetFlipRate(handle, wanted);
++  g_rate.store(result == 0 ? wanted : -1, std::memory_order_release);
++  (void)rate;
++  return result;
++}
++
++#endif  // REX_PLATFORM_PS5
+diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_display.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_display.h
+new file mode 100644
+index 00000000..c0b8dff0
+--- /dev/null
++++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_display.h
+@@ -0,0 +1,27 @@
++// GTA IV PS5 - the TV's refresh rate (the hub's Refresh Rate) and how many
++// vblanks each frame stays on screen.
++//
++// param.json declares 120 Hz output (attribute3 0x40, with 0x40000 as retail
++// titles with VRR do: ps5_package.sh), so RADV's VideoOut
++// (wsi_common_videoout.c) asks the console for its 119.88 Hz mode when it
++// opens the TV, once, before the hub. The link wraps three of its VideoOut
++// calls (ps5_package.sh, --wrap):
++//  - IsOutputSupported: "not offered" for the 120 Hz mode unless the hub's
++//    Refresh Rate is 120, so the TV stays at 60 Hz unless asked.
++//  - ConfigureOutput: notes whether the 120 Hz mode was taken.
++//  - SetFlipRate: RADV sets 0 (a frame shows from the next vblank) for each
++//    swapchain; the rate the frame limit wants is kept instead.
++#pragma once
++
++namespace gta4ps5::display {
++
++// Whether the TV refreshes at 119.88 Hz (else 59.94).
++bool HighRefresh();
++
++// From the game's start (the hub keeps every vblank): each frame stays on
++// screen for as many vblanks as the frame limit takes. At 120 Hz: 40 FPS
++// three, 60 FPS two; at 60 Hz: 30 FPS two. Follows later frame limit changes
++// (the pause menu's Graphics page).
++void StartGamePacing();
++
++}  // namespace gta4ps5::display
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_overlay.cpp
 new file mode 100644
 index 00000000..0c407575
@@ -3727,10 +4064,10 @@ index 00000000..18a0d8a1
 +}  // namespace gta4ps5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp
 new file mode 100644
-index 00000000..5d7c4c0a
+index 00000000..d5d7b27d
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,92 @@
 +// GTA IV PS5 - the app's PS5 parts (see gta4_ps5_app.h).
 +#include <rex/platform.h>
 +#if REX_PLATFORM_PS5
@@ -3746,6 +4083,7 @@ index 00000000..5d7c4c0a
 +#include <rex/system/flags.h>
 +
 +#include "../gta4_app.h"
++#include "game/ps5_display.h"
 +#include "game/ps5_overlay.h"
 +#include "game/save_import.h"
 +#include "game/trophies_game.h"
@@ -3802,6 +4140,8 @@ index 00000000..5d7c4c0a
 +    REXLOG_INFO("PS5 hub: language {} (setting {}, Xbox language {})", hub::lang::Name(language),
 +                REXCVAR_GET(ps5_language), REXCVAR_GET(user_language));
 +    REXLOG_INFO("PS5 hub: START GAME (GTA IV PS5 {})", BuildVersion());
++    // (the frame limit's pacing on the TV, from now on)
++    display::StartGamePacing();
 +    launch();
 +  });
 +}
@@ -23499,10 +23839,10 @@ index 00000000..30e688ed
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp
 new file mode 100644
-index 00000000..58eed6a9
+index 00000000..60fcf4ef
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp
-@@ -0,0 +1,844 @@
+@@ -0,0 +1,929 @@
 +// GTA IV PS5 - the hub's languages (see hub_lang.h).
 +#include "hub_lang.h"
 +
@@ -23565,6 +23905,11 @@ index 00000000..58eed6a9
 +    {{"Resolution", "Résolution", "Auflösung", "Resolución", "Risoluzione"}},
 +    {{"Draw Distance", "Distance d'affichage", "Sichtweite", "Distancia de dibujado", "Distanza visiva"}},
 +    {{"Frame Limit", "Limite d'images", "Bildlimit", "Límite de fotogramas", "Limite fotogrammi"}},
++    {{"Refresh Rate", "Fréquence d'affichage", "Bildwiederholrate", "Frecuencia de actualización", "Frequenza di aggiornamento"}},
++    {{"Highest Detail Models", "Modèles les plus détaillés", "Höchste Modelldetails", "Modelos al máximo detalle", "Modelli al massimo dettaglio"}},
++    {{"Texture Filtering", "Filtrage des textures", "Texturfilterung", "Filtrado de texturas", "Filtro texture"}},
++    {{"Enhanced Effects", "Effets améliorés", "Verbesserte Effekte", "Efectos mejorados", "Effetti migliorati"}},
++    {{"Shadow Quality", "Qualité des ombres", "Schattenqualität", "Calidad de sombras", "Qualità ombre"}},
 +    {{"Frame Generation", "Génération d'images", "Bildgenerierung", "Generación de fotogramas", "Generazione fotogrammi"}},
 +    {{"Anti-Aliasing", "Anticrénelage", "Kantenglättung", "Antialiasing", "Antialiasing"}},
 +    {{"Motion Blur", "Flou de mouvement", "Bewegungsunschärfe", "Desenfoque de movimiento", "Sfocatura di movimento"}},
@@ -23607,6 +23952,11 @@ index 00000000..58eed6a9
 +    {{"Shorter", "Plus courte", "Kürzer", "Más corta", "Più corta"}},
 +    {{"1.5x", "1,5x", "1,5x", "1,5x", "1,5x"}},
 +    {{"FSR 3 (Experimental)", "FSR 3 (expérimental)", "FSR 3 (experimentell)", "FSR 3 (experimental)", "FSR 3 (sperimentale)"}},
++    {{"60 Hz", "60\u00A0Hz", "60 Hz", "60 Hz", "60 Hz"}},
++    {{"120 Hz", "120\u00A0Hz", "120 Hz", "120 Hz", "120 Hz"}},
++    {{"MSAA 4x + SMAA", "MSAA 4x + SMAA", "MSAA 4x + SMAA", "MSAA 4x + SMAA", "MSAA 4x + SMAA"}},
++    {{"High", "Élevée", "Hoch", "Alta", "Alta"}},
++    {{"Very High", "Très élevée", "Sehr hoch", "Muy alta", "Molto alta"}},
 +    {{"Every Frame", "Chaque image", "Jedes Bild", "Cada fotograma", "Ogni fotogramma"}},
 +    {{"Every Other Frame", "Une image sur deux", "Jedes zweite Bild", "Cada dos fotogramas", "Un fotogramma su due"}},
 +    {{"Normal", "Normal", "Normal", "Normal", "Normale"}},
@@ -23655,15 +24005,48 @@ index 00000000..58eed6a9
 +      "corta disegna meno città e va più veloce nelle strade affollate, con più pop-in. Più lontana costa "
 +      "fotogrammi, e oltre 1,5x il gioco può restare senza memoria."}},
 +    {{"The most frames a second the game draws. 30 is what the Xbox 360 aimed for and holds steady everywhere; 60 "
-+      "runs at 50 to 60 in the busiest streets.",
-+      "Le nombre maximal d'images par seconde. 30 est l'objectif de la Xbox 360 et reste stable "
-+      "partout ; 60 tourne entre 50 et 60 dans les rues les plus animées.",
++      "runs at 50 to 60 in the busiest streets. 40 and 120 are for a 120 Hz Refresh Rate: 40 holds steady and is "
++      "smoother than 30; 120 is only reached in quieter places.",
++      "Le nombre maximal d'images par seconde. 30 est l'objectif de la Xbox 360 et reste stable partout\u00A0; "
++      "60 tourne entre 50 et 60 dans les rues les plus animées. 40 et 120 vont avec une fréquence d'affichage de "
++      "120\u00A0Hz\u00A0: 40 reste stable et plus fluide que 30\u00A0; 120 n'est atteint que dans les "
++      "endroits calmes.",
 +      "Die meisten Bilder pro Sekunde, die das Spiel zeichnet. 30 war das Ziel der Xbox 360 und bleibt überall "
-+      "stabil; 60 läuft in den belebtesten Straßen mit 50 bis 60.",
++      "stabil; 60 läuft in den belebtesten Straßen mit 50 bis 60. 40 und 120 sind für eine Bildwiederholrate von "
++      "120 Hz: 40 bleibt stabil und ist flüssiger als 30; 120 wird nur an ruhigeren Orten erreicht.",
 +      "El máximo de fotogramas por segundo. 30 es lo que buscaba Xbox 360 y se mantiene estable en todas partes; "
-+      "60 va entre 50 y 60 en las calles más concurridas.",
++      "60 va entre 50 y 60 en las calles más concurridas. 40 y 120 son para una frecuencia de actualización de "
++      "120 Hz: 40 se mantiene estable y es más fluido que 30; 120 solo se alcanza en sitios tranquilos.",
 +      "Il massimo di fotogrammi al secondo. 30 è l'obiettivo di Xbox 360 e resta stabile ovunque; 60 gira tra "
-+      "50 e 60 nelle strade più affollate."}},
++      "50 e 60 nelle strade più affollate. 40 e 120 sono per una frequenza di aggiornamento di 120 Hz: 40 resta "
++      "stabile ed è più fluido di 30; 120 si raggiunge solo nei posti più tranquilli."}},
++    {{"How many times a second the TV shows a new picture. 120 Hz needs a TV that takes it and 120 Hz output on "
++      "in the PS5's settings; without them the game stays at 60 Hz. It's what lets the 40 and 120 FPS limits run "
++      "evenly. Takes effect the next time the app starts.",
++      "Combien de fois par seconde la TV affiche une nouvelle image. 120\u00A0Hz demande une TV compatible et la "
++      "sortie 120\u00A0Hz activée dans les paramètres de la PS5\u00A0; sinon le jeu reste à 60\u00A0Hz. C'est "
++      "ce qui rend régulières les limites de 40 et 120 images par seconde. Prend effet au prochain lancement de "
++      "l'application.",
++      "Wie oft pro Sekunde der Fernseher ein neues Bild zeigt. 120 Hz braucht einen Fernseher, der es kann, und "
++      "die 120-Hz-Ausgabe in den Einstellungen der PS5; sonst bleibt das Spiel bei 60 Hz. Erst damit laufen die "
++      "Limits 40 und 120 FPS gleichmäßig. Wirkt ab dem nächsten Start der App.",
++      "Cuántas veces por segundo la tele muestra una imagen nueva. 120 Hz necesita una tele compatible y la salida "
++      "a 120 Hz activada en los ajustes de la PS5; si no, el juego se queda en 60 Hz. Es lo que hace que los "
++      "límites de 40 y 120 FPS vayan regulares. Se aplica la próxima vez que se abra la aplicación.",
++      "Quante volte al secondo la TV mostra un'immagine nuova. 120 Hz richiede una TV compatibile e l'uscita a "
++      "120 Hz attiva nelle impostazioni della PS5; altrimenti il gioco resta a 60 Hz. È ciò che rende regolari i "
++      "limiti di 40 e 120 FPS. Vale dal prossimo avvio dell'app."}},
++    {{"Shows buildings, cars and people at their most detailed as soon as that detail has loaded, near or far, "
++      "instead of simpler versions in the distance. Can cost frame rate in busy streets.",
++      "Affiche bâtiments, voitures et passants dans leur version la plus détaillée dès qu'elle est chargée, de "
++      "près comme de loin, au lieu de versions simplifiées au loin. Peut coûter des images par seconde dans les "
++      "rues animées.",
++      "Zeigt Gebäude, Autos und Menschen in ihrer detailliertesten Form, sobald diese geladen ist, nah wie fern, "
++      "statt einfacherer Versionen in der Ferne. Kann in belebten Straßen Bildrate kosten.",
++      "Muestra edificios, coches y gente con su máximo detalle en cuanto ese detalle se ha cargado, cerca o "
++      "lejos, en vez de versiones más simples a distancia. Puede costar fotogramas en calles concurridas.",
++      "Mostra edifici, auto e persone al massimo dettaglio appena quel dettaglio è caricato, vicino o lontano, "
++      "invece delle versioni più semplici in lontananza. Può costare fotogrammi nelle strade affollate."}},
 +    {{"Experimental, not ready yet: it can drop frames and make the game feel worse. AMD FSR 3 adds a frame "
 +      "between each two the game draws, with a little more input lag. Also turns on FSR 3 anti-aliasing.",
 +      "Expérimental, pas encore au point : peut perdre des images et rendre le jeu moins agréable. AMD FSR 3 "
@@ -23678,11 +24061,53 @@ index 00000000..58eed6a9
 +      "Sperimentale, non ancora pronto: può perdere fotogrammi e peggiorare la sensazione di gioco. AMD FSR 3 "
 +      "aggiunge un fotogramma tra ogni coppia disegnata dal gioco, con un po' più di input lag. Attiva anche "
 +      "l'antialiasing FSR 3."}},
-+    {{"Smooths jagged edges. FXAA is the lightest; SMAA is sharper and costs a little more.",
-+      "Adoucit les bords crénelés. FXAA est le plus léger ; SMAA est plus net et coûte un peu plus.",
-+      "Glättet gezackte Kanten. FXAA ist am leichtesten; SMAA ist schärfer und kostet etwas mehr.",
-+      "Suaviza los bordes dentados. FXAA es el más ligero; SMAA es más nítido y cuesta un poco más.",
-+      "Ammorbidisce i bordi seghettati. FXAA è il più leggero; SMAA è più nitido e costa un po' di più."}},
++    {{"Smooths jagged edges. FXAA is the lightest; SMAA is sharper and costs a little more. MSAA 4x + SMAA also "
++      "cleans up thin edges in the distance, like stairs and wires, but is heavy on the graphics card: new on the "
++      "PS5, try 1440p with it if the game slows down.",
++      "Adoucit les bords crénelés. FXAA est le plus léger\u00A0; SMAA est plus net et coûte un peu plus. "
++      "MSAA 4x + SMAA lisse aussi les bords fins au loin, comme les escaliers et les câbles, mais pèse lourd sur "
++      "la carte graphique\u00A0: nouveau sur PS5, essayez-le en 1440p si le jeu ralentit.",
++      "Glättet gezackte Kanten. FXAA ist am leichtesten; SMAA ist schärfer und kostet etwas mehr. MSAA 4x + SMAA "
++      "glättet auch dünne Kanten in der Ferne, etwa Treppen und Kabel, fordert die Grafikeinheit aber stark: neu "
++      "auf der PS5, probier dazu 1440p, wenn das Spiel langsamer wird.",
++      "Suaviza los bordes dentados. FXAA es el más ligero; SMAA es más nítido y cuesta un poco más. MSAA 4x + SMAA "
++      "también limpia los bordes finos a lo lejos, como escaleras y cables, pero exige mucho a la gráfica: es "
++      "nuevo en PS5, pruébalo a 1440p si el juego se ralentiza.",
++      "Ammorbidisce i bordi seghettati. FXAA è il più leggero; SMAA è più nitido e costa un po' di più. "
++      "MSAA 4x + SMAA pulisce anche i bordi sottili in lontananza, come scale e cavi, ma pesa molto sulla scheda "
++      "grafica: è nuovo su PS5, provalo a 1440p se il gioco rallenta."}},
++    {{"Keeps textures seen at an angle sharp, like roads and pavements going into the distance. Original is the "
++      "Xbox 360's; 16x is the sharpest and costs very little.",
++      "Garde nettes les textures vues en biais, comme les routes et les trottoirs qui partent au loin. D'origine "
++      "correspond à la Xbox 360\u00A0; 16x est le plus net et ne coûte presque rien.",
++      "Hält schräg gesehene Texturen scharf, etwa Straßen und Gehwege, die in die Ferne laufen. Original entspricht "
++      "der Xbox 360; 16x ist am schärfsten und kostet sehr wenig.",
++      "Mantiene nítidas las texturas vistas en ángulo, como carreteras y aceras que se pierden a lo lejos. "
++      "Original es el de Xbox 360; 16x es el más nítido y apenas cuesta.",
++      "Mantiene nitide le texture viste di sbieco, come strade e marciapiedi che si perdono in lontananza. "
++      "Originale è quello di Xbox 360; 16x è il più nitido e costa pochissimo."}},
++    {{"The shaders from FusionFix, the PC mod: depth of field, a better sky, bloom and fog, and nicer water and "
++      "light beams. Off is the Xbox 360's look. New on the PS5: tell us if something looks wrong.",
++      "Les shaders de FusionFix, le mod PC\u00A0: profondeur de champ, un ciel, un bloom et un brouillard plus "
++      "réussis, une eau et des faisceaux lumineux plus beaux. Désactivé garde le rendu de la Xbox 360. Nouveau "
++      "sur PS5\u00A0: dites-nous si quelque chose cloche.",
++      "Die Shader aus FusionFix, der PC-Mod: Tiefenschärfe, ein besserer Himmel, Bloom und Nebel sowie schöneres "
++      "Wasser und Lichtstrahlen. Aus ist der Look der Xbox 360. Neu auf der PS5: Sag uns, wenn etwas falsch "
++      "aussieht.",
++      "Los shaders de FusionFix, el mod de PC: profundidad de campo, mejor cielo, bloom y niebla, y agua y haces "
++      "de luz más bonitos. Desactivado es el aspecto de Xbox 360. Es nuevo en PS5: avísanos si algo se ve mal.",
++      "Gli shader di FusionFix, la mod per PC: profondità di campo, cielo, bloom e nebbia migliori, acqua e fasci "
++      "di luce più belli. Disattivato è l'aspetto di Xbox 360. È nuovo su PS5: dicci se qualcosa non va."}},
++    {{"How sharp shadows are. High is twice the Xbox 360's detail; Very High doubles it again and asks more of the "
++      "graphics card.",
++      "La netteté des ombres. Élevée offre deux fois le détail de la Xbox 360\u00A0; Très élevée le double "
++      "encore et demande plus à la carte graphique.",
++      "Wie scharf Schatten sind. Hoch hat doppelt so viel Detail wie die Xbox 360; Sehr hoch verdoppelt es noch "
++      "einmal und fordert die Grafikeinheit stärker.",
++      "La nitidez de las sombras. Alta tiene el doble de detalle que Xbox 360; Muy alta lo vuelve a duplicar y "
++      "exige más a la gráfica.",
++      "La nitidezza delle ombre. Alta ha il doppio del dettaglio di Xbox 360; Molto alta lo raddoppia ancora e "
++      "chiede di più alla scheda grafica."}},
 +    {{"The blur when driving fast or turning quickly.",
 +      "Le flou quand on roule vite ou qu'on tourne rapidement.",
 +      "Die Unschärfe bei schneller Fahrt oder schnellen Drehungen.",
@@ -25354,10 +25779,10 @@ index 00000000..ebe44a36
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..d047816e
+index 00000000..4c19994c
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1357 @@
+@@ -0,0 +1,1384 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -25471,15 +25896,26 @@ index 00000000..d047816e
 +       "How sharp the game is drawn. 720p is the Xbox 360's. The PS5's graphics card has room for 4K; "
 +       "lower only helps if the picture stutters.",
 +       true, {"720p", "1080p", "1440p", "4k"}, {"720p (Original)", "1080p", "1440p", "4K"}, "4k"},
++      // (read when the app starts, before the hub: game/ps5_display.cpp)
++      {"DISPLAY", "ps5_refresh_rate", "Refresh Rate", nullptr,
++       "How many times a second the TV shows a new picture. 120 Hz needs a TV that takes it and 120 Hz output "
++       "on in the PS5's settings; without them the game stays at 60 Hz. It's what lets the 40 and 120 FPS "
++       "limits run evenly. Takes effect the next time the app starts.",
++       false, {"60", "120"}, {"60 Hz", "120 Hz"}, "60"},
 +      {"DISPLAY", "gta4_draw_distance_scale", "Draw Distance", nullptr,
 +       "How far out buildings and the city are drawn in detail. Original is the Xbox 360's. Shorter draws "
 +       "less of the city and runs faster in busy streets, with more pop-in. Farther costs frame rate, and "
 +       "past 1.5x the game can run short of memory.",
 +       false, {"0.75", "1.0", "1.5", "2.0", "3.0"}, {"Shorter", "Original", "1.5x", "2x", "3x"}, "1.0"},
++      {"DISPLAY", "gta4_force_highest_lod", "Highest Detail Models", nullptr,
++       "Shows buildings, cars and people at their most detailed as soon as that detail has loaded, near or "
++       "far, instead of simpler versions in the distance. Can cost frame rate in busy streets.",
++       false, {"false", "true"}, {"Off", "On"}, "false"},
 +      {"DISPLAY", "gta4_frame_limit", "Frame Limit", nullptr,
 +       "The most frames a second the game draws. 30 is what the Xbox 360 aimed for and holds steady "
-+       "everywhere; 60 runs at 50 to 60 in the busiest streets.",
-+       false, {"30", "60"}, {"30 FPS", "60 FPS"}, "60"},
++       "everywhere; 60 runs at 50 to 60 in the busiest streets. 40 and 120 are for a 120 Hz Refresh Rate: "
++       "40 holds steady and is smoother than 30; 120 is only reached in quieter places.",
++       false, {"30", "40", "60", "120"}, {"30 FPS", "40 FPS", "60 FPS", "120 FPS"}, "60"},
 +#if LIBERTY_HAS_FSR3
 +      {"DISPLAY", "gta4_native_frame_generation", "Frame Generation", nullptr,
 +       "Experimental, not ready yet: it can drop frames and make the game feel worse. AMD FSR 3 adds "
@@ -25488,13 +25924,29 @@ index 00000000..d047816e
 +       true, {"off", "fsr3"}, {"Off", "FSR 3 (Experimental)"}, "off"},
 +#endif
 +      {"DISPLAY", "gta4_native_anti_aliasing", "Anti-Aliasing", nullptr,
-+       "Smooths jagged edges. FXAA is the lightest; SMAA is sharper and costs a little more.", true,
-+       {"off", "fxaa", "smaa"}, {"Off", "FXAA", "SMAA"}, "fxaa"},
++       "Smooths jagged edges. FXAA is the lightest; SMAA is sharper and costs a little more. MSAA 4x + SMAA "
++       "also cleans up thin edges in the distance, like stairs and wires, but is heavy on the graphics card: "
++       "new on the PS5, try 1440p with it if the game slows down.",
++       true, {"off", "fxaa", "smaa", "msaa4x_smaa"}, {"Off", "FXAA", "SMAA", "MSAA 4x + SMAA"}, "fxaa"},
++      {"DISPLAY", "gta4_anisotropic_filtering", "Texture Filtering", nullptr,
++       "Keeps textures seen at an angle sharp, like roads and pavements going into the distance. Original is "
++       "the Xbox 360's; 16x is the sharpest and costs very little.",
++       true, {"1x", "4x", "8x", "16x"}, {"Original", "4x", "8x", "16x"}, "1x"},
++      // (FusionFix's shaders, built in: LibertyRecompLib/shader_overrides)
++      {"DISPLAY", "gta4_modern_shaders", "Enhanced Effects", nullptr,
++       "The shaders from FusionFix, the PC mod: depth of field, a better sky, bloom and fog, and nicer water "
++       "and light beams. Off is the Xbox 360's look. New on the PS5: tell us if something looks wrong.",
++       false, {"false", "true"}, {"Off", "On"}, "false"},
 +      {"DISPLAY", "gta4_motion_blur", "Motion Blur", nullptr, "The blur when driving fast or turning quickly.",
 +       false, {"false", "true"}, {"Off", "On"}, "true"},
 +      {"DISPLAY", "gta4_reflection_resolution", "Reflections", nullptr,
 +       "How sharp water, mirror and car reflections are. Original is the Xbox 360's; 1080p is cleaner.",
 +       true, {"original", "1080p"}, {"Original", "1080p"}, "1080p"},
++      // (the Xbox 360's is 256)
++      {"DISPLAY", "gta4_shadow_map_base_size", "Shadow Quality", nullptr,
++       "How sharp shadows are. High is twice the Xbox 360's detail; Very High doubles it again and asks more "
++       "of the graphics card.",
++       false, {"512", "1024"}, {"High", "Very High"}, "512"},
 +      {"DISPLAY", "gta4_shadow_distance_scale", "Shadow Distance", nullptr,
 +       "How far out shadows are drawn. Original is the Xbox 360's; 2x reaches further but costs frame "
 +       "rate in the city.",
@@ -42795,7 +43247,7 @@ index 581a9d20..88f2cfaf 100644
            .title_present_id = present.diagnostic_present_id,
            .selected_generation = present_source ? present_source->generation : 0,
 diff --git a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h
-index 0b9e1311..ab9cd228 100644
+index 0b9e1311..f68cc52e 100644
 --- a/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h
 +++ b/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h
 @@ -173,6 +173,14 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
@@ -43137,7 +43589,7 @@ index 0b9e1311..ab9cd228 100644
    std::unordered_map<uint32_t, std::shared_ptr<NativeVertexDeclaration>> vertex_declarations_;
    std::mutex buffer_resource_mutex_;
    std::unordered_map<uint32_t, std::shared_ptr<const NativeBufferResource>> buffer_resources_;
-@@ -2221,9 +2355,60 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
+@@ -2221,9 +2355,63 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
    std::unordered_map<uint32_t, uint32_t> vector_font_ids_;
    NativeVirtualResourceRegistry virtual_resource_registry_;
    uint64_t next_texture_generation_ = 1;
@@ -43187,7 +43639,10 @@ index 0b9e1311..ab9cd228 100644
 +  bool capture_prefetch_ = REX_PLATFORM_PS5;
 +  uint32_t hold_epoch_ = 1;
 +  // Holds last this many frames (hold_window_frames_ counts the current one's).
-+  static constexpr uint32_t kHoldFrames = 2;
++  // Four: about 1300 holds a frame in busy streets at two, each a reference
++  // count change on a line the worker also writes; half as many at four, for
++  // two frames more of keeping what the game let go of.
++  static constexpr uint32_t kHoldFrames = 4;
 +  uint32_t hold_window_frames_ = 0;
 +  std::vector<std::shared_ptr<const void>> held_resources_;
 +  uint64_t holds_taken_ = 0, held_uses_ = 0;  // for the capture line
@@ -43198,7 +43653,7 @@ index 0b9e1311..ab9cd228 100644
    std::mutex device_snapshot_mutex_;
    std::unordered_map<uint32_t, std::shared_ptr<const std::vector<uint8_t>>> last_device_snapshots_;
    std::unordered_set<uint32_t> initialized_constant_capture_devices_;
-@@ -2498,6 +2683,22 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
+@@ -2498,6 +2686,22 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
    } native_memory_profile_state_;
    PostFxResourcePool postfx_resource_pool_;
    temporal::CommandCapture temporal_command_capture_;
@@ -43221,7 +43676,7 @@ index 0b9e1311..ab9cd228 100644
    std::mutex temporal_provider_mutex_;
    temporal::FsrUpscalerVulkan fsr_upscaler_;
    temporal::DlssUpscaler dlss_upscaler_;
-@@ -2701,6 +2902,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
+@@ -2701,6 +2905,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
    std::filesystem::path native_pipeline_cache_path_;
    uint32_t native_pipeline_cache_title_id_ = 0;
    std::atomic<uint64_t> native_pipeline_cache_generation_{0};
@@ -43231,7 +43686,7 @@ index 0b9e1311..ab9cd228 100644
    uint64_t native_pipeline_cache_saved_generation_ = 0;
    std::unique_ptr<NativePipelineCompilerState> native_pipeline_compiler_;
    uint64_t native_pipeline_unreported_compile_ticks_ = 0;
-@@ -2811,8 +3015,45 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
+@@ -2811,8 +3018,45 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
    std::atomic<uint64_t> buffer_fast_path_disable_count_{0};
    std::atomic<uint64_t> buffer_fast_path_request_count_{0};
    std::atomic<bool> buffer_fast_path_disabled_{false};
@@ -46979,7 +47434,7 @@ index eb0ad80b..d94f2fb2 100644
    if (vulkan_instance->extensions_.ext_KHR_surface) {
  #include <rex/ui/vulkan/functions/instance_khr_surface.inc>
 diff --git a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_presenter.cpp b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_presenter.cpp
-index 541be7e0..abf49ea8 100644
+index 541be7e0..372c5f71 100644
 --- a/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_presenter.cpp
 +++ b/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_presenter.cpp
 @@ -35,6 +35,9 @@
@@ -46992,7 +47447,7 @@ index 541be7e0..abf49ea8 100644
  #if REX_PLATFORM_MAC || REX_PLATFORM_GNU_LINUX || REX_PLATFORM_ANDROID
  #include <time.h>
  #endif
-@@ -55,6 +58,98 @@
+@@ -55,6 +58,102 @@
  #if REX_PLATFORM_MAC
  #include <rex/ui/surface_mac.h>
  #endif
@@ -47036,6 +47491,7 @@ index 541be7e0..abf49ea8 100644
 +  VkDisplayKHR display = VK_NULL_HANDLE;
 +  VkDisplayModeKHR mode = VK_NULL_HANDLE;
 +  VkExtent2D extent = {3840, 2160};
++  uint32_t refresh_millihertz = 0;
 +  for (uint32_t i = 0; i < display_count && mode == VK_NULL_HANDLE; ++i) {
 +    uint32_t mode_count = 0;
 +    if (ifn.vkGetDisplayModePropertiesKHR(physical_device, displays[i].display, &mode_count,
@@ -47051,10 +47507,12 @@ index 541be7e0..abf49ea8 100644
 +    display = displays[i].display;
 +    mode = modes[0].displayMode;
 +    extent = modes[0].parameters.visibleRegion;
++    refresh_millihertz = modes[0].parameters.refreshRate;
 +    for (const VkDisplayModePropertiesKHR& m : modes) {
 +      if (m.parameters.visibleRegion.width == 3840 && m.parameters.visibleRegion.height == 2160) {
 +        mode = m.displayMode;
 +        extent = m.parameters.visibleRegion;
++        refresh_millihertz = m.parameters.refreshRate;
 +        break;
 +      }
 +    }
@@ -47082,7 +47540,8 @@ index 541be7e0..abf49ea8 100644
 +  res = ifn.vkCreateDisplayPlaneSurfaceKHR(instance, &info, nullptr, &surface_out);
 +  if (res == VK_SUCCESS) {
 +    surface.SetSize(extent.width, extent.height);
-+    REXLOG_INFO("PS5 display: {}x{} on plane {}", extent.width, extent.height, plane);
++    REXLOG_INFO("PS5 display: {}x{} at {:.2f} Hz on plane {}", extent.width, extent.height,
++                refresh_millihertz / 1000.0, plane);
 +  }
 +  return res;
 +}
@@ -47091,7 +47550,7 @@ index 541be7e0..abf49ea8 100644
  
  REXCVAR_DEFINE_BOOL(present_render_pass_clear, true, "UI/Presenter",
                      "Clear render pass during presentation");
-@@ -367,6 +462,11 @@ Surface::TypeFlags VulkanPresenter::GetSurfaceTypesSupportedByInstance(
+@@ -367,6 +466,11 @@ Surface::TypeFlags VulkanPresenter::GetSurfaceTypesSupportedByInstance(
    if (instance_extensions.ext_EXT_metal_surface) {
      type_flags |= Surface::kTypeFlag_CAMetalLayer;
    }
@@ -47103,7 +47562,7 @@ index 541be7e0..abf49ea8 100644
  #endif
    return type_flags;
  }
-@@ -821,6 +921,18 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
+@@ -821,6 +925,18 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
          vulkan_surface_create_result = ifn.vkCreateMetalSurfaceEXT(
              instance, &surface_create_info, nullptr, &paint_context_.vulkan_surface);
        } break;
@@ -47122,7 +47581,7 @@ index 541be7e0..abf49ea8 100644
  #endif
        default:
          assert_unhandled_case(surface_type);
-@@ -1144,7 +1256,14 @@ bool VulkanPresenter::RefreshGuestOutputImpl(
+@@ -1144,7 +1260,14 @@ bool VulkanPresenter::RefreshGuestOutputImpl(
      hdr_headroom = std::max(1.0f, window->GetHDRHeadroom());
      sdr_white_level = std::max(1.0f, window->GetSDRWhiteLevel());
    }
@@ -47665,6 +48124,42 @@ index ac2d8dc4..6d6bbc30 100644
 +#endif  // REX_PLATFORM_PS5
  
  #endif
+diff --git a/glue/rexglue-sdk-main/tests/unit/system/gta4_frontend_menu_policy_test.cpp b/glue/rexglue-sdk-main/tests/unit/system/gta4_frontend_menu_policy_test.cpp
+index dc0621c2..0dab989c 100644
+--- a/glue/rexglue-sdk-main/tests/unit/system/gta4_frontend_menu_policy_test.cpp
++++ b/glue/rexglue-sdk-main/tests/unit/system/gta4_frontend_menu_policy_test.cpp
+@@ -135,15 +135,24 @@ TEST_CASE("GTA IV frontend restores primary only when advanced leaves Display",
+ 
+ TEST_CASE("GTA IV pause tabs advance, reverse and wrap", "[system][gta4][frontend][input]") {
+   uint32_t target = 0;
+-  CHECK(policy::ResolvePauseTab(3, policy::PauseTabDirection::kPrevious, target));
+-  CHECK(target == 9);
+-  CHECK(policy::ResolvePauseTab(9, policy::PauseTabDirection::kNext, target));
++  // retail order: 3, 2, 4, 5, 7, 8, 0 (network: 3, 2, 5, 7, 8, 1)
++  CHECK(policy::ResolvePauseTab(3, policy::PauseTabDirection::kPrevious, false, target));
++  CHECK(target == 0);
++  CHECK(policy::ResolvePauseTab(0, policy::PauseTabDirection::kNext, false, target));
+   CHECK(target == 3);
+-  CHECK(policy::ResolvePauseTab(7, policy::PauseTabDirection::kPrevious, target));
+-  CHECK(target == 6);
+-  CHECK(policy::ResolvePauseTab(7, policy::PauseTabDirection::kNext, target));
++  CHECK(policy::ResolvePauseTab(3, policy::PauseTabDirection::kNext, false, target));
++  CHECK(target == 2);
++  CHECK(policy::ResolvePauseTab(7, policy::PauseTabDirection::kPrevious, false, target));
++  CHECK(target == 5);
++  CHECK(policy::ResolvePauseTab(7, policy::PauseTabDirection::kNext, false, target));
+   CHECK(target == 8);
+-  CHECK_FALSE(policy::ResolvePauseTab(0, policy::PauseTabDirection::kNext, target));
++  CHECK(policy::ResolvePauseTab(2, policy::PauseTabDirection::kNext, true, target));
++  CHECK(target == 5);
++  CHECK(policy::ResolvePauseTab(3, policy::PauseTabDirection::kPrevious, true, target));
++  CHECK(target == 1);
++  CHECK_FALSE(policy::ResolvePauseTab(9, policy::PauseTabDirection::kNext, false, target));
++  CHECK_FALSE(policy::ResolvePauseTab(6, policy::PauseTabDirection::kNext, false, target));
++  CHECK_FALSE(policy::ResolvePauseTab(4, policy::PauseTabDirection::kNext, true, target));
+ }
+ 
+ TEST_CASE("GTA IV pause tab shoulders use rising edges", "[system][gta4][frontend][input]") {
 diff --git a/glue/rexglue-sdk-main/thirdparty/CMakeLists.txt b/glue/rexglue-sdk-main/thirdparty/CMakeLists.txt
 index d77082cc..60aaa0db 100644
 --- a/glue/rexglue-sdk-main/thirdparty/CMakeLists.txt
