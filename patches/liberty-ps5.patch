@@ -33774,21 +33774,18 @@ index dd57db44..10f767bb 100644
    // deterministic guest poll boundary without consuming transient input a
 diff --git a/glue/rexglue-sdk-main/include/rex/input/ps5/ps5_input_driver.h b/glue/rexglue-sdk-main/include/rex/input/ps5/ps5_input_driver.h
 new file mode 100644
-index 00000000..9031f98a
+index 00000000..30672588
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/input/ps5/ps5_input_driver.h
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,67 @@
 +#pragma once
 +/**
 + * [ps5 port] DualSense controllers through scePad: one Xbox 360 pad per
 + * logged-in PS5 user that has a controller.
 + */
 +#include <array>
-+#include <atomic>
-+#include <condition_variable>
 +#include <cstdint>
 +#include <mutex>
-+#include <thread>
 +
 +#include <rex/input/input_driver.h>
 +#include <rex/input/sony_feedback.h>
@@ -33828,26 +33825,23 @@ index 00000000..9031f98a
 +    bool triggers_set = false;
 +    std::array<uint8_t, 120> trigger_param{};  // (the last ScePadTriggerEffectParam sent)
 +    int trigger_failures = 0;
++    uint64_t next_feedback_ms = 0;
 +  };
 +  // A pad by the game's user index (0..3: the PS5 users in login order).
 +  Pad* PadFor(uint32_t user_index);
 +  void RefreshPads();
 +  X_RESULT ReadState(uint32_t user_index, bool active, X_INPUT_STATE* out_state);
-+  // The light bar, trigger effects and added rumble, on a thread of their own
-+  // (every 10 ms; a controller is told only what changed).
-+  void FeedbackLoop();
-+  void ApplyFeedback(uint32_t user_index, int32_t handle, uint64_t generation);
-+  void SendVibration(Pad& pad);  // (the game's rumble with the added pulses; under output_mutex_)
++  // The light bar, trigger effects and added rumble, sent with the game's own
++  // reads (every 8 ms at most; a controller is told only what changed): every
++  // scePad call on a controller is made from the thread that reads it, under
++  // mutex_, never from two threads at once.
++  void ApplyFeedback(uint32_t user_index, Pad& pad);
++  void SendVibration(Pad& pad);  // (the game's rumble with the added pulses)
 +
 +  std::mutex mutex_;
-+  std::mutex output_mutex_;  // the controller output calls, off mutex_ (the game's reads)
 +  std::array<Pad, kMaxPads> pads_{};
 +  uint64_t last_refresh_ms_ = 0;
 +  uint64_t next_generation_ = 1;
-+  std::thread feedback_thread_;
-+  std::atomic<bool> stopping_{false};
-+  std::mutex wait_mutex_;
-+  std::condition_variable wait_;
 +};
 +
 +}  // namespace rex::input::ps5
@@ -44447,10 +44441,10 @@ index b2b99ec4..d96f32c1 100644
      auto sdl_driver = std::make_unique<sdl::SDLInputDriver>(nullptr, 0, expose_sdl_gamepad_state);
 diff --git a/glue/rexglue-sdk-main/src/input/ps5/ps5_input_driver.cpp b/glue/rexglue-sdk-main/src/input/ps5/ps5_input_driver.cpp
 new file mode 100644
-index 00000000..04c9252f
+index 00000000..c6f248bf
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/src/input/ps5/ps5_input_driver.cpp
-@@ -0,0 +1,446 @@
+@@ -0,0 +1,431 @@
 +/**
 + * [ps5 port] DualSense input via scePad (layout verified on hardware by
 + * Nazky's ps5-plume-triangle).
@@ -44463,7 +44457,9 @@ index 00000000..04c9252f
 + * DualSense Features): the light bar (the game's colour, police lights while
 + * wanted), adaptive triggers (a gun's trigger pull and its recoil, aiming,
 + * pedals) and added rumble for shots, hits and explosions. Only the
-+ * controller's output: the game's own rumble is kept as it was.
++ * controller's output: the game's own rumble is kept as it was. Rumble needs
++ * the controller's compatible dual-motor mode (scePadSetVibrationMode 2, as
++ * Porpoise and ProsperoLight set it): without it the PS5 drops it.
 + */
 +#include <rex/input/ps5/ps5_input_driver.h>
 +
@@ -44495,6 +44491,7 @@ index 00000000..04c9252f
 +  uint8_t small_motor;
 +};
 +int scePadSetVibration(int32_t handle, const ScePadVibrationParam* param);
++int scePadSetVibrationMode(int32_t handle, int32_t mode);
 +struct ScePadLightBarParam {
 +  uint8_t r, g, b, reserved;
 +};
@@ -44605,9 +44602,7 @@ index 00000000..04c9252f
 +    : InputDriver(window, window_z_order) {}
 +
 +Ps5InputDriver::~Ps5InputDriver() {
-+  stopping_.store(true, std::memory_order_release);
-+  wait_.notify_all();
-+  if (feedback_thread_.joinable()) feedback_thread_.join();
++  std::lock_guard<std::mutex> lock(mutex_);
 +  for (uint32_t i = 0; i < kMaxPads; ++i) {
 +    Pad& pad = pads_[i];
 +    if (pad.handle < 0) continue;
@@ -44632,12 +44627,9 @@ index 00000000..04c9252f
 +    REXLOG_ERROR("PS5 input: scePadInit failed ({:#x})", uint32_t(rc));
 +    return X_STATUS_UNSUCCESSFUL;
 +  }
-+  {
-+    std::lock_guard<std::mutex> lock(mutex_);
-+    RefreshPads();
-+  }
 +  rex::input::sony::GetService().SetFocused(true);
-+  feedback_thread_ = std::thread([this] { FeedbackLoop(); });
++  std::lock_guard<std::mutex> lock(mutex_);
++  RefreshPads();
 +  return X_STATUS_SUCCESS;
 +}
 +
@@ -44672,7 +44664,9 @@ index 00000000..04c9252f
 +      device.light = device.rumble = device.triggers = true;
 +      rex::input::sony::GetService().Connect(i, device);
 +      pad.handle = handle;
-+      REXLOG_INFO("PS5 input: DualSense for user {:#x} (handle {})", uint32_t(user), handle);
++      const int mode = scePadSetVibrationMode(handle, 2);  // (rumble: see the top)
++      REXLOG_INFO("PS5 input: DualSense for user {:#x} (handle {}, rumble mode {:#x})", uint32_t(user), handle,
++                  uint32_t(mode));
 +      break;
 +    }
 +  }
@@ -44696,6 +44690,7 @@ index 00000000..04c9252f
 +  }
 +  // (the pedals' push-back follows how far down they are)
 +  rex::input::sony::GetService().UpdateAxes(user_index, data.analog_l2, data.analog_r2);
++  ApplyFeedback(user_index, *pad);
 +  if (!out_state) return X_ERROR_SUCCESS;
 +  const uint32_t b = active ? data.buttons : 0;
 +  uint16_t buttons = 0;
@@ -44771,7 +44766,6 @@ index 00000000..04c9252f
 +  Pad* pad = PadFor(user_index);
 +  if (!pad) return X_ERROR_DEVICE_NOT_CONNECTED;
 +  if (vibration) {
-+    std::lock_guard<std::mutex> output(output_mutex_);
 +    pad->native_low = vibration->left_motor_speed;
 +    pad->native_high = vibration->right_motor_speed;
 +    SendVibration(*pad);
@@ -44789,31 +44783,16 @@ index 00000000..04c9252f
 +  pad.sent_small = param.small_motor;
 +}
 +
-+void Ps5InputDriver::FeedbackLoop() {
-+  std::unique_lock<std::mutex> wait_lock(wait_mutex_);
-+  while (!stopping_.load(std::memory_order_acquire)) {
-+    wait_lock.unlock();
-+    std::array<int32_t, kMaxPads> handles;
-+    std::array<uint64_t, kMaxPads> generations;
-+    {
-+      std::lock_guard<std::mutex> lock(mutex_);
-+      for (uint32_t i = 0; i < kMaxPads; ++i) handles[i] = pads_[i].handle, generations[i] = pads_[i].generation;
-+    }
-+    for (uint32_t i = 0; i < kMaxPads; ++i)
-+      if (handles[i] >= 0) ApplyFeedback(i, handles[i], generations[i]);
-+    wait_lock.lock();
-+    wait_.wait_for(wait_lock, std::chrono::milliseconds(10),
-+                   [this] { return stopping_.load(std::memory_order_acquire); });
-+  }
-+}
-+
-+void Ps5InputDriver::ApplyFeedback(uint32_t user_index, int32_t handle, uint64_t generation) {
++// (under mutex_, with the game's read of this controller)
++void Ps5InputDriver::ApplyFeedback(uint32_t user_index, Pad& pad) {
 +  namespace sony = rex::input::sony;
-+  if (sony::GetService().ReadDevice(user_index).generation != generation) return;
++  const uint64_t now = SDL_GetTicks();
++  if (now < pad.next_feedback_ms) return;
++  pad.next_feedback_ms = now + 8;
++  if (sony::GetService().ReadDevice(user_index).generation != pad.generation) return;
 +  const sony::Options options = sony::GetOptions();
-+  const sony::Output out = sony::GetService().Compose(user_index, SDL_GetTicks(), options);
-+  std::lock_guard<std::mutex> output(output_mutex_);
-+  Pad& pad = pads_[user_index];
++  const sony::Output out = sony::GetService().Compose(user_index, now, options);
++  const int32_t handle = pad.handle;
 +  // rumble: the pulses, when they start and stop
 +  const uint16_t low = out.active ? out.low_motor : 0, high = out.active ? out.high_motor : 0;
 +  if (low != pad.pulse_low || high != pad.pulse_high) {
@@ -44847,7 +44826,7 @@ index 00000000..04c9252f
 +    pad.trigger_failures = 0;
 +  } else if (++pad.trigger_failures >= 3) {
 +    REXLOG_WARN("PS5 input: adaptive triggers refused ({:#x}); off for this controller", uint32_t(result));
-+    sony::GetService().DisableTriggers(user_index, generation);
++    sony::GetService().DisableTriggers(user_index, pad.generation);
 +  }
 +}
 +
