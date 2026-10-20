@@ -11,11 +11,17 @@
  * by its thread control block's address (%fs:0, the x86-64 thread pointer) in
  * a small table, with no call; pthread_getspecific is only the slow path.
  *
- * A thread's table slot only ever names its own live block: it is filled in
- * from the slow path, emptied before the block is resized or freed, and a
- * block made while the thread is exiting (after its emutls block was freed,
- * when destructors still touch a thread_local) is never published, so a later
- * thread given the same control block can't find a dead thread's block.
+ * The PS5 hands a finished thread's control block to the next new thread, so
+ * a slot must never outlive its thread. It is filled in from the slow path,
+ * emptied before the block is resized, and taken out of the table for good
+ * when the thread starts ending: at the first of its thread-specific data
+ * destructor calls (0.6b2 waited for the third, which the PS5 doesn't seem to
+ * reach, and a new thread then used a dead thread's destroyed thread_locals),
+ * and earlier still for the game's threads (ps5_emutls_thread_exit). A rex
+ * thread also clears any slot under its control block when it starts
+ * (ps5_emutls_thread_start), and the slow path counts any slot it finds naming
+ * another block (ps5_emutls_stale_count, in the log), fixing it.
+ * ps5_emutls_set_fast(0) turns the table off (the hub's Debug page).
  */
 #include <pthread.h>
 #include <signal.h>
@@ -144,6 +150,11 @@ struct fast_slot {
     emutls_address_array *array;
 };
 static struct fast_slot fast_slots[FAST_SLOTS] __attribute__((aligned(64)));
+static int fast_enabled = 1;
+static unsigned long fast_stale_count = 0;
+/* Destructor calls on a thread's block, by round (first, second, third: the
+ * one that frees it). */
+static unsigned long exit_rounds[3] = {0, 0, 0};
 
 static __inline uintptr_t
 current_tcb(void)
@@ -180,7 +191,7 @@ fast_unpublish(void)
 static void
 fast_publish(emutls_address_array *array)
 {
-    if (!array->fast)
+    if (!array->fast || !__atomic_load_n(&fast_enabled, __ATOMIC_RELAXED))
         return;
     const uintptr_t tcb = current_tcb();
     if (!tcb || *(const uintptr_t *)tcb != tcb) {
@@ -282,12 +293,31 @@ emutls_key_destructor(void *ptr)
         return;
     }
     emutls_address_array *array = (emutls_address_array *)ptr;
+    {
+        /* The thread is ending: no signal handler runs on it from here (one
+         * touching a thread_local when the key reads NULL would publish a new
+         * block), and its block leaves the table now, whatever number of
+         * destructor rounds the system goes on to run. Its thread_locals are
+         * reached through the key until the block is freed. */
+        sigset_t all;
+        sigfillset(&all);
+        pthread_sigmask(SIG_BLOCK, &all, NULL);
+        array->fast = 0;
+        fast_unpublish();
+        /* (how many rounds the system runs: the log reports these) */
+        __atomic_fetch_add(&exit_rounds[array->skip_destructor_rounds >= EMUTLS_SKIP_DESTRUCTOR_ROUNDS
+                                            ? 0
+                                            : array->skip_destructor_rounds ? 1 : 2],
+                           1, __ATOMIC_RELAXED);
+    }
     if (destructors_ready && pthread_getspecific(destructors_key) != NULL) {
         emutls_setspecific(array);
         drain_thread_destructors();
         /* A destructor may have grown (moved) the block. */
         array = emutls_getspecific();
         ptr = array;
+        array->fast = 0;
+        fast_unpublish();
     }
     if (array->skip_destructor_rounds > 0) {
         array->skip_destructor_rounds--;
@@ -308,11 +338,14 @@ emutls_key_destructor(void *ptr)
     }
 }
 
+static int emutls_pthread_key_ready = 0;
+
 static void
 emutls_init(void)
 {
     if (pthread_key_create(&emutls_pthread_key, emutls_key_destructor) != 0)
         abort();
+    __atomic_store_n(&emutls_pthread_key_ready, 1, __ATOMIC_RELEASE);
 }
 
 static __inline void
@@ -425,8 +458,87 @@ emutls_get_address_slow(__emutls_control *control)
     if (array->data[index] == NULL)
         array->data[index] = emutls_allocate_object(control);
     void *const object = array->data[index];
+    /* A slot under this thread's control block naming another block: left by
+     * a thread that ended without leaving the table. Counted (for the log);
+     * the publish below points it at this thread's own block. */
+    {
+        const uintptr_t tcb = current_tcb();
+        uint32_t i = fast_hash(tcb);
+        for (uint32_t n = 0; n < FAST_PROBE; ++n, i = (i + 1) & (FAST_SLOTS - 1)) {
+            if (__atomic_load_n(&fast_slots[i].tcb, __ATOMIC_RELAXED) != tcb)
+                continue;
+            emutls_address_array *const named =
+                __atomic_load_n(&fast_slots[i].array, __ATOMIC_RELAXED);
+            if (named && named != array) {
+                __atomic_fetch_add(&fast_stale_count, 1, __ATOMIC_RELAXED);
+                if (!array->fast) {
+                    __atomic_store_n(&fast_slots[i].array, (emutls_address_array *)NULL,
+                                     __ATOMIC_RELAXED);
+                    __atomic_store_n(&fast_slots[i].tcb, (uintptr_t)0, __ATOMIC_RELEASE);
+                }
+            }
+        }
+    }
     fast_publish(array);
     return object;
+}
+
+/* A thread starting (before its first thread_local): any slot under its
+ * control block is a finished thread's. */
+__attribute__((visibility("hidden"))) void
+ps5_emutls_thread_start(void)
+{
+    const uintptr_t tcb = current_tcb();
+    uint32_t i = fast_hash(tcb);
+    for (uint32_t n = 0; n < FAST_PROBE; ++n, i = (i + 1) & (FAST_SLOTS - 1)) {
+        if (__atomic_load_n(&fast_slots[i].tcb, __ATOMIC_RELAXED) == tcb) {
+            __atomic_fetch_add(&fast_stale_count, 1, __ATOMIC_RELAXED);
+            __atomic_store_n(&fast_slots[i].array, (emutls_address_array *)NULL, __ATOMIC_RELAXED);
+            __atomic_store_n(&fast_slots[i].tcb, (uintptr_t)0, __ATOMIC_RELEASE);
+        }
+    }
+}
+
+/* A thread finishing (the game's threads, from rex's thread exit): out of the
+ * table; its thread_locals are reached through the key from here on. */
+__attribute__((visibility("hidden"))) void
+ps5_emutls_thread_exit(void)
+{
+    if (__atomic_load_n(&emutls_pthread_key_ready, __ATOMIC_ACQUIRE)) {
+        emutls_address_array *const array = emutls_getspecific();
+        if (array && !emutls_exited(array))
+            array->fast = 0;
+    }
+    fast_unpublish();
+}
+
+/* The hub's Fast Thread Lookups off: the table empties, every lookup takes
+ * the slow path. Set at start, before the game's threads run. */
+__attribute__((visibility("hidden"))) void
+ps5_emutls_set_fast(int on)
+{
+    __atomic_store_n(&fast_enabled, on ? 1 : 0, __ATOMIC_RELEASE);
+    if (on)
+        return;
+    for (uint32_t i = 0; i < FAST_SLOTS; ++i) {
+        __atomic_store_n(&fast_slots[i].array, (emutls_address_array *)NULL, __ATOMIC_RELAXED);
+        __atomic_store_n(&fast_slots[i].tcb, (uintptr_t)0, __ATOMIC_RELEASE);
+    }
+}
+
+__attribute__((visibility("hidden"))) unsigned long
+ps5_emutls_stale_count(void)
+{
+    return __atomic_load_n(&fast_stale_count, __ATOMIC_RELAXED);
+}
+
+/* Thread exits seen by round: [0] first destructor call, [1] second, [2] the
+ * third (the block freed). */
+__attribute__((visibility("hidden"))) void
+ps5_emutls_exit_rounds(unsigned long out[3])
+{
+    for (int i = 0; i < 3; ++i)
+        out[i] = __atomic_load_n(&exit_rounds[i], __ATOMIC_RELAXED);
 }
 
 __attribute__((visibility("hidden"))) void *
