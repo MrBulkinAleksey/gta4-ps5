@@ -146,6 +146,11 @@ int main(int argc, char** argv) {
     Tex* t = LoadPng(file.string());
     return t ? Image{reinterpret_cast<ImTextureID>(t), float(t->w), float(t->h)} : Image{};
   });
+  // The Refresh Rate's switch, as on the PS5 (HUB_DISPLAY: "ok" takes 120 Hz, "refuse" doesn't).
+  static bool high_refresh = false;
+  if (const char* d = std::getenv("HUB_DISPLAY"))
+    hub.SetDisplay({[] { return high_refresh; },
+                    [ok = std::string(d) == "ok"](bool high) { return high_refresh = high && ok, !high || ok; }});
   hub.Init(paths, a, std::getenv("HUB_VERSION") ? std::getenv("HUB_VERSION") : "");
   hub.SetHasMusic(true);
   std::vector<uint32_t> script;
