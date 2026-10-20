@@ -23499,10 +23499,10 @@ index 00000000..30e688ed
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp
 new file mode 100644
-index 00000000..da8d9589
+index 00000000..58eed6a9
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp
-@@ -0,0 +1,828 @@
+@@ -0,0 +1,844 @@
 +// GTA IV PS5 - the hub's languages (see hub_lang.h).
 +#include "hub_lang.h"
 +
@@ -23576,6 +23576,12 @@ index 00000000..da8d9589
 +    {{"DualSense Features", "Fonctions DualSense", "DualSense-Funktionen", "Funciones DualSense", "Funzioni DualSense"}},
 +    {{"Menu Music", "Musique du menu", "Menümusik", "Música del menú", "Musica del menu"}},
 +    {{"Light Bar", "Barre lumineuse", "Lichtleiste", "Barra de luz", "Barra luminosa"}},
++    {{"Audio Delay", "Délai du son", "Tonverzögerung", "Retraso del sonido", "Ritardo audio"}},
++    {{"Lowest (32 ms)", "Minimal (32\u00A0ms)", "Minimal (32 ms)", "Mínimo (32 ms)", "Minimo (32 ms)"}},
++    {{"Low (64 ms)", "Faible (64\u00A0ms)", "Niedrig (64 ms)", "Bajo (64 ms)", "Basso (64 ms)"}},
++    {{"Steady (128 ms)", "Stable (128\u00A0ms)", "Stabil (128 ms)", "Estable (128 ms)", "Stabile (128 ms)"}},
++    {{"Original (341 ms)", "D'origine (341\u00A0ms)", "Original (341 ms)", "Original (341 ms)",
++      "Originale (341 ms)"}},
 +    {{"Adaptive Triggers", "Gâchettes adaptatives", "Adaptive Trigger", "Gatillos adaptativos", "Grilletti adattivi"}},
 +    {{"Extra Rumble", "Vibrations supplémentaires", "Zusätzliche Vibration", "Vibración extra", "Vibrazione extra"}},
 +    {{"Feedback Strength", "Intensité du retour", "Feedback-Stärke", "Intensidad de respuesta",
@@ -23758,6 +23764,16 @@ index 00000000..da8d9589
 +      "Añade vibración al disparar, recibir un impacto o estar cerca de una explosión, además de la del propio "
 +      "juego.",
 +      "Aggiunge vibrazione quando spari, vieni colpito o sei vicino a un'esplosione, oltre a quella del gioco."}},
++    {{"How far the sound runs behind the picture. Lower is closer to the action; if the sound crackles or cuts "
++      "out, pick the next one up. Wireless headsets add a little delay of their own.",
++      "Le retard du son sur l'image. Plus bas, le son colle mieux à l'action\u00A0; s'il grésille ou se coupe, "
++      "prenez le réglage suivant. Les casques sans fil ajoutent leur propre petit délai.",
++      "Wie weit der Ton dem Bild hinterherläuft. Niedriger ist näher am Geschehen; wenn der Ton knistert oder "
++      "aussetzt, nimm die nächsthöhere Stufe. Kabellose Headsets fügen selbst etwas Verzögerung hinzu.",
++      "Cuánto va el sonido por detrás de la imagen. Más bajo se acerca más a la acción; si el sonido chisporrotea "
++      "o se corta, elige el siguiente. Los auriculares inalámbricos añaden un poco de retraso propio.",
++      "Quanto il suono è in ritardo rispetto all'immagine. Più basso è più vicino all'azione; se l'audio gracchia "
++      "o si interrompe, scegli il livello successivo. Le cuffie wireless aggiungono un po' di ritardo proprio."}},
 +    {{"How strong the adaptive triggers and the extra rumble feel.",
 +      "La force des gâchettes adaptatives et des vibrations supplémentaires.",
 +      "Wie stark sich die adaptiven Trigger und die zusätzliche Vibration anfühlen.",
@@ -25338,10 +25354,10 @@ index 00000000..ebe44a36
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..2a31a7b7
+index 00000000..d047816e
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1352 @@
+@@ -0,0 +1,1357 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -25518,6 +25534,11 @@ index 00000000..2a31a7b7
 +      {"CONTROLS", "gta4_sony_intensity", "Feedback Strength", nullptr,
 +       "How strong the adaptive triggers and the extra rumble feel.", false, {"0.25", "0.5", "0.75", "1.0"},
 +       {"Light", "Medium", "Strong", "Max"}, "0.5"},
++      {"AUDIO", "ps5_audio_frames", "Audio Delay", nullptr,
++       "How far the sound runs behind the picture. Lower is closer to the action; if the sound crackles or cuts "
++       "out, pick the next one up. Wireless headsets add a little delay of their own.",
++       false, {"6", "12", "24", "64"}, {"Lowest (32 ms)", "Low (64 ms)", "Steady (128 ms)", "Original (341 ms)"},
++       "12"},
 +      {"AUDIO", "hub_music_volume", "Menu Music", nullptr,
 +       "How loud the music is here in the hub. It changes right away.", false,
 +       {"0", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100"},
@@ -33084,10 +33105,10 @@ index 56e95edb..377e5048 100644
    SDL_JoystickID* gamepads = SDL_GetGamepads(&count);
 diff --git a/glue/rexglue-sdk-main/include/rex/audio/ps5/ps5_audio_driver.h b/glue/rexglue-sdk-main/include/rex/audio/ps5/ps5_audio_driver.h
 new file mode 100644
-index 00000000..1d956373
+index 00000000..e9e38eb5
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/audio/ps5/ps5_audio_driver.h
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,52 @@
 +#pragma once
 +/**
 + * [ps5 port] Audio out through sceAudioOut: the Xbox 360's 48 kHz frames of
@@ -33113,6 +33134,11 @@ index 00000000..1d956373
 +
 +  bool Initialize();
 +  void SubmitFrame(uint32_t frame_ptr) override;
++  // How far ahead of the speakers the game may be (ps5_audio_frames): each
++  // frame queued is 5.3 ms later that a sound is heard.
++  uint32_t RecommendedInitialCredits(uint32_t configured_maximum) const override;
++  void Pause() override { paused_.store(true, std::memory_order_relaxed); }
++  void Resume() override { paused_.store(false, std::memory_order_relaxed); }
 +  void Shutdown();
 +
 + private:
@@ -33127,6 +33153,7 @@ index 00000000..1d956373
 +  int32_t port_ = -1;
 +  std::thread thread_;
 +  std::atomic<bool> running_{false};
++  std::atomic<bool> paused_{false};
 +
 +  std::queue<float*> frames_queued_;
 +  std::stack<float*> frames_unused_;
@@ -37419,10 +37446,10 @@ index 9ece70bb..24eb993b 100644
 +endif()
 diff --git a/glue/rexglue-sdk-main/src/audio/ps5/ps5_audio_driver.cpp b/glue/rexglue-sdk-main/src/audio/ps5/ps5_audio_driver.cpp
 new file mode 100644
-index 00000000..c38a9f9f
+index 00000000..48e82174
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/src/audio/ps5/ps5_audio_driver.cpp
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,158 @@
 +/**
 + * [ps5 port] sceAudioOut audio driver (see ps5_audio_driver.h).
 + */
@@ -37445,6 +37472,12 @@ index 00000000..c38a9f9f
 +}
 +
 +REXCVAR_DECLARE(bool, audio_mute);
++// [ps5 port] The sound queued ahead of the speakers: 12 frames is 64 ms. The
++// generic 64 (341 ms) put every sound a third of a second behind the picture
++// and the controller.
++REXCVAR_DEFINE_UINT32(ps5_audio_frames, 12, "PS5",
++                      "Sound frames queued ahead of the speakers (5.3 ms each): fewer is less delay")
++    .range(2, 64);
 +
 +namespace rex::audio::ps5 {
 +
@@ -37475,6 +37508,13 @@ index 00000000..c38a9f9f
 +  return true;
 +}
 +
++uint32_t Ps5AudioDriver::RecommendedInitialCredits(uint32_t configured_maximum) const {
++  const uint32_t frames = std::clamp<uint32_t>(REXCVAR_GET(ps5_audio_frames), 2, std::max(2u, configured_maximum));
++  REXAPU_INFO("PS5 audio: {} frames ahead of the speakers ({:.0f} ms)", frames,
++              double(frames) * kChannelSamples * 1000.0 / kFrequency);
++  return frames;
++}
++
 +void Ps5AudioDriver::SubmitFrame(uint32_t frame_ptr) {
 +  const auto input_frame = memory_->TranslateVirtual<float*>(frame_ptr);
 +  float* frame;
@@ -37499,6 +37539,11 @@ index 00000000..c38a9f9f
 +void Ps5AudioDriver::OutputThread() {
 +  float stereo[kChannelSamples * 2];
 +  int16_t pcm[kChannelSamples * 2];
++  // Gaps: the game's sound not there in time (silence played instead), while
++  // it isn't paused. Logged every 10 s there were any (a shorter queue,
++  // ps5_audio_frames, leaves less room for the game's threads to be late).
++  bool started = false, in_gap = false;
++  uint32_t gaps = 0, silent = 0, played = 0;
 +  while (running_) {
 +    float* frame = nullptr;
 +    {
@@ -37507,6 +37552,20 @@ index 00000000..c38a9f9f
 +        frame = frames_queued_.front();
 +        frames_queued_.pop();
 +      }
++    }
++    if (frame) {
++      started = true, in_gap = false;
++    } else if (started && !paused_.load(std::memory_order_relaxed)) {
++      gaps += in_gap ? 0 : 1;
++      in_gap = true;
++      ++silent;
++    }
++    if (++played == kFrequency * 10 / kChannelSamples) {
++      if (gaps) {
++        REXAPU_INFO("PS5 audio: {} gaps in 10 s ({:.0f} ms of silence); {} frames ahead", gaps,
++                    double(silent) * kChannelSamples * 1000.0 / kFrequency, REXCVAR_GET(ps5_audio_frames));
++      }
++      gaps = silent = played = 0;
 +    }
 +    if (frame && !REXCVAR_GET(audio_mute)) {
 +      conversion::sequential_6_BE_to_interleaved_2_LE(stereo, frame, kChannelSamples);
