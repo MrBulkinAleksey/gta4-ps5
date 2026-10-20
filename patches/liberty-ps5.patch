@@ -23499,10 +23499,10 @@ index 00000000..30e688ed
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp
 new file mode 100644
-index 00000000..b72a797b
+index 00000000..da8d9589
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp
-@@ -0,0 +1,788 @@
+@@ -0,0 +1,828 @@
 +// GTA IV PS5 - the hub's languages (see hub_lang.h).
 +#include "hub_lang.h"
 +
@@ -23575,6 +23575,15 @@ index 00000000..b72a797b
 +    {{"Skip Intro", "Passer l'intro", "Intro überspringen", "Saltar intro", "Salta intro"}},
 +    {{"DualSense Features", "Fonctions DualSense", "DualSense-Funktionen", "Funciones DualSense", "Funzioni DualSense"}},
 +    {{"Menu Music", "Musique du menu", "Menümusik", "Música del menú", "Musica del menu"}},
++    {{"Light Bar", "Barre lumineuse", "Lichtleiste", "Barra de luz", "Barra luminosa"}},
++    {{"Adaptive Triggers", "Gâchettes adaptatives", "Adaptive Trigger", "Gatillos adaptativos", "Grilletti adattivi"}},
++    {{"Extra Rumble", "Vibrations supplémentaires", "Zusätzliche Vibration", "Vibración extra", "Vibrazione extra"}},
++    {{"Feedback Strength", "Intensité du retour", "Feedback-Stärke", "Intensidad de respuesta",
++      "Intensità del feedback"}},
++    {{"Light", "Légère", "Leicht", "Suave", "Leggera"}},
++    {{"Medium", "Moyenne", "Mittel", "Media", "Media"}},
++    {{"Strong", "Forte", "Stark", "Fuerte", "Forte"}},
++    {{"Max", "Maximale", "Maximal", "Máxima", "Massima"}},
 +    {{"Light Color Fix", "Correction des lumières", "Lichtfarben-Fix", "Corrección de luces", "Correzione luci"}},
 +    {{"Save Logs", "Enregistrer les journaux", "Logs speichern", "Guardar registros", "Salva log"}},
 +    {{"Log Detail", "Détail des journaux", "Log-Detail", "Detalle del registro", "Dettaglio log"}},
@@ -23716,13 +23725,44 @@ index 00000000..b72a797b
 +      "Geht direkt zum Startbildschirm des Spiels, vorbei an den Logos und Rechtshinweisen.",
 +      "Va directo a la pantalla de inicio del juego, sin los logotipos ni los avisos legales.",
 +      "Va direttamente alla schermata iniziale del gioco, saltando loghi e note legali."}},
-+    {{"The light bar, haptics and the other things the PC port does with a PlayStation controller.",
-+      "La barre lumineuse, les vibrations haptiques et les autres fonctions que la version PC utilise avec une "
-+      "manette PlayStation.",
-+      "Die Lichtleiste, Haptik und die anderen Dinge, die die PC-Version mit einem PlayStation-Controller macht.",
-+      "La barra de luz, la respuesta háptica y lo demás que hace la versión de PC con un mando de PlayStation.",
-+      "La barra luminosa, il feedback aptico e le altre funzioni che la versione PC usa con un controller "
-+      "PlayStation."}},
++    {{"Turns the controller extras below on or off together: the light bar, adaptive triggers and extra rumble.",
++      "Active ou coupe d'un coup les fonctions de la manette ci-dessous\u00A0: barre lumineuse, gâchettes "
++      "adaptatives et vibrations supplémentaires.",
++      "Schaltet die Controller-Extras darunter gemeinsam an oder aus: Lichtleiste, adaptive Trigger und zusätzliche "
++      "Vibration.",
++      "Activa o desactiva a la vez los extras del mando de abajo: la barra de luz, los gatillos adaptativos y la "
++      "vibración extra.",
++      "Attiva o disattiva insieme le funzioni del controller qui sotto: barra luminosa, grilletti adattivi e "
++      "vibrazione extra."}},
++    {{"The controller's light: blue in GTA IV, and flashing red and blue like police lights while you're wanted.",
++      "La lumière de la manette\u00A0: bleue dans GTA IV, et rouge et bleu clignotants comme un gyrophare quand "
++      "vous êtes recherché.",
++      "Das Licht des Controllers: blau in GTA IV und rot-blau blinkend wie ein Blaulicht, solange du gesucht wirst.",
++      "La luz del mando: azul en GTA IV, y roja y azul intermitente como las de la policía mientras te buscan.",
++      "La luce del controller: blu in GTA IV, e rossa e blu lampeggiante come una sirena della polizia quando sei "
++      "ricercato."}},
++    {{"R2 pulls like a real gun's trigger and kicks with each shot, L2 pushes back while you aim, and both feel "
++      "like pedals when you drive.",
++      "R2 se presse comme la détente d'une vraie arme et recule à chaque tir, L2 résiste quand vous visez, et les "
++      "deux font office de pédales en voiture.",
++      "R2 zieht sich wie der Abzug einer echten Waffe und schlägt bei jedem Schuss zurück, L2 drückt beim Zielen "
++      "dagegen, und beim Fahren fühlen sich beide wie Pedale an.",
++      "R2 se aprieta como el gatillo de un arma real y retrocede con cada disparo, L2 opone resistencia al apuntar, "
++      "y al conducir los dos parecen pedales.",
++      "R2 si preme come il grilletto di un'arma vera e rincula a ogni colpo, L2 oppone resistenza quando miri, e "
++      "alla guida entrambi sembrano pedali."}},
++    {{"Adds rumble when you shoot, get hit or are near an explosion, on top of the game's own.",
++      "Ajoute des vibrations quand vous tirez, êtes touché ou près d'une explosion, en plus de celles du jeu.",
++      "Fügt Vibration hinzu, wenn du schießt, getroffen wirst oder eine Explosion in der Nähe ist, zusätzlich zur "
++      "eigenen des Spiels.",
++      "Añade vibración al disparar, recibir un impacto o estar cerca de una explosión, además de la del propio "
++      "juego.",
++      "Aggiunge vibrazione quando spari, vieni colpito o sei vicino a un'esplosione, oltre a quella del gioco."}},
++    {{"How strong the adaptive triggers and the extra rumble feel.",
++      "La force des gâchettes adaptatives et des vibrations supplémentaires.",
++      "Wie stark sich die adaptiven Trigger und die zusätzliche Vibration anfühlen.",
++      "La fuerza de los gatillos adaptativos y de la vibración extra.",
++      "Quanto sono forti i grilletti adattivi e la vibrazione extra."}},
 +    {{"How loud the music is here in the hub. It changes right away.",
 +      "Le volume de la musique ici, dans le hub. Le changement est immédiat.",
 +      "Wie laut die Musik hier im Hub ist. Ändert sich sofort.",
@@ -25298,10 +25338,10 @@ index 00000000..ebe44a36
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..4abeebf8
+index 00000000..2a31a7b7
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1338 @@
+@@ -0,0 +1,1352 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -25462,8 +25502,22 @@ index 00000000..4abeebf8
 +       "Goes straight to the game's start screen, past the logos and the legal screens.", false,
 +       {"false", "true"}, {"Off", "On"}, "false"},
 +      {"CONTROLS", "gta4_sony_enabled", "DualSense Features", nullptr,
-+       "The light bar, haptics and the other things the PC port does with a PlayStation controller.", false,
++       "Turns the controller extras below on or off together: the light bar, adaptive triggers and extra rumble.",
++       false, {"false", "true"}, {"Off", "On"}, "true"},
++      // (rex::input::sony, the PC port's, through the PS5 driver: ps5_input_driver.cpp)
++      {"CONTROLS", "gta4_sony_lighting", "Light Bar", nullptr,
++       "The controller's light: blue in GTA IV, and flashing red and blue like police lights while you're wanted.",
++       false, {"false", "true"}, {"Off", "On"}, "true"},
++      {"CONTROLS", "gta4_sony_triggers", "Adaptive Triggers", nullptr,
++       "R2 pulls like a real gun's trigger and kicks with each shot, L2 pushes back while you aim, and both feel "
++       "like pedals when you drive.",
++       false, {"false", "true"}, {"Off", "On"}, "true"},
++      {"CONTROLS", "gta4_sony_rumble", "Extra Rumble", nullptr,
++       "Adds rumble when you shoot, get hit or are near an explosion, on top of the game's own.", false,
 +       {"false", "true"}, {"Off", "On"}, "true"},
++      {"CONTROLS", "gta4_sony_intensity", "Feedback Strength", nullptr,
++       "How strong the adaptive triggers and the extra rumble feel.", false, {"0.25", "0.5", "0.75", "1.0"},
++       {"Light", "Medium", "Strong", "Max"}, "0.5"},
 +      {"AUDIO", "hub_music_volume", "Menu Music", nullptr,
 +       "How loud the music is here in the hub. It changes right away.", false,
 +       {"0", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100"},
@@ -33720,20 +33774,24 @@ index dd57db44..10f767bb 100644
    // deterministic guest poll boundary without consuming transient input a
 diff --git a/glue/rexglue-sdk-main/include/rex/input/ps5/ps5_input_driver.h b/glue/rexglue-sdk-main/include/rex/input/ps5/ps5_input_driver.h
 new file mode 100644
-index 00000000..d735d1d5
+index 00000000..9031f98a
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/include/rex/input/ps5/ps5_input_driver.h
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,73 @@
 +#pragma once
 +/**
 + * [ps5 port] DualSense controllers through scePad: one Xbox 360 pad per
 + * logged-in PS5 user that has a controller.
 + */
 +#include <array>
++#include <atomic>
++#include <condition_variable>
 +#include <cstdint>
 +#include <mutex>
++#include <thread>
 +
 +#include <rex/input/input_driver.h>
++#include <rex/input/sony_feedback.h>
 +
 +namespace rex::input::ps5 {
 +
@@ -33759,18 +33817,68 @@ index 00000000..d735d1d5
 +    uint32_t packet_number = 0;
 +    X_INPUT_GAMEPAD last_gamepad{};
 +    uint32_t keystroke_buttons = 0;  // the buttons the keystroke events last reported
++    // DualSense features (rex::input::sony, the PC port's): the game's own
++    // rumble, and what was last sent to the controller.
++    uint64_t generation = 0;  // (its connection to the feature service)
++    uint16_t native_low = 0, native_high = 0;
++    uint16_t pulse_low = 0, pulse_high = 0;
++    uint8_t sent_large = 0, sent_small = 0;
++    bool light_set = false;
++    std::array<uint8_t, 3> color{};
++    bool triggers_set = false;
++    std::array<uint8_t, 120> trigger_param{};  // (the last ScePadTriggerEffectParam sent)
++    int trigger_failures = 0;
 +  };
 +  // A pad by the game's user index (0..3: the PS5 users in login order).
 +  Pad* PadFor(uint32_t user_index);
 +  void RefreshPads();
 +  X_RESULT ReadState(uint32_t user_index, bool active, X_INPUT_STATE* out_state);
++  // The light bar, trigger effects and added rumble, on a thread of their own
++  // (every 10 ms; a controller is told only what changed).
++  void FeedbackLoop();
++  void ApplyFeedback(uint32_t user_index, int32_t handle, uint64_t generation);
++  void SendVibration(Pad& pad);  // (the game's rumble with the added pulses; under output_mutex_)
 +
 +  std::mutex mutex_;
++  std::mutex output_mutex_;  // the controller output calls, off mutex_ (the game's reads)
 +  std::array<Pad, kMaxPads> pads_{};
 +  uint64_t last_refresh_ms_ = 0;
++  uint64_t next_generation_ = 1;
++  std::thread feedback_thread_;
++  std::atomic<bool> stopping_{false};
++  std::mutex wait_mutex_;
++  std::condition_variable wait_;
 +};
 +
 +}  // namespace rex::input::ps5
+diff --git a/glue/rexglue-sdk-main/include/rex/input/sony_feedback.h b/glue/rexglue-sdk-main/include/rex/input/sony_feedback.h
+index 0d19033f..44c485f5 100644
+--- a/glue/rexglue-sdk-main/include/rex/input/sony_feedback.h
++++ b/glue/rexglue-sdk-main/include/rex/input/sony_feedback.h
+@@ -63,6 +63,15 @@ struct GameState {
+ 
+ using Trigger = std::array<uint8_t, 11>;
+ using EffectPacket = std::array<uint8_t, 47>;
++// What a trigger's effect is for, with its strength (0..1), alongside the
++// DualSense report bytes: a driver with the console's own trigger modes (the
++// PS5's scePadSetTriggerEffect) picks the mode that feels like it.
++struct TriggerFeel {
++  enum Kind : uint8_t { kOff, kPedal, kAim, kGun, kRecoil };
++  Kind kind = kOff;
++  float strength = 0;
++  bool operator==(const TriggerFeel&) const = default;
++};
+ struct Output {
+   bool active = false;
+   bool suppress_native = false;
+@@ -72,6 +81,7 @@ struct Output {
+   uint16_t high_motor = 0;
+   Trigger left{};
+   Trigger right{};
++  TriggerFeel left_feel{}, right_feel{};
+ };
+ 
+ Trigger Resistance(uint8_t position, uint8_t strength);
 diff --git a/glue/rexglue-sdk-main/include/rex/platform.h b/glue/rexglue-sdk-main/include/rex/platform.h
 index fd32c512..068e0a55 100644
 --- a/glue/rexglue-sdk-main/include/rex/platform.h
@@ -44339,10 +44447,10 @@ index b2b99ec4..d96f32c1 100644
      auto sdl_driver = std::make_unique<sdl::SDLInputDriver>(nullptr, 0, expose_sdl_gamepad_state);
 diff --git a/glue/rexglue-sdk-main/src/input/ps5/ps5_input_driver.cpp b/glue/rexglue-sdk-main/src/input/ps5/ps5_input_driver.cpp
 new file mode 100644
-index 00000000..de0a08c1
+index 00000000..04c9252f
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/src/input/ps5/ps5_input_driver.cpp
-@@ -0,0 +1,282 @@
+@@ -0,0 +1,446 @@
 +/**
 + * [ps5 port] DualSense input via scePad (layout verified on hardware by
 + * Nazky's ps5-plume-triangle).
@@ -44350,11 +44458,21 @@ index 00000000..de0a08c1
 + * Mapping (Xbox 360 <- DualSense): A <- Cross, B <- Circle, X <- Square,
 + * Y <- Triangle, LB/RB <- L1/R1, LT/RT <- L2/R2 (analog), START <- Options,
 + * BACK <- touchpad click, stick clicks <- L3/R3, d-pad <- d-pad.
++ *
++ * And the DualSense features the PC port has (rex::input::sony, Settings'
++ * DualSense Features): the light bar (the game's colour, police lights while
++ * wanted), adaptive triggers (a gun's trigger pull and its recoil, aiming,
++ * pedals) and added rumble for shots, hits and explosions. Only the
++ * controller's output: the game's own rumble is kept as it was.
 + */
 +#include <rex/input/ps5/ps5_input_driver.h>
 +
++#include <algorithm>
 +#include <chrono>
++#include <cmath>
 +#include <cstring>
++
++#include <SDL3/SDL_timer.h>
 +
 +#include <rex/logging.h>
 +#include <rex/ui/virtual_key.h>
@@ -44377,6 +44495,29 @@ index 00000000..de0a08c1
 +  uint8_t small_motor;
 +};
 +int scePadSetVibration(int32_t handle, const ScePadVibrationParam* param);
++struct ScePadLightBarParam {
++  uint8_t r, g, b, reserved;
++};
++int scePadSetLightBar(int32_t handle, const ScePadLightBarParam* param);
++int scePadResetLightBar(int32_t handle);
++// The adaptive triggers: one command per trigger, its mode's parameters in
++// data (the layout Porpoise uses on the console, after ProsperoEden's
++// ps5_pad.hpp). Modes: 0 off, 1 feedback (data: position 0-9, strength 1-8),
++// 2 weapon (start 2-7, end start+1..8, strength 0-8), 3 vibration (position
++// 0-9, amplitude 0-8, frequency 0-255 Hz).
++struct ScePadTriggerEffectCommand {
++  int32_t mode;
++  int32_t reserved;
++  uint8_t data[48];
++};
++struct ScePadTriggerEffectParam {
++  uint8_t trigger_mask;  // 1 L2, 2 R2
++  uint8_t reserved[7];
++  ScePadTriggerEffectCommand l2, r2;
++};
++static_assert(sizeof(ScePadTriggerEffectCommand) == 56 && sizeof(ScePadTriggerEffectParam) == 120,
++              "the console's trigger effect layout");
++int scePadSetTriggerEffect(int32_t handle, const ScePadTriggerEffectParam* param);
 +}
 +
 +namespace rex::input::ps5 {
@@ -44429,14 +44570,58 @@ index 00000000..de0a08c1
 +                      .count());
 +}
 +
++// A strength (0..1) on the console's scale lo..hi.
++uint8_t Level(float strength, int lo, int hi) {
++  const float s = std::isfinite(strength) ? std::clamp(strength, 0.0f, 1.0f) : 0.0f;
++  return uint8_t(std::clamp(int(std::lround(float(lo) + float(hi - lo) * s)), lo, hi));
++}
++
++// A trigger's feel as the console's trigger modes: a gun's trigger gives way
++// partway, as a real one breaks (weapon mode), and each shot kicks it
++// (vibration); aiming and pedals push back evenly (feedback).
++void FillTrigger(ScePadTriggerEffectCommand& c, const rex::input::sony::TriggerFeel& feel) {
++  using Feel = rex::input::sony::TriggerFeel;
++  std::memset(&c, 0, sizeof(c));
++  switch (feel.kind) {
++    case Feel::kPedal:
++      c.mode = 1, c.data[0] = 1, c.data[1] = Level(feel.strength, 1, 8);
++      break;
++    case Feel::kAim:
++      c.mode = 1, c.data[0] = 2, c.data[1] = Level(feel.strength, 1, 4);
++      break;
++    case Feel::kGun:
++      c.mode = 2, c.data[0] = 4, c.data[1] = 6, c.data[2] = Level(feel.strength, 3, 8);
++      break;
++    case Feel::kRecoil:
++      c.mode = 3, c.data[0] = 2, c.data[1] = Level(feel.strength, 2, 8), c.data[2] = 40;
++      break;
++    default: break;  // (mode 0: off)
++  }
++}
++
 +}  // namespace
 +
 +Ps5InputDriver::Ps5InputDriver(rex::ui::Window* window, size_t window_z_order)
 +    : InputDriver(window, window_z_order) {}
 +
 +Ps5InputDriver::~Ps5InputDriver() {
-+  for (Pad& pad : pads_) {
-+    if (pad.handle >= 0) scePadClose(pad.handle);
++  stopping_.store(true, std::memory_order_release);
++  wait_.notify_all();
++  if (feedback_thread_.joinable()) feedback_thread_.join();
++  for (uint32_t i = 0; i < kMaxPads; ++i) {
++    Pad& pad = pads_[i];
++    if (pad.handle < 0) continue;
++    // (the controller as the system had it: its light, no trigger effects, still)
++    if (pad.light_set) scePadResetLightBar(pad.handle);
++    if (pad.triggers_set) {
++      ScePadTriggerEffectParam off{};
++      off.trigger_mask = 1 | 2;
++      scePadSetTriggerEffect(pad.handle, &off);
++    }
++    ScePadVibrationParam still{0, 0};
++    scePadSetVibration(pad.handle, &still);
++    rex::input::sony::GetService().Disconnect(uint32_t(pad.handle) + 1);
++    scePadClose(pad.handle);
 +  }
 +}
 +
@@ -44447,8 +44632,12 @@ index 00000000..de0a08c1
 +    REXLOG_ERROR("PS5 input: scePadInit failed ({:#x})", uint32_t(rc));
 +    return X_STATUS_UNSUCCESSFUL;
 +  }
-+  std::lock_guard<std::mutex> lock(mutex_);
-+  RefreshPads();
++  {
++    std::lock_guard<std::mutex> lock(mutex_);
++    RefreshPads();
++  }
++  rex::input::sony::GetService().SetFocused(true);
++  feedback_thread_ = std::thread([this] { FeedbackLoop(); });
 +  return X_STATUS_SUCCESS;
 +}
 +
@@ -44466,14 +44655,23 @@ index 00000000..de0a08c1
 +    bool known = false;
 +    for (const Pad& pad : pads_) known |= pad.user_id == user && pad.handle >= 0;
 +    if (known) continue;
-+    for (Pad& pad : pads_) {
++    for (uint32_t i = 0; i < kMaxPads; ++i) {
++      Pad& pad = pads_[i];
 +      if (pad.handle >= 0) continue;
 +      int32_t handle = scePadOpen(user, 0, 0, nullptr);
 +      if (handle < 0) handle = scePadGetHandle(user, 0, 0);
 +      if (handle < 0) break;
 +      pad.user_id = user;
-+      pad.handle = handle;
 +      pad.packet_number = 0;
++      pad.generation = next_generation_++;
++      // the DualSense features: this controller has them all
++      rex::input::sony::Device device{};
++      device.instance_id = uint32_t(handle) + 1;
++      device.generation = pad.generation;
++      device.model = rex::input::sony::Model::kDualSense;
++      device.light = device.rumble = device.triggers = true;
++      rex::input::sony::GetService().Connect(i, device);
++      pad.handle = handle;
 +      REXLOG_INFO("PS5 input: DualSense for user {:#x} (handle {})", uint32_t(user), handle);
 +      break;
 +    }
@@ -44496,6 +44694,8 @@ index 00000000..de0a08c1
 +  if (scePadReadState(pad->handle, &data) != 0) {
 +    return X_ERROR_DEVICE_NOT_CONNECTED;
 +  }
++  // (the pedals' push-back follows how far down they are)
++  rex::input::sony::GetService().UpdateAxes(user_index, data.analog_l2, data.analog_r2);
 +  if (!out_state) return X_ERROR_SUCCESS;
 +  const uint32_t b = active ? data.buttons : 0;
 +  uint16_t buttons = 0;
@@ -44571,12 +44771,84 @@ index 00000000..de0a08c1
 +  Pad* pad = PadFor(user_index);
 +  if (!pad) return X_ERROR_DEVICE_NOT_CONNECTED;
 +  if (vibration) {
-+    ScePadVibrationParam param;
-+    param.large_motor = uint8_t(uint16_t(vibration->left_motor_speed) >> 8);
-+    param.small_motor = uint8_t(uint16_t(vibration->right_motor_speed) >> 8);
-+    scePadSetVibration(pad->handle, &param);
++    std::lock_guard<std::mutex> output(output_mutex_);
++    pad->native_low = vibration->left_motor_speed;
++    pad->native_high = vibration->right_motor_speed;
++    SendVibration(*pad);
 +  }
 +  return X_ERROR_SUCCESS;
++}
++
++// The game's rumble, with the added pulses over it (the stronger of each motor).
++void Ps5InputDriver::SendVibration(Pad& pad) {
++  ScePadVibrationParam param;
++  param.large_motor = uint8_t(std::max(pad.native_low, pad.pulse_low) >> 8);
++  param.small_motor = uint8_t(std::max(pad.native_high, pad.pulse_high) >> 8);
++  scePadSetVibration(pad.handle, &param);
++  pad.sent_large = param.large_motor;
++  pad.sent_small = param.small_motor;
++}
++
++void Ps5InputDriver::FeedbackLoop() {
++  std::unique_lock<std::mutex> wait_lock(wait_mutex_);
++  while (!stopping_.load(std::memory_order_acquire)) {
++    wait_lock.unlock();
++    std::array<int32_t, kMaxPads> handles;
++    std::array<uint64_t, kMaxPads> generations;
++    {
++      std::lock_guard<std::mutex> lock(mutex_);
++      for (uint32_t i = 0; i < kMaxPads; ++i) handles[i] = pads_[i].handle, generations[i] = pads_[i].generation;
++    }
++    for (uint32_t i = 0; i < kMaxPads; ++i)
++      if (handles[i] >= 0) ApplyFeedback(i, handles[i], generations[i]);
++    wait_lock.lock();
++    wait_.wait_for(wait_lock, std::chrono::milliseconds(10),
++                   [this] { return stopping_.load(std::memory_order_acquire); });
++  }
++}
++
++void Ps5InputDriver::ApplyFeedback(uint32_t user_index, int32_t handle, uint64_t generation) {
++  namespace sony = rex::input::sony;
++  if (sony::GetService().ReadDevice(user_index).generation != generation) return;
++  const sony::Options options = sony::GetOptions();
++  const sony::Output out = sony::GetService().Compose(user_index, SDL_GetTicks(), options);
++  std::lock_guard<std::mutex> output(output_mutex_);
++  Pad& pad = pads_[user_index];
++  // rumble: the pulses, when they start and stop
++  const uint16_t low = out.active ? out.low_motor : 0, high = out.active ? out.high_motor : 0;
++  if (low != pad.pulse_low || high != pad.pulse_high) {
++    pad.pulse_low = low, pad.pulse_high = high;
++    SendVibration(pad);
++  }
++  // the light bar: the game's colour (police lights while wanted), else the system's
++  if (out.active && out.lighting) {
++    if (!pad.light_set || out.color != pad.color) {
++      const ScePadLightBarParam light{out.color[0], out.color[1], out.color[2], 0};
++      if (scePadSetLightBar(handle, &light) == 0) pad.light_set = true, pad.color = out.color;
++    }
++  } else if (pad.light_set) {
++    scePadResetLightBar(handle);
++    pad.light_set = false;
++  }
++  // the triggers
++  if (pad.trigger_failures >= 3) return;
++  ScePadTriggerEffectParam param{};
++  param.trigger_mask = 1 | 2;
++  FillTrigger(param.l2, out.active ? out.left_feel : sony::TriggerFeel{});
++  FillTrigger(param.r2, out.active ? out.right_feel : sony::TriggerFeel{});
++  const bool off = param.l2.mode == 0 && param.r2.mode == 0;
++  if ((!pad.triggers_set && off) ||
++      std::memcmp(&param, pad.trigger_param.data(), sizeof(param)) == 0)
++    return;
++  const int result = scePadSetTriggerEffect(handle, &param);
++  if (result == 0) {
++    std::memcpy(pad.trigger_param.data(), &param, sizeof(param));
++    pad.triggers_set = !off;
++    pad.trigger_failures = 0;
++  } else if (++pad.trigger_failures >= 3) {
++    REXLOG_WARN("PS5 input: adaptive triggers refused ({:#x}); off for this controller", uint32_t(result));
++    sony::GetService().DisableTriggers(user_index, generation);
++  }
 +}
 +
 +// Button presses and releases as keystroke events, one per call (the XInput
@@ -44625,6 +44897,37 @@ index 00000000..de0a08c1
 +}
 +
 +}  // namespace rex::input::ps5
+diff --git a/glue/rexglue-sdk-main/src/input/sony_feedback.cpp b/glue/rexglue-sdk-main/src/input/sony_feedback.cpp
+index c4809b38..23d51a5e 100644
+--- a/glue/rexglue-sdk-main/src/input/sony_feedback.cpp
++++ b/glue/rexglue-sdk-main/src/input/sony_feedback.cpp
+@@ -269,13 +269,21 @@ Output Service::Compose(uint32_t user, uint64_t now_ms, const Options& options)
+     output.high_motor = Motor(std::max({shot, damage * 0.5f, explosion * 0.65f}) * intensity);
+   }
+   if (options.triggers && slot.device.triggers && intensity > 0) {
++    using Feel = TriggerFeel;
+     if (slot.game.trigger_context == TriggerContext::kVehicle && slot.game.driver) {
+-      output.left = Resistance(20, Force(intensity * (0.25f + 0.5f * slot.device.left_trigger / 255.0f)));
+-      output.right = Resistance(20, Force(intensity * (0.25f + 0.5f * slot.device.right_trigger / 255.0f)));
++      const float left = intensity * (0.25f + 0.5f * slot.device.left_trigger / 255.0f);
++      const float right = intensity * (0.25f + 0.5f * slot.device.right_trigger / 255.0f);
++      output.left = Resistance(20, Force(left));
++      output.right = Resistance(20, Force(right));
++      output.left_feel = {Feel::kPedal, left};
++      output.right_feel = {Feel::kPedal, right};
+     } else if (slot.game.trigger_context == TriggerContext::kWeapon) {
+-      if (slot.game.aiming) output.left = Resistance(30, Force(intensity * 0.5f));
+-      if (slot.game.can_fire) output.right = Resistance(90, Force(intensity));
+-      if (shot > 0) output.right = Recoil(static_cast<uint8_t>(63.0f * intensity * shot));
++      if (slot.game.aiming) output.left = Resistance(30, Force(intensity * 0.5f)), output.left_feel = {Feel::kAim, intensity};
++      if (slot.game.can_fire) output.right = Resistance(90, Force(intensity)), output.right_feel = {Feel::kGun, intensity};
++      if (shot > 0) {
++        output.right = Recoil(static_cast<uint8_t>(63.0f * intensity * shot));
++        output.right_feel = {Feel::kRecoil, intensity * shot};
++      }
+     }
+   }
+   return output;
 diff --git a/glue/rexglue-sdk-main/src/kernel/xam/xam_info.cpp b/glue/rexglue-sdk-main/src/kernel/xam/xam_info.cpp
 index 1fda0536..40f497b5 100644
 --- a/glue/rexglue-sdk-main/src/kernel/xam/xam_info.cpp
