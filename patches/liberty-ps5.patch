@@ -26464,10 +26464,10 @@ index 00000000..a24e8a62
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..15d25dda
+index 00000000..f54ee22c
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1685 @@
+@@ -0,0 +1,1736 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -26790,6 +26790,48 @@ index 00000000..15d25dda
 +    out.rgba[i] = out.rgba[i + 1] = out.rgba[i + 2] = v;
 +  }
 +  return out;
++}
++
++ImU32 Accent(const Pixels& p) {
++  // the hue most of its vivid pixels share (by 10 degrees, with their
++  // neighbours), its pixels' average, made bright and strong. Skin's hues
++  // count for less: the people would make every picture's colour the same.
++  constexpr int kBins = 36;
++  double weight[kBins] = {}, sum[kBins][3] = {};
++  const size_t n = p.rgba.size() / 4, stride = std::max<size_t>(1, n / 60000);
++  for (size_t k = 0; k < n; k += stride) {
++    const float r = p.rgba[k * 4] / 255.0f, g = p.rgba[k * 4 + 1] / 255.0f, b = p.rgba[k * 4 + 2] / 255.0f;
++    const float mx = std::max({r, g, b}), mn = std::min({r, g, b});
++    const float s = mx > 0 ? (mx - mn) / mx : 0;
++    if (s < 0.2f || mx < 0.2f) continue;
++    float h = mx == r ? (g - b) / (mx - mn) : mx == g ? 2 + (b - r) / (mx - mn) : 4 + (r - g) / (mx - mn);
++    h = std::fmod(h * 60 + 360, 360.0f);
++    const int bin = std::min(kBins - 1, int(h / (360.0f / kBins)));
++    const bool skin = h < 50 || h > 350;
++    const double w = double(s) * s * s * mx * (skin ? 0.05 : 1.0);
++    weight[bin] += w, sum[bin][0] += r * w, sum[bin][1] += g * w, sum[bin][2] += b * w;
++  }
++  int best = -1;
++  double best_w = 0;
++  for (int i = 0; i < kBins; ++i) {
++    const double w = weight[(i + kBins - 1) % kBins] + weight[i] + weight[(i + 1) % kBins];
++    if (w > best_w) best_w = w, best = i;
++  }
++  if (best < 0) return 0;
++  double c[3] = {};
++  for (int d = -1; d <= 1; ++d)
++    for (int k = 0; k < 3; ++k) c[k] += sum[(best + d + kBins) % kBins][k];
++  for (double& v : c) v /= best_w;
++  // (as HSV: the hue kept, strong and full bright)
++  const double mx = std::max({c[0], c[1], c[2]}), mn = std::min({c[0], c[1], c[2]});
++  if (mx <= 0) return 0;
++  const double s = std::clamp((mx - mn) / mx * 1.3, 0.55, 0.9);
++  int out[3];
++  for (int k = 0; k < 3; ++k) {
++    const double t = mx > mn ? (c[k] - mn) / (mx - mn) : 1;  // 0 at the weakest channel, 1 at the strongest
++    out[k] = int(std::lround(255 * (1 - s * (1 - t))));
++  }
++  return Rgba(out[0], out[1], out[2]);
 +}
 +
 +std::vector<int> Hub::HomeGames() const {
@@ -27519,32 +27561,34 @@ index 00000000..15d25dda
 +}  // namespace
 +
 +// Home once an episode is installed: a pillar for each game, side by side
-+// across the band between the rules (as the Complete Edition's cover). The
-+// chosen one stands straight, twice the others' width, in colour, a glow in
-+// its colour at its edges and its logo over it; the others lean away from it,
-+// narrower, black and white and dimmer. Left and Right choose, X plays.
++// across the band between the rules, all leaning the same way (as the
++// Complete Edition's cover). The chosen one opens to twice the others' width,
++// in colour, a glow in its picture's colour at its edges and its logo over
++// it; the others are narrower, black and white and dimmer. The pictures move
++// as the game's loading art does: closer and back, side to side, slowly, each
++// at its own pace, and they slide within their pillars as the pillars open
++// and close (depth). Left and Right choose, X plays.
 +void Hub::DrawHomePanels(const std::vector<int>& games) {
 +  constexpr float kOpen = 1.0f;   // (the chosen one's extra width, in the others' widths)
-+  constexpr float kLean = 64.0f;  // (how far a pillar's top leans over, at 1080p: about 5 degrees)
++  constexpr float kLean = 70.0f;  // (how far a pillar's top leans right, at 1080p: about 6 degrees)
 +  const ImVec2 size = ImGui::GetIO().DisplaySize;
 +  const float top = P(0, kRuleTop + 2).y, bottom = P(0, kRuleBottom).y;
-+  const float gap = std::round(8 * s_);
++  const float gap = std::round(10 * s_), lean = kLean * s_;
 +  const int chosen = HomeGame();
-+  const int at = int(std::find(games.begin(), games.end(), chosen) - games.begin());
 +  float shares = 0;
-+  for (size_t i = 0; i < games.size(); ++i) {
-+    const int g = games[i];
-+    Ease(home_wide_[g], g == chosen ? 1.0f : 0.0f, 12);
-+    // (left of the chosen one: the top leans left; right of it: right)
-+    Ease(home_lean_[g], int(i) < at ? -1.0f : int(i) > at ? 1.0f : 0.0f, 12);
++  for (const int g : games) {
++    Ease(home_wide_[g], g == chosen ? 1.0f : 0.0f, 10);
 +    shares += 1 + home_wide_[g] * kOpen;
 +  }
-+  const float room = size.x - gap * float(games.size() - 1);
++  // (the first pillar's foot starts off the screen, so its top meets the screen's edge)
++  const float room = size.x + lean - gap * float(games.size() - 1);
 +  dl_->PushClipRect(ImVec2(0, top), ImVec2(size.x, bottom), true);
-+  float x = 0;
++  float x = -lean;
 +  for (const int g : games) {
 +    const float w = room * (1 + home_wide_[g] * kOpen) / shares;
-+    DrawHomePanel(g, x, x + w, top, bottom, home_lean_[g] * kLean * s_, Smooth(home_wide_[g]));
++    // (where the pillar's middle is across the screen, -1 to 1: its picture lags behind it)
++    const float across = ((x + w * 0.5f + lean * 0.5f) / size.x) * 2 - 1;
++    DrawHomePanel(g, x, x + w, top, bottom, lean, Smooth(home_wide_[g]), across);
 +    x += w + gap;
 +  }
 +  dl_->PopClipRect();
@@ -27562,7 +27606,7 @@ index 00000000..15d25dda
 +}
 +
 +// A pillar: its foot from x0 to x1 on the lower rule, its top `lean` over.
-+void Hub::DrawHomePanel(int game, float x0, float x1, float top, float bottom, float lean, float on) {
++void Hub::DrawHomePanel(int game, float x0, float x1, float top, float bottom, float lean, float on, float across) {
 +  const Assets::HomeArt& art = a_.home[game];
 +  const float h = bottom - top;
 +  const ImVec2 tl(x0 + lean, top), tr(x1 + lean, top), br(x1, bottom), bl(x0, bottom);
@@ -27570,15 +27614,22 @@ index 00000000..15d25dda
 +  auto side = [&](float x, float t) { return ImVec2(x + lean * t, bottom - h * t); };
 +  if (art.picture) {
 +    // the picture covers the pillar (upright, the pillar cut from it), round
-+    // the person (its middle, the face in its top third), closer when chosen
++    // the person (its middle, the face in its top third), a little closer
++    // than it fits and moving in the room that leaves
 +    const float left = std::min(x0, x0 + lean), width = x1 - x0 + std::fabs(lean);
-+    const float zoom = 1.0f + 0.05f * on;
++    const float phase = float(game) * 2.1f;
++    const float breath = 0.5f - 0.5f * std::cos(time_ * 6.2832f / 26.0f + phase);
++    const float zoom = 1.10f + 0.05f * breath + 0.04f * on;
 +    const float shape = width / std::max(1.0f, h), picture = art.picture.width / std::max(1.0f, art.picture.height);
 +    float uw = 1, vh = 1;
 +    if (picture > shape) uw = shape / picture;
 +    else vh = picture / shape;
 +    uw /= zoom, vh /= zoom;
-+    const ImVec2 uv0(0.5f - uw * 0.5f, std::clamp(0.36f - vh * 0.5f, 0.0f, 1 - vh));
++    // side to side (and a touch up and down), and behind the pillar's own move
++    const float sway = 0.55f * std::sin(time_ * 6.2832f / 34.0f + phase) - 0.45f * across;
++    const float cx = 0.5f + (1 - uw) * 0.5f * std::clamp(sway, -1.0f, 1.0f);
++    const float cy = 0.36f + 0.03f * std::sin(time_ * 6.2832f / 41.0f + phase * 1.7f);
++    const ImVec2 uv0(std::clamp(cx - uw * 0.5f, 0.0f, 1 - uw), std::clamp(cy - vh * 0.5f, 0.0f, 1 - vh));
 +    auto uv = [&](ImVec2 p) { return ImVec2(uv0.x + (p.x - left) / width * uw, uv0.y + (p.y - top) / h * vh); };
 +    if (!art.grey || on < 0.999f)
 +      dl_->AddImageQuad((art.grey ? art.grey : art.picture).id, tl, tr, br, bl, uv(tl), uv(tr), uv(br), uv(bl));
@@ -27593,7 +27644,7 @@ index 00000000..15d25dda
 +  Quad(side(x0, 0.5f), side(x1, 0.5f), br, bl, Black(0), Black(0), Black(0.75f * on), Black(0.75f * on));
 +  // the logo (the game's name without one), at the foot of the chosen one
 +  if (on > 0.01f) {
-+    const float cx = ((x0 + x1) * 0.5f + lean * 0.15f - ox_) / s_, hw = (x1 - x0) / s_, foot = (bottom - oy_) / s_ - 56;
++    const float cx = ((x0 + x1) * 0.5f + lean * 0.22f - ox_) / s_, hw = (x1 - x0) / s_, foot = (bottom - oy_) / s_ - 56;
 +    if (art.logo) {
 +      const float lw = std::min(hw * 0.72f, 620.0f), lh = std::min(lw * art.logo.height / art.logo.width, 230.0f);
 +      const float fw = lh * art.logo.width / art.logo.height;
@@ -27606,13 +27657,13 @@ index 00000000..15d25dda
 +  }
 +  // the glow round the chosen one, in its colour: bright at the edge, fading in
 +  if (on > 0.01f) {
-+    const ImU32 col = GameColor(game);
++    const ImU32 col = art.color ? art.color : GameColor(game);
 +    const float step = std::max(1.0f, 1.5f * s_);
-+    for (int k = 0; k < 16; ++k) {
-+      const float t = 1 - float(k) / 16, in = k * step, up = in / h;
++    for (int k = 0; k < 22; ++k) {
++      const float t = 1 - float(k) / 22, in = k * step, up = in / h;
 +      auto at = [&](float x, float t, float dx) { const ImVec2 p = side(x, t); return ImVec2(p.x + dx, p.y); };
 +      const ImVec2 ring[4] = {at(x0, 1 - up, in), at(x1, 1 - up, -in), at(x1, up, -in), at(x0, up, in)};
-+      dl_->AddPolyline(ring, 4, WithAlpha(col, on * 0.6f * t * t), ImDrawFlags_Closed, step);
++      dl_->AddPolyline(ring, 4, WithAlpha(col, on * (k ? 0.7f * t * t : 1.0f)), ImDrawFlags_Closed, k ? step : 2 * step);
 +    }
 +  }
 +}
@@ -28155,10 +28206,10 @@ index 00000000..15d25dda
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
 new file mode 100644
-index 00000000..66c23f74
+index 00000000..65c0ba78
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
-@@ -0,0 +1,401 @@
+@@ -0,0 +1,403 @@
 +// GTA IV PS5 - the hub: the screen the app opens on, before the game
 +// (the PC launcher's settings, driven by the controller), drawn after GTA IV's
 +// own pause menu: tabs across the top in its condensed type, the chosen one in
@@ -28249,6 +28300,7 @@ index 00000000..66c23f74
 +  // .png), tlad, tbogt, and gta4-logo.png, tlad-logo.png, tbogt-logo.png.
 +  struct HomeArt {
 +    Image picture, grey, logo;
++    ImU32 color = 0;  // the picture's own colour (Accent), for the glow
 +  };
 +  HomeArt home[3];
 +  std::map<uint32_t, Image> buttons;  // the PS5's button pictures, by Button (kLeft | kRight: the d-pad)
@@ -28269,6 +28321,8 @@ index 00000000..66c23f74
 +Pixels Shrink(const unsigned char* rgba, int w, int h, int max_h);
 +// Black and white.
 +Pixels Grey(const Pixels& p);
++// The picture's strongest colour, brightened (0 for one with none: black and white).
++ImU32 Accent(const Pixels& p);
 +constexpr int kHomePictureHeight = 1400;
 +
 +struct Paths {
@@ -28380,11 +28434,10 @@ index 00000000..66c23f74
 +  // an episode is installed; kept in native.toml for the next time.
 +  int home_game_ = 0;  // (GTA IV at each start)
 +  float home_wide_[3] = {1, 0, 0};  // how far each pillar is open (the chosen one)
-+  float home_lean_[3] = {0, -1, 1};  // which way each leans (-1 left, 1 right, 0 upright: the chosen one)
 +  std::vector<int> HomeGames() const;  // GTA IV and the episodes installed, left to right
 +  int HomeGame() const;                // home_game_, or GTA IV if it's gone
 +  void DrawHomePanels(const std::vector<int>& games);
-+  void DrawHomePanel(int game, float x0, float x1, float top, float bottom, float lean, float on);
++  void DrawHomePanel(int game, float x0, float x1, float top, float bottom, float lean, float on, float drift);
 +  void Quad(ImVec2 tl, ImVec2 tr, ImVec2 br, ImVec2 bl, ImU32 ctl, ImU32 ctr, ImU32 cbr, ImU32 cbl);
 +  void DrawSettings();
 +  void DrawSaves();
@@ -28562,7 +28615,7 @@ index 00000000..66c23f74
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
 new file mode 100644
-index 00000000..51a3be29
+index 00000000..649c24d5
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
 @@ -0,0 +1,438 @@
@@ -28874,12 +28927,12 @@ index 00000000..51a3be29
 +    for (int g = 0; g < 3; ++g) {
 +      auto& art = a.home[g];
 +      for (const char* ext : {".jpg", ".png"})
-+        if (!art.picture) LoadHomePicture(immediate, hub / "home" / (std::string(games[g]) + ext), art.picture, art.grey);
++        if (!art.picture) LoadHomePicture(immediate, hub / "home" / (std::string(games[g]) + ext), art);
 +      art.logo = Load(immediate, hub / "home" / (std::string(games[g]) + "-logo.png"));
 +    }
 +    if (!a.home[0].picture) {
-+      LoadHomePicture(immediate, hub / "hero.jpg", a.home[0].picture, a.home[0].grey);
-+      if (!a.home[0].picture) LoadHomePicture(immediate, hub / "hero.png", a.home[0].picture, a.home[0].grey);
++      LoadHomePicture(immediate, hub / "hero.jpg", a.home[0]);
++      if (!a.home[0].picture) LoadHomePicture(immediate, hub / "hero.png", a.home[0]);
 +    }
 +    if (!a.home[0].logo) a.home[0].logo = a.logo;
 +    // the button pictures (hub/buttons/<name>.png; drawn ones where missing)
@@ -28932,16 +28985,16 @@ index 00000000..51a3be29
 +    return img;
 +  }
 +
-+  // A Home picture, no taller than the 4K screen's band, and its black and white copy.
-+  void LoadHomePicture(rex::ui::ImmediateDrawer* immediate, const fs::path& file, Image& picture, Image& grey) {
++  // A Home picture, no taller than the 4K screen's band, its black and white copy and its colour.
++  void LoadHomePicture(rex::ui::ImmediateDrawer* immediate, const fs::path& file, Assets::HomeArt& art) {
 +    if (!immediate) return;
 +    int w = 0, h = 0, n = 0;
 +    unsigned char* px = stbi_load(file.string().c_str(), &w, &h, &n, 4);
 +    if (!px) return;
 +    const Pixels p = Shrink(px, w, h, kHomePictureHeight);
 +    stbi_image_free(px);
-+    picture = Texture(immediate, p);
-+    if (picture) grey = Texture(immediate, Grey(p));
++    art.picture = Texture(immediate, p);
++    if (art.picture) art.grey = Texture(immediate, Grey(p)), art.color = Accent(p);
 +    REXLOG_INFO("PS5 hub: Home picture {} ({}x{}, shown at {}x{})", file.filename().string(), w, h, p.w, p.h);
 +  }
 +

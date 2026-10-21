@@ -157,6 +157,7 @@ int main(int argc, char** argv) {
         stbi_image_free(p);
         a.home[g].picture = tex(px);
         a.home[g].grey = tex(Grey(px));
+        a.home[g].color = Accent(px);
       }
       if (Tex* t = LoadPng(std::string(dir) + "/" + games[g] + "-logo.png"))
         a.home[g].logo = {reinterpret_cast<ImTextureID>(t), float(t->w), float(t->h)};
