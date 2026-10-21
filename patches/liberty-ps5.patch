@@ -26464,10 +26464,10 @@ index 00000000..a24e8a62
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..4e30d01c
+index 00000000..15d25dda
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1662 @@
+@@ -0,0 +1,1685 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -27518,66 +27518,90 @@ index 00000000..4e30d01c
 +}
 +}  // namespace
 +
-+// Home once an episode is installed: a tall panel for each game, side by side
++// Home once an episode is installed: a pillar for each game, side by side
 +// across the band between the rules (as the Complete Edition's cover). The
-+// chosen one opens to twice the others' width, in colour, a glow at its edges
-+// and its logo over it; the others are narrower, black and white and dimmer.
-+// Left and Right choose, X plays.
++// chosen one stands straight, twice the others' width, in colour, a glow in
++// its colour at its edges and its logo over it; the others lean away from it,
++// narrower, black and white and dimmer. Left and Right choose, X plays.
 +void Hub::DrawHomePanels(const std::vector<int>& games) {
-+  constexpr float kOpen = 1.0f;  // (the chosen one's extra width, in the others' widths)
++  constexpr float kOpen = 1.0f;   // (the chosen one's extra width, in the others' widths)
++  constexpr float kLean = 64.0f;  // (how far a pillar's top leans over, at 1080p: about 5 degrees)
 +  const ImVec2 size = ImGui::GetIO().DisplaySize;
 +  const float top = P(0, kRuleTop + 2).y, bottom = P(0, kRuleBottom).y;
 +  const float gap = std::round(8 * s_);
 +  const int chosen = HomeGame();
++  const int at = int(std::find(games.begin(), games.end(), chosen) - games.begin());
 +  float shares = 0;
-+  for (const int g : games) {
++  for (size_t i = 0; i < games.size(); ++i) {
++    const int g = games[i];
 +    Ease(home_wide_[g], g == chosen ? 1.0f : 0.0f, 12);
++    // (left of the chosen one: the top leans left; right of it: right)
++    Ease(home_lean_[g], int(i) < at ? -1.0f : int(i) > at ? 1.0f : 0.0f, 12);
 +    shares += 1 + home_wide_[g] * kOpen;
 +  }
 +  const float room = size.x - gap * float(games.size() - 1);
++  dl_->PushClipRect(ImVec2(0, top), ImVec2(size.x, bottom), true);
 +  float x = 0;
 +  for (const int g : games) {
 +    const float w = room * (1 + home_wide_[g] * kOpen) / shares;
-+    DrawHomePanel(g, x, top, w, bottom - top, Smooth(home_wide_[g]));
++    DrawHomePanel(g, x, x + w, top, bottom, home_lean_[g] * kLean * s_, Smooth(home_wide_[g]));
 +    x += w + gap;
 +  }
++  dl_->PopClipRect();
 +}
 +
-+void Hub::DrawHomePanel(int game, float x, float y, float w, float h, float on) {
++// A quad in four colours (top left, top right, bottom right, bottom left).
++void Hub::Quad(ImVec2 tl, ImVec2 tr, ImVec2 br, ImVec2 bl, ImU32 ctl, ImU32 ctr, ImU32 cbr, ImU32 cbl) {
++  const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
++  const ImDrawIdx i = ImDrawIdx(dl_->_VtxCurrentIdx);
++  dl_->PrimReserve(6, 4);
++  dl_->PrimWriteIdx(i), dl_->PrimWriteIdx(ImDrawIdx(i + 1)), dl_->PrimWriteIdx(ImDrawIdx(i + 2));
++  dl_->PrimWriteIdx(i), dl_->PrimWriteIdx(ImDrawIdx(i + 2)), dl_->PrimWriteIdx(ImDrawIdx(i + 3));
++  dl_->PrimWriteVtx(tl, uv, ctl), dl_->PrimWriteVtx(tr, uv, ctr);
++  dl_->PrimWriteVtx(br, uv, cbr), dl_->PrimWriteVtx(bl, uv, cbl);
++}
++
++// A pillar: its foot from x0 to x1 on the lower rule, its top `lean` over.
++void Hub::DrawHomePanel(int game, float x0, float x1, float top, float bottom, float lean, float on) {
 +  const Assets::HomeArt& art = a_.home[game];
-+  const ImVec2 p0(x, y), p1(x + w, y + h);
-+  dl_->PushClipRect(p0, p1, true);
++  const float h = bottom - top;
++  const ImVec2 tl(x0 + lean, top), tr(x1 + lean, top), br(x1, bottom), bl(x0, bottom);
++  // (a point up its sides: t 0 at the foot, 1 at the top)
++  auto side = [&](float x, float t) { return ImVec2(x + lean * t, bottom - h * t); };
 +  if (art.picture) {
-+    // the picture covers the panel, cut round the person (its middle, the
-+    // face in its top third), a touch closer when chosen
++    // the picture covers the pillar (upright, the pillar cut from it), round
++    // the person (its middle, the face in its top third), closer when chosen
++    const float left = std::min(x0, x0 + lean), width = x1 - x0 + std::fabs(lean);
 +    const float zoom = 1.0f + 0.05f * on;
-+    const float panel = w / std::max(1.0f, h), picture = art.picture.width / std::max(1.0f, art.picture.height);
++    const float shape = width / std::max(1.0f, h), picture = art.picture.width / std::max(1.0f, art.picture.height);
 +    float uw = 1, vh = 1;
-+    if (picture > panel) uw = panel / picture;
-+    else vh = picture / panel;
++    if (picture > shape) uw = shape / picture;
++    else vh = picture / shape;
 +    uw /= zoom, vh /= zoom;
 +    const ImVec2 uv0(0.5f - uw * 0.5f, std::clamp(0.36f - vh * 0.5f, 0.0f, 1 - vh));
-+    const ImVec2 uv1(uv0.x + uw, uv0.y + vh);
-+    if (!art.grey || on < 0.999f) dl_->AddImage((art.grey ? art.grey : art.picture).id, p0, p1, uv0, uv1);
-+    if (art.grey && on > 0.001f) dl_->AddImage(art.picture.id, p0, p1, uv0, uv1, White(on));
++    auto uv = [&](ImVec2 p) { return ImVec2(uv0.x + (p.x - left) / width * uw, uv0.y + (p.y - top) / h * vh); };
++    if (!art.grey || on < 0.999f)
++      dl_->AddImageQuad((art.grey ? art.grey : art.picture).id, tl, tr, br, bl, uv(tl), uv(tr), uv(br), uv(bl));
++    if (art.grey && on > 0.001f)
++      dl_->AddImageQuad(art.picture.id, tl, tr, br, bl, uv(tl), uv(tr), uv(br), uv(bl), White(on));
 +  } else {
-+    // (no picture: a dark panel)
-+    dl_->AddRectFilledMultiColor(p0, p1, Rgba(38, 38, 42), Rgba(38, 38, 42), Rgba(12, 12, 14), Rgba(12, 12, 14));
++    // (no picture: a dark pillar)
++    Quad(tl, tr, br, bl, Rgba(38, 38, 42), Rgba(38, 38, 42), Rgba(12, 12, 14), Rgba(12, 12, 14));
 +  }
-+  // the others dimmer; under the logo, darker toward the bottom
-+  dl_->AddRectFilled(p0, p1, Black(0.5f * (1 - on)));
-+  dl_->AddRectFilledMultiColor(ImVec2(x, y + h * 0.5f), p1, Black(0), Black(0), Black(0.75f * on), Black(0.75f * on));
++  // the others dimmer; under the logo, darker toward the foot
++  dl_->AddQuadFilled(tl, tr, br, bl, Black(0.5f * (1 - on)));
++  Quad(side(x0, 0.5f), side(x1, 0.5f), br, bl, Black(0), Black(0), Black(0.75f * on), Black(0.75f * on));
 +  // the logo (the game's name without one), at the foot of the chosen one
 +  if (on > 0.01f) {
-+    const float hx = (x - ox_) / s_, hw = w / s_, foot = (y + h - oy_) / s_ - 56;
++    const float cx = ((x0 + x1) * 0.5f + lean * 0.15f - ox_) / s_, hw = (x1 - x0) / s_, foot = (bottom - oy_) / s_ - 56;
 +    if (art.logo) {
 +      const float lw = std::min(hw * 0.72f, 620.0f), lh = std::min(lw * art.logo.height / art.logo.width, 230.0f);
 +      const float fw = lh * art.logo.width / art.logo.height;
-+      dl_->AddImage(art.logo.id, P(hx + (hw - fw) * 0.5f, foot - lh), P(hx + (hw + fw) * 0.5f, foot), ImVec2(0, 0),
-+                    ImVec2(1, 1), White(on));
++      dl_->AddImage(art.logo.id, P(cx - fw * 0.5f, foot - lh), P(cx + fw * 0.5f, foot), ImVec2(0, 0), ImVec2(1, 1),
++                    White(on));
 +    } else {
 +      const std::string name = game ? T(install::EpisodeName(game - 1)) : "Grand Theft Auto IV";
-+      TextMid(Bold(), 52, hx + hw * 0.5f, foot - 30, White(on), Fit(Bold(), 52, name, hw - 80), 0.5f);
++      TextMid(Bold(), 52, cx, foot - 30, White(on), Fit(Bold(), 52, name, hw - 80), 0.5f);
 +    }
 +  }
 +  // the glow round the chosen one, in its colour: bright at the edge, fading in
@@ -27585,13 +27609,12 @@ index 00000000..4e30d01c
 +    const ImU32 col = GameColor(game);
 +    const float step = std::max(1.0f, 1.5f * s_);
 +    for (int k = 0; k < 16; ++k) {
-+      const float t = 1 - float(k) / 16;
-+      const float in = k * step;
-+      dl_->AddRect(ImVec2(x + in, y + in), ImVec2(x + w - in, y + h - in), WithAlpha(col, on * 0.6f * t * t), 0, 0,
-+                   step);
++      const float t = 1 - float(k) / 16, in = k * step, up = in / h;
++      auto at = [&](float x, float t, float dx) { const ImVec2 p = side(x, t); return ImVec2(p.x + dx, p.y); };
++      const ImVec2 ring[4] = {at(x0, 1 - up, in), at(x1, 1 - up, -in), at(x1, up, -in), at(x0, up, in)};
++      dl_->AddPolyline(ring, 4, WithAlpha(col, on * 0.6f * t * t), ImDrawFlags_Closed, step);
 +    }
 +  }
-+  dl_->PopClipRect();
 +}
 +
 +int Hub::SettingIndex(const Setting& r) const {
@@ -28132,10 +28155,10 @@ index 00000000..4e30d01c
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
 new file mode 100644
-index 00000000..79e37993
+index 00000000..66c23f74
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
-@@ -0,0 +1,399 @@
+@@ -0,0 +1,401 @@
 +// GTA IV PS5 - the hub: the screen the app opens on, before the game
 +// (the PC launcher's settings, driven by the controller), drawn after GTA IV's
 +// own pause menu: tabs across the top in its condensed type, the chosen one in
@@ -28356,11 +28379,13 @@ index 00000000..79e37993
 +  // 0 GTA IV, 1 The Lost and Damned, 2 The Ballad of Gay Tony. A choice once
 +  // an episode is installed; kept in native.toml for the next time.
 +  int home_game_ = 0;  // (GTA IV at each start)
-+  float home_wide_[3] = {1, 0, 0};  // how far each panel is open (the chosen one)
++  float home_wide_[3] = {1, 0, 0};  // how far each pillar is open (the chosen one)
++  float home_lean_[3] = {0, -1, 1};  // which way each leans (-1 left, 1 right, 0 upright: the chosen one)
 +  std::vector<int> HomeGames() const;  // GTA IV and the episodes installed, left to right
 +  int HomeGame() const;                // home_game_, or GTA IV if it's gone
 +  void DrawHomePanels(const std::vector<int>& games);
-+  void DrawHomePanel(int game, float x, float y, float w, float h, float on);
++  void DrawHomePanel(int game, float x0, float x1, float top, float bottom, float lean, float on);
++  void Quad(ImVec2 tl, ImVec2 tr, ImVec2 br, ImVec2 bl, ImU32 ctl, ImU32 ctr, ImU32 cbr, ImU32 cbl);
 +  void DrawSettings();
 +  void DrawSaves();
 +  void DrawEpisodes();
