@@ -3461,10 +3461,10 @@ index 98543925..55fc045d 100644
      for (auto& child : nested) {
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_display.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_display.cpp
 new file mode 100644
-index 00000000..cc69e9bb
+index 00000000..10651bb5
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_display.cpp
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,222 @@
 +// GTA IV PS5 - the TV's refresh rate and frame pacing (see ps5_display.h).
 +#include <rex/platform.h>
 +#if REX_PLATFORM_PS5
@@ -3481,7 +3481,6 @@ index 00000000..cc69e9bb
 +#include <cstring>
 +#include <mutex>
 +#include <string>
-+#include <thread>
 +
 +#include <rex/cvar.h>
 +#include <rex/logging.h>
@@ -3505,15 +3504,20 @@ index 00000000..cc69e9bb
 +constexpr uint32_t kHighFrameRateMode = 15;  // (videoout.h: 119.88 Hz)
 +constexpr uint32_t kRestoreMode = 1;
 +
-+// A vblank further apart than this after the 120 Hz mode was taken: the
-+// display went on refreshing at 60 Hz (as in wsi_common_videoout.c).
++// After the 120 Hz mode is taken (ps5_display.h): a TV at a fixed 60 Hz has
++// every vblank kFixed60MinNs..kFixed60MaxNs apart (59.94 Hz: 16.683 ms). The
++// median under kHighRefreshLimitNs is a fixed 120 Hz; past kFixed60MaxNs, the
++// TV idling at its VRR floor; any one interval under kFixed60MinNs, a TV
++// refreshing faster than 60 Hz (120, or VRR following flips).
 +constexpr int64_t kHighRefreshLimitNs = 12500000;
++constexpr int64_t kFixed60MinNs = 14500000;
++constexpr int64_t kFixed60MaxNs = 18500000;
 +
 +std::atomic<int32_t> g_handle{-1};
 +std::atomic<bool> g_high{false};
++std::atomic<bool> g_vrr{false};
 +std::atomic<bool> g_game{false};
 +std::atomic<int32_t> g_rate{-1};  // (the rate VideoOut has: -1 unknown)
-+std::atomic<bool> g_start_tried{false};  // (the start's switch to 120 Hz, made or asked for)
 +std::mutex g_switch_mutex;               // (one switch at a time)
 +
 +// The hub's setting, straight from its file: VideoOut opens before the config
@@ -3539,6 +3543,10 @@ index 00000000..cc69e9bb
 +int32_t WantedRate() {
 +  if (!g_game.load(std::memory_order_acquire)) return 0;
 +  const uint32_t fps = REXCVAR_GET(gta4_frame_limit);
++  // VRR: the TV refreshes when a frame comes; the frame limit's own pacing
++  // (Ps5LimitFrameRate) spaces them. (30 and 40 are under most TVs' VRR
++  // floor: held to vblanks as at a fixed 120 Hz.)
++  if (g_vrr.load(std::memory_order_acquire) && (fps == 0 || fps == 60 || fps == 120)) return 0;
 +  if (g_high.load(std::memory_order_acquire)) {
 +    if (fps == 40) return 2;
 +    if (fps == 30 || fps == 60) return 1;
@@ -3553,30 +3561,32 @@ index 00000000..cc69e9bb
 +  if (handle < 0 || g_rate.load(std::memory_order_acquire) == rate) return;
 +  const int result = __real_sceVideoOutSetFlipRate(handle, rate);
 +  if (result == 0) g_rate.store(rate, std::memory_order_release);
-+  REXLOG_INFO("PS5 display: each frame shows for at least {} vblank{} at {} Hz ({}; {})", rate + 1,
-+              rate ? "s" : "", g_high.load() ? "119.88" : "59.94", why,
++  REXLOG_INFO("PS5 display: each frame shows for at least {} vblank{} at {} Hz{} ({}; {})", rate + 1,
++              rate ? "s" : "", g_high.load() ? "119.88" : "59.94", g_vrr.load() ? " VRR" : "", why,
 +              result == 0 ? std::string("ok") : fmt::format("failed {:08X}", uint32_t(result)));
 +}
 +
-+// The time between vblanks: the shortest of a few, the first wait finding the
-+// phase. (RADV's flip thread waits for vblanks too: a wait that misses one
-+// gives a longer interval, never a shorter one.) 0 when a wait fails.
-+int64_t VblankPeriodNs(int32_t handle) {
-+  std::array<int64_t, 8> intervals{};
-+  if (sceVideoOutWaitVblank(handle) != 0) return 0;
++// The time between vblanks over eight of them, the first wait finding the
++// phase, sorted (a wait that misses a vblank gives a longer interval, never a
++// shorter one). False when a wait fails.
++bool VblankIntervals(int32_t handle, std::array<int64_t, 8>& intervals) {
++  if (sceVideoOutWaitVblank(handle) != 0) return false;
 +  auto previous = std::chrono::steady_clock::now();
 +  for (int64_t& interval : intervals) {
-+    if (sceVideoOutWaitVblank(handle) != 0) return 0;
++    if (sceVideoOutWaitVblank(handle) != 0) return false;
 +    const auto now = std::chrono::steady_clock::now();
 +    interval = std::chrono::duration_cast<std::chrono::nanoseconds>(now - previous).count();
 +    previous = now;
 +  }
-+  return *std::min_element(intervals.begin(), intervals.end());
++  std::sort(intervals.begin(), intervals.end());
++  return true;
 +}
 +
 +}  // namespace
 +
 +bool HighRefresh() { return g_high.load(std::memory_order_acquire); }
++bool Vrr() { return g_vrr.load(std::memory_order_acquire); }
++bool Ready() { return g_handle.load(std::memory_order_acquire) >= 0; }
 +
 +bool SetHighRefresh(bool high) {
 +  std::lock_guard lock(g_switch_mutex);
@@ -3589,6 +3599,7 @@ index 00000000..cc69e9bb
 +  if (!high) {
 +    const int result = __real_sceVideoOutConfigureOutput(handle, kRestoreMode, nullptr, nullptr, nullptr);
 +    g_high.store(false, std::memory_order_release);
++    g_vrr.store(false, std::memory_order_release);
 +    REXLOG_INFO("PS5 display: back to 60 Hz ({})", result);
 +    Apply("60 Hz");
 +    return true;
@@ -3603,14 +3614,22 @@ index 00000000..cc69e9bb
 +    REXLOG_INFO("PS5 display: 120 Hz refused ({:08X}); staying at 60 Hz", uint32_t(configured));
 +    return false;
 +  }
-+  const int64_t period = VblankPeriodNs(handle);
-+  if (period <= 0 || period > kHighRefreshLimitNs) {
++  std::array<int64_t, 8> intervals{};
++  const bool measured = VblankIntervals(handle, intervals);
++  const int64_t shortest = intervals.front(), median = intervals[intervals.size() / 2];
++  const bool fixed_120 = measured && median <= kHighRefreshLimitNs;
++  const bool faster_than_60 = measured && shortest < kFixed60MinNs;
++  const bool vrr_floor = measured && median > kFixed60MaxNs;
++  if (!fixed_120 && !faster_than_60 && !vrr_floor) {
 +    __real_sceVideoOutConfigureOutput(handle, kRestoreMode, nullptr, nullptr, nullptr);
-+    REXLOG_INFO("PS5 display: 120 Hz taken, but a vblank comes every {:.3f} ms; back to 60 Hz", period / 1e6);
++    REXLOG_INFO("PS5 display: 120 Hz taken, but a vblank comes every {:.3f} ms (shortest {:.3f}); back to 60 Hz",
++                median / 1e6, shortest / 1e6);
 +    return false;
 +  }
++  g_vrr.store(!fixed_120, std::memory_order_release);
 +  g_high.store(true, std::memory_order_release);
-+  REXLOG_INFO("PS5 display: 120 Hz on (a vblank every {:.3f} ms)", period / 1e6);
++  REXLOG_INFO("PS5 display: 120 Hz on{} (vblanks {:.3f} to {:.3f} ms apart, median {:.3f})",
++              fixed_120 ? "" : " as VRR", shortest / 1e6, intervals.back() / 1e6, median / 1e6);
 +  Apply("120 Hz");
 +  return true;
 +}
@@ -3631,7 +3650,6 @@ index 00000000..cc69e9bb
 +extern "C" int __wrap_sceVideoOutIsOutputSupported(int32_t handle, uint32_t mode, const void* reserved1,
 +                                                   const void* reserved2, const void* reserved3) {
 +  if (handle >= 0) g_handle.store(handle, std::memory_order_release);
-+  if (mode == kHighFrameRateMode) g_start_tried.store(true, std::memory_order_release);
 +  if (mode == kHighFrameRateMode && !WantsHighRefresh()) {
 +    REXLOG_INFO("PS5 display: 60 Hz (the hub's Refresh Rate)");
 +    return 0;
@@ -3650,6 +3668,7 @@ index 00000000..cc69e9bb
 +    g_high.store(result == 0, std::memory_order_release);
 +    REXLOG_INFO("PS5 display: 120 Hz mode {} ({})", result == 0 ? "on" : "refused", result);
 +  } else if (mode == kRestoreMode && g_high.exchange(false)) {
++    g_vrr.store(false, std::memory_order_release);
 +    // (RADV measured the vblanks and found the TV still at 60 Hz)
 +    REXLOG_INFO("PS5 display: the TV stayed at 60 Hz; 120 Hz mode off");
 +  }
@@ -3662,22 +3681,18 @@ index 00000000..cc69e9bb
 +  const int result = __real_sceVideoOutSetFlipRate(handle, wanted);
 +  g_rate.store(result == 0 ? wanted : -1, std::memory_order_release);
 +  (void)rate;
-+  // RADV didn't ask for 120 Hz (param.json without it): asked for here, off
-+  // RADV's swapchain lock (the switch waits a few vblanks).
-+  if (!g_start_tried.exchange(true) && WantsHighRefresh()) {
-+    REXLOG_INFO("PS5 display: 120 Hz wasn't asked for when the TV was opened; asking now");
-+    std::thread([] { SetHighRefresh(true); }).detach();
-+  }
++  // (RADV doesn't ask for 120 Hz with our param.json: the hub switches at its
++  // first frame, ps5_display.h)
 +  return result;
 +}
 +
 +#endif  // REX_PLATFORM_PS5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_display.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_display.h
 new file mode 100644
-index 00000000..9d54550a
+index 00000000..4ef2fe34
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/ps5_display.h
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,52 @@
 +// GTA IV PS5 - the TV's refresh rate (the hub's Refresh Rate) and how many
 +// vblanks each frame stays on screen.
 +//
@@ -3691,15 +3706,31 @@ index 00000000..9d54550a
 +//  - ConfigureOutput: notes whether the 120 Hz mode was taken.
 +//  - SetFlipRate: notes the handle; RADV sets 0 (a frame shows from the next
 +//    vblank) for each swapchain, and the rate the frame limit wants is kept
-+//    instead. When the Refresh Rate is 120 and RADV didn't ask (an app folder
-+//    with an older param.json), the switch is made here, on its own thread.
-+// The hub switches it right away too (SetHighRefresh).
++//    instead.
++// RADV asks only for attribute3 0x80040 (with 0x80000, "VRR at 120 Hz"),
++// which ours (0x40040: 120 Hz, VRR supported) isn't, so the switch is the
++// hub's: at its first frame when the Refresh Rate is 120, and when it's chosen
++// (SetHighRefresh), both from its own thread, while no new frame is flipped.
++//
++// With VRR on in the PS5's settings and a TV that has it, the 120 Hz output
++// becomes a VRR one: until frames come, the TV refreshes at its VRR floor
++// (48 Hz on most, a vblank every ~20.8 ms), which the first check here (and
++// RADV's) took for a TV stuck at 60 Hz, putting it back (PS5_Mesa issue 4; a
++// TCL C6K tester's "can't switch to 120 Hz"). A TV at a fixed 60 Hz keeps
++// every vblank ~16.7 ms apart; one faster than that, or a period past the 60
++// Hz one, is a 120 Hz or a VRR output, kept.
 +#pragma once
 +
 +namespace gta4ps5::display {
 +
 +// Whether the TV refreshes at 119.88 Hz (else 59.94).
 +bool HighRefresh();
++// Whether that 120 Hz output is a VRR one (the PS5's VRR setting on, a TV
++// with it): frames are then shown as soon as they're ready (the frame limit
++// spaces them), the TV refreshing with them.
++bool Vrr();
++// Whether the TV is open (a switch can be made).
++bool Ready();
 +
 +// Switches the TV to 119.88 Hz (true) or back to 59.94 Hz now. False when
 +// it stays where it was: no TV open yet, or (for 120) the TV or the PS5's
@@ -3708,8 +3739,9 @@ index 00000000..9d54550a
 +
 +// From the game's start (the hub keeps every vblank): each frame stays on
 +// screen for as many vblanks as the frame limit takes. At 120 Hz: 40 FPS
-+// three, 60 FPS two; at 60 Hz: 30 FPS two. Follows later frame limit changes
-+// (the pause menu's Graphics page).
++// three, 60 FPS two; at 60 Hz: 30 FPS two; with VRR, 60 and 120 FPS none (as
++// soon as it's ready). Follows later frame limit changes (the pause menu's
++// Graphics page).
 +void StartGamePacing();
 +
 +}  // namespace gta4ps5::display
@@ -4933,10 +4965,10 @@ index 00000000..18a0d8a1
 +}  // namespace gta4ps5
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp
 new file mode 100644
-index 00000000..efc4d2b3
+index 00000000..a9b2c2a8
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,103 @@
 +// GTA IV PS5 - the app's PS5 parts (see gta4_ps5_app.h).
 +#include <rex/platform.h>
 +#if REX_PLATFORM_PS5
@@ -5003,7 +5035,8 @@ index 00000000..efc4d2b3
 +                        if (r.errors.size() > 4) message += std::string("\n") + lang::T("...the log lists the rest.");
 +                        return message;
 +                      }});
-+  hub::SetDisplay({[] { return display::HighRefresh(); }, [](bool high) { return display::SetHighRefresh(high); }});
++  hub::SetDisplay({[] { return display::HighRefresh(); }, [](bool high) { return display::SetHighRefresh(high); },
++                   [] { return display::Vrr(); }, [] { return display::Ready(); }});
 +  hub::Show(drawer, immediate, hub_paths, [config, launch = std::move(launch)] {
 +    // the hub's settings, for this start
 +    rex::cvar::LoadConfig(config);
@@ -24963,10 +24996,10 @@ index 00000000..4c2145f4
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp
 new file mode 100644
-index 00000000..69802c1f
+index 00000000..8f2a2eef
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp
-@@ -0,0 +1,1172 @@
+@@ -0,0 +1,1173 @@
 +// GTA IV PS5 - the hub's languages (see hub_lang.h).
 +#include "hub_lang.h"
 +
@@ -25086,6 +25119,7 @@ index 00000000..69802c1f
 +    {{"FSR 3 (Experimental)", "FSR 3 (expérimental)", "FSR 3 (experimentell)", "FSR 3 (experimental)", "FSR 3 (sperimentale)"}},
 +    {{"60 Hz", "60\u00A0Hz", "60 Hz", "60 Hz", "60 Hz"}},
 +    {{"120 Hz", "120\u00A0Hz", "120 Hz", "120 Hz", "120 Hz"}},
++    {{"120 Hz with VRR", "120\u00A0Hz avec VRR", "120 Hz mit VRR", "120 Hz con VRR", "120 Hz con VRR"}},
 +    {{"MSAA 4x + SMAA", "MSAA 4x + SMAA", "MSAA 4x + SMAA", "MSAA 4x + SMAA", "MSAA 4x + SMAA"}},
 +    {{"High", "Élevée", "Hoch", "Alta", "Alta"}},
 +    {{"Very High", "Très élevée", "Sehr hoch", "Muy alta", "Molto alta"}},
@@ -27120,10 +27154,10 @@ index 00000000..00324a8c
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..c88052ef
+index 00000000..a4cdc293
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,2088 @@
+@@ -0,0 +1,2098 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -28684,7 +28718,10 @@ index 00000000..c88052ef
 +  Panel([&](float px, float py, float pw) {
 +    py += Wrapped(Regular(), 29, px, py + 6, pw, Rgba(196, 196, 196), T(r.help), 1.32f) + 34;
 +    if (std::string_view(r.key) == "ps5_refresh_rate" && display_.high_refresh) {
-+      TextMid(Bold(), 29, px, py + 18, kText, F("Right now: {}", {T(display_.high_refresh() ? "120 Hz" : "60 Hz")}));
++      const char* now = !display_.high_refresh()               ? "60 Hz"
++                        : display_.vrr && display_.vrr() ? "120 Hz with VRR"
++                                                         : "120 Hz";
++      TextMid(Bold(), 29, px, py + 18, kText, F("Right now: {}", {T(now)}));
 +      py += 44 + 20;
 +    }
 +    if (IsLevel(r) || r.labels.size() > 6) return;
@@ -29161,6 +29198,13 @@ index 00000000..c88052ef
 +  dt_ = std::clamp(dt, 0.0f, 0.1f);
 +  time_ += dt_;
 +  toast_time_ = std::max(0.0f, toast_time_ - dt_);
++  // The Refresh Rate at 120: the TV switched once it's open, from here (no
++  // frame is flipped while the switch measures the vblanks: ps5_display.h).
++  if (!refresh_checked_ && display_.ready && display_.ready()) {
++    refresh_checked_ = true;
++    if (Value("ps5_refresh_rate", "60") == "120" && display_.high_refresh && !display_.high_refresh())
++      SwitchRefresh(true);
++  }
 +  Navigate(pad);
 +  if (launch_ && !leaving_) {
 +    leaving_ = true, press_ = 1;
@@ -29214,10 +29258,10 @@ index 00000000..c88052ef
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
 new file mode 100644
-index 00000000..1e0ec53f
+index 00000000..d61c8e95
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
-@@ -0,0 +1,449 @@
+@@ -0,0 +1,453 @@
 +// GTA IV PS5 - the hub: the screen the app opens on, before the game
 +// (the PC launcher's settings, driven by the controller), drawn after GTA IV's
 +// own pause menu: tabs across the top in its condensed type, the chosen one in
@@ -29405,6 +29449,8 @@ index 00000000..1e0ec53f
 +  struct Display {
 +    std::function<bool()> high_refresh;
 +    std::function<bool(bool)> set_high_refresh;
++    std::function<bool()> vrr;    // (the 120 Hz output a VRR one)
++    std::function<bool()> ready;  // (the TV open: a switch can be made)
 +  };
 +  void SetDisplay(Display display) { display_ = std::move(display); }
 +  void SetImageLoader(std::function<Image(const std::filesystem::path&)> load) { load_image_ = std::move(load); }
@@ -29567,6 +29613,8 @@ index 00000000..1e0ec53f
 +  void ResetSettings();
 +  // The TV to 120 Hz or back to 60, now, and what came of it.
 +  void SwitchRefresh(bool high);
++  // The Refresh Rate at 120: switched at the hub's first frames (Draw).
++  bool refresh_checked_ = false;
 +  void RestoreSaves(const Backup& b);
 +
 +  Paths paths_;
