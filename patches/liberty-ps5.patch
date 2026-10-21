@@ -420,7 +420,7 @@ index 380838a7..1697730e 100644
    }
  }
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
-index 68d694b9..e66969a7 100644
+index 68d694b9..278b61a8 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_app.cpp
 @@ -1,4 +1,7 @@
@@ -431,7 +431,21 @@ index 68d694b9..e66969a7 100644
  #include "gta4_hack_registry.h"
  #include "gta4_present_mode_policy.h"
  #include "gta4_streaming_hooks.h"
-@@ -115,7 +118,7 @@ REXCVAR_DEFINE_STRING(gta4_aspect_ratio, "auto", "GTA IV/Graphics/Display",
+@@ -84,6 +87,13 @@ REXCVAR_DEFINE_STRING(gta4_episode_startup_prompt, "retail", "GTA IV/Episodes",
+     // without failing. Both aliases now preserve the retail one-time prompt.
+     .allowed({"retail", "new_only", "always", "off"})
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++// The PS5 hub's Home choice. -1 leaves it to the game (GTA IV, and the retail
++// question once for a new episode); 0 starts GTA IV without the question; 1
++// The Lost and Damned, 2 The Ballad of Gay Tony, as that question's Yes does.
++REXCVAR_DEFINE_INT32(gta4_start_episode, -1, "GTA IV/Episodes",
++                     "Start in: -1 the game's choice, 0 GTA IV, 1 The Lost and Damned, 2 The Ballad of Gay Tony")
++    .range(-1, 2)
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
+ REXCVAR_DEFINE_BOOL(install, false, "GTA IV/Installation", "Run the full game installation wizard")
+     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+@@ -115,7 +125,7 @@ REXCVAR_DEFINE_STRING(gta4_aspect_ratio, "auto", "GTA IV/Graphics/Display",
  REXCVAR_DEFINE_STRING(gta4_present_mode, "vsync", "GTA IV/Graphics/Display",
                        "Vertical sync: vsync is On; immediate is Off; auto/mailbox are legacy modes")
      .allowed({"auto", "vsync", "fifo", "mailbox", "immediate"});
@@ -440,7 +454,7 @@ index 68d694b9..e66969a7 100644
  REXCVAR_DEFINE_UINT32(gta4_frame_limit, REX_PLATFORM_ANDROID ? 30 : 60, "GTA IV/Graphics/Display",
                        "Maximum game and host presentation rate: 0 is unlocked; caps are 30, 40, 60, and "
                        "120 FPS")
-@@ -150,7 +153,7 @@ REXCVAR_DEFINE_UINT32(gta4_shadow_map_base_size, REX_PLATFORM_ANDROID ? 256 : 51
+@@ -150,7 +160,7 @@ REXCVAR_DEFINE_UINT32(gta4_shadow_map_base_size, REX_PLATFORM_ANDROID ? 256 : 51
  REXCVAR_DEFINE_DOUBLE(gta4_shadow_distance_guard_factor, 1.0, "GTA IV/Graphics/Shadows",
                        "Multiplier on the shadow distance owned by the 30 FPS guard")
      .range(0.1, 1.0);
@@ -449,7 +463,7 @@ index 68d694b9..e66969a7 100644
                        "Multiplier applied to GTA IV's directional shadow range")
      .range(0.1, 4.0)
      .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-@@ -188,7 +191,7 @@ REXCVAR_DEFINE_STRING(gta4_reflection_capture_distance, "original",
+@@ -188,7 +198,7 @@ REXCVAR_DEFINE_STRING(gta4_reflection_capture_distance, "original",
                        "Exterior environment capture distance: near (20), original (40), extended (60), or "
                        "far (80)")
      .allowed({"near", "original", "extended", "far"});
@@ -458,7 +472,7 @@ index 68d694b9..e66969a7 100644
                        "GTA IV/Graphics/Anti-Aliasing",
                        "Anti-aliasing: off, fxaa, smaa, deferred MSAA, or even-factor SSAA")
      // `spatial` remains loadable as a deprecated compatibility alias. It is
-@@ -238,7 +241,7 @@ REXCVAR_DEFINE_DOUBLE(gta4_dynamic_draw_distance_min, 0.7, "GTA IV/Graphics/LOD"
+@@ -238,7 +248,7 @@ REXCVAR_DEFINE_DOUBLE(gta4_dynamic_draw_distance_min, 0.7, "GTA IV/Graphics/LOD"
  REXCVAR_DEFINE_DOUBLE(gta4_draw_distance_dynamic_factor, 1.0, "GTA IV/Graphics/LOD",
                        "Current dynamic draw-distance factor (managed automatically)")
      .range(0.25, 1.0);
@@ -467,7 +481,7 @@ index 68d694b9..e66969a7 100644
                        "GTA IV/Graphics/LOD",
                        "Multiplier applied through GTA IV's built-in world-distance input")
      .range(0.25, 4.0);
-@@ -629,6 +632,20 @@ struct GTA4App::TitleProfileSyncState {
+@@ -629,6 +639,20 @@ struct GTA4App::TitleProfileSyncState {
  
  std::optional<rex::PathConfig> GTA4App::OnFinalizePaths(
      const rex::PathConfig& defaults, std::function<void(rex::PathConfig)> resume) {
@@ -488,7 +502,7 @@ index 68d694b9..e66969a7 100644
    auto paths = defaults;
    paths.game_data_root = liberty_root_ / "game";
    paths.marketplace_content_root = liberty_root_ / "dlc";
-@@ -655,6 +672,25 @@ std::optional<rex::PathConfig> GTA4App::OnFinalizePaths(
+@@ -655,6 +679,25 @@ std::optional<rex::PathConfig> GTA4App::OnFinalizePaths(
      }
    }
  
@@ -514,7 +528,7 @@ index 68d694b9..e66969a7 100644
    if (ready && !force_install && !force_dlc) {
      std::error_code error;
      const auto update_root = paths.game_data_root / "update";
-@@ -681,7 +717,9 @@ std::optional<rex::PathConfig> GTA4App::OnFinalizePaths(
+@@ -681,7 +724,9 @@ std::optional<rex::PathConfig> GTA4App::OnFinalizePaths(
          resume(std::move(paths));
        },
        [this]() { app_context().QuitFromUIThread(); });
@@ -525,7 +539,7 @@ index 68d694b9..e66969a7 100644
    return std::nullopt;
  }
  
-@@ -1020,6 +1058,9 @@ void StartLiveCvarWatcher(std::filesystem::path path) {
+@@ -1020,6 +1065,9 @@ void StartLiveCvarWatcher(std::filesystem::path path) {
  #endif
  
  void GTA4App::OnPostSetup() {
@@ -609,10 +623,18 @@ index 68fcf860..e8c5ee1c 100644
    c.replay = list != 0; c.command_list = list; c.replay_ordinal = ordinal;
    if (replay_live) c.replay_live = *replay_live;
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_hooks.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_hooks.cpp
-index b63d73e6..206cdbc4 100644
+index b63d73e6..a9cf9aff 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_hooks.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_hooks.cpp
-@@ -53,6 +53,17 @@ constexpr uint32_t kDisplayOptionsCount = 0x831DAEFC;
+@@ -33,6 +33,7 @@
+ #include "input/context_touch_controls.h"
+ 
+ REXCVAR_DECLARE(std::string, gta4_episode_startup_prompt);
++REXCVAR_DECLARE(int32_t, gta4_start_episode);
+ REXCVAR_DEFINE_BOOL(gta4_frontend_advanced_graphics_menu, true, "GTA IV/Frontend",
+                     "Add an Advanced Graphics page without exceeding the retail 20-row list widget")
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+@@ -53,6 +54,17 @@ constexpr uint32_t kDisplayOptionsCount = 0x831DAEFC;
  constexpr uint32_t kDisplayOptionsCapacity = 0x831DAEFE;
  constexpr uint32_t kCurrentScreenAddress = 0x82BFA124;
  constexpr uint32_t kPauseMenuActiveAddress = 0x82BF9EF4;
@@ -630,7 +652,7 @@ index b63d73e6..206cdbc4 100644
  constexpr uint32_t kOptionRecordSize = 22;
  constexpr uint32_t kOptionActionOffset = 0;
  constexpr uint32_t kOptionLabelOffset = 1;
-@@ -1744,12 +1755,21 @@ void SetConfigPath(std::filesystem::path path) {
+@@ -1744,12 +1756,21 @@ void SetConfigPath(std::filesystem::path path) {
  
  bool SwitchPauseTab(PPCContext& parent, uint8_t* base, policy::PauseTabDirection direction,
                      uint32_t* previous_screen, uint32_t* target_screen) {
@@ -655,7 +677,7 @@ index b63d73e6..206cdbc4 100644
      return false;
    }
    if (target_screen) {
-@@ -1758,13 +1778,28 @@ bool SwitchPauseTab(PPCContext& parent, uint8_t* base, policy::PauseTabDirection
+@@ -1758,22 +1779,62 @@ bool SwitchPauseTab(PPCContext& parent, uint8_t* base, policy::PauseTabDirection
    if (policy::ShouldRestorePrimaryBeforeSwitch(g_display_menu.page, target, kDisplayScreen)) {
      PublishPrimaryPage(base);
    }
@@ -686,6 +708,56 @@ index b63d73e6..206cdbc4 100644
    }
    return true;
  }
+ 
+ }  // namespace gta4::frontend_menu
+ 
++namespace {
++// The start's episode check (sub_822440F8, the start's steps): sub_82241428
++// gives a newly installed episode (else -1); the next step asks question 52
++// of sub_8223F9F0 ("play it now?", the episode at kNewEpisodeAddress), and
++// its Yes makes it the episode the game starts in. A chosen episode
++// (gta4_start_episode) goes the same way, the question answered Yes unseen.
++constexpr uint32_t kNewEpisodeQuestion = 52;
++constexpr uint32_t kNewEpisodeAddress = 0x82BF9864;
++int32_t g_answer_yes_for = -1;  // (the episode whose question is answered)
++bool g_start_episode_used = false;  // (the start only: later checks are the game's)
++}  // namespace
++
+ extern "C" void sub_82241428(PPCContext& ctx, uint8_t* base) {
+-  __imp__sub_82241428(ctx, base);
++  __imp__sub_82241428(ctx, base);  // (keeps the profile's list of episodes seen)
+   const int32_t retail_episode = ctx.r3.s32;
++  const int32_t start = REXCVAR_GET(gta4_start_episode);
++  if (start >= 0 && !g_start_episode_used) {
++    g_start_episode_used = true;
++    if (start == 0) {
++      ctx.r3.s64 = -1;
++      REXLOG_INFO("GTA IV episode startup: GTA IV chosen (retail result {} not asked)", retail_episode);
++    } else {
++      ctx.r3.s64 = start;
++      g_answer_yes_for = start;
++      REXLOG_INFO("GTA IV episode startup: episode {} chosen (retail result {})", start, retail_episode);
++    }
++    return;
++  }
+   const std::string policy = REXCVAR_GET(gta4_episode_startup_prompt);
+ 
+   if (policy == "off") {
+@@ -1842,6 +1903,14 @@ extern "C" void sub_8223F9F0(PPCContext& ctx, uint8_t* base) {
+   // and the save-block serializer. Observe them without changing save flow.
+   thread_local uint32_t previous_reason = std::numeric_limits<uint32_t>::max();
+   const uint32_t reason = ctx.r3.u32;
++  if (reason == kNewEpisodeQuestion && g_answer_yes_for > 0 &&
++      static_cast<int32_t>(REX_LOAD_U32(kNewEpisodeAddress)) == g_answer_yes_for) {
++    REX_STORE_U8(ctx.r5.u32, 1);  // (Yes)
++    ctx.r3.u64 = 1;               // (answered)
++    REXLOG_INFO("GTA IV episode startup: starting in episode {}", g_answer_yes_for);
++    g_answer_yes_for = -1;
++    return;
++  }
+   const char* stage = nullptr;
+   switch (reason) {
+     case 17: stage = "begin-save"; break;
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_menu_policy.h b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_menu_policy.h
 index 7c8962a1..dad4815a 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_menu_policy.h
@@ -26392,10 +26464,10 @@ index 00000000..a24e8a62
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..894cfa1d
+index 00000000..4e30d01c
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1509 @@
+@@ -0,0 +1,1662 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -26684,6 +26756,54 @@ index 00000000..894cfa1d
 +  LoadTrophies();
 +  // (the game's files come from Recomp Store: only whether they're there)
 +  state_ = install::Look(paths_.app);
++}
++
++Pixels Shrink(const unsigned char* rgba, int w, int h, int max_h) {
++  Pixels out;
++  if (h <= max_h) {
++    out.w = w, out.h = h;
++    out.rgba.assign(rgba, rgba + size_t(w) * size_t(h) * 4);
++    return out;
++  }
++  const double scale = double(h) / max_h;
++  out.h = max_h, out.w = std::max(1, int(w / scale + 0.5));
++  out.rgba.resize(size_t(out.w) * size_t(out.h) * 4);
++  for (int y = 0; y < out.h; ++y) {
++    const int y0 = int(y * scale), y1 = std::min(h, std::max(y0 + 1, int((y + 1) * scale)));
++    for (int x = 0; x < out.w; ++x) {
++      const int x0 = int(x * scale), x1 = std::min(w, std::max(x0 + 1, int((x + 1) * scale)));
++      uint32_t sum[4] = {};
++      for (int sy = y0; sy < y1; ++sy)
++        for (int sx = x0; sx < x1; ++sx)
++          for (int c = 0; c < 4; ++c) sum[c] += rgba[(size_t(sy) * w + sx) * 4 + c];
++      const uint32_t n = uint32_t((y1 - y0) * (x1 - x0));
++      for (int c = 0; c < 4; ++c) out.rgba[(size_t(y) * out.w + x) * 4 + c] = uint8_t(sum[c] / n);
++    }
++  }
++  return out;
++}
++
++Pixels Grey(const Pixels& p) {
++  Pixels out = p;
++  for (size_t i = 0; i + 3 < out.rgba.size(); i += 4) {
++    const uint8_t v = uint8_t((out.rgba[i] * 54 + out.rgba[i + 1] * 183 + out.rgba[i + 2] * 19) >> 8);
++    out.rgba[i] = out.rgba[i + 1] = out.rgba[i + 2] = v;
++  }
++  return out;
++}
++
++std::vector<int> Hub::HomeGames() const {
++  // (as the Complete Edition's cover: The Lost and Damned, GTA IV, The Ballad of Gay Tony)
++  std::vector<int> games;
++  if (state_.installed && state_.episode[0]) games.push_back(1);
++  games.push_back(0);
++  if (state_.installed && state_.episode[1]) games.push_back(2);
++  return games;
++}
++
++int Hub::HomeGame() const {
++  const std::vector<int> games = HomeGames();
++  return std::find(games.begin(), games.end(), home_game_) != games.end() ? home_game_ : 0;
 +}
 +
 +Hub::SavesScan Hub::ScanSaves(const Paths& paths, const std::function<int()>& pending) {
@@ -27253,7 +27373,10 @@ index 00000000..894cfa1d
 +    InstallerHints(r);
 +  } else {
 +    switch (tab_) {
-+      case kHome: r = Hint(r, kCross, state_.installed ? "Play" : "Install"); break;
++      case kHome:
++        r = Hint(r, kCross, state_.installed ? "Play" : "Install");
++        if (HomeGames().size() > 1) r = Hint(r, kLeft | kRight, "Move");
++        break;
 +      case kDisplayTab:
 +      case kGameTab:
 +      case kDebugTab:
@@ -27346,15 +27469,21 @@ index 00000000..894cfa1d
 +// ------------------------------------------------------------------- pages
 +
 +void Hub::DrawHome() {
++  const std::vector<int> games = HomeGames();
++  if (games.size() > 1) {
++    DrawHomePanels(games);
++    return;
++  }
 +  const ImVec2 size = ImGui::GetIO().DisplaySize;
 +  // The picture fills the space between the rules (as the Map tab's map),
 +  // a little closer than it fits and drifting slowly from side to side, as
 +  // the game's own loading art does. X plays (the hint at the bottom).
 +  const float top = P(0, kRuleTop + 2).y, bottom = P(0, kRuleBottom).y;
-+  if (a_.hero) {
++  const Image& hero = a_.hero;
++  if (hero) {
 +    const float breath = 0.5f - 0.5f * std::cos(time_ * 6.2832f / 90.0f);
 +    const float zoom = 1.10f + 0.04f * breath;
-+    const float band = size.x / std::max(1.0f, bottom - top), img = a_.hero.width / a_.hero.height;
++    const float band = size.x / std::max(1.0f, bottom - top), img = hero.width / hero.height;
 +    float uw = 1, vh = img / band;  // (the band is wider than the picture: its full width, a strip of its height)
 +    if (vh > 1) uw = 1 / vh, vh = 1;
 +    uw /= zoom, vh /= zoom;
@@ -27363,7 +27492,7 @@ index 00000000..894cfa1d
 +    const float cy = 0.27f;  // (the face and the skyline, room over the head)
 +    const ImVec2 uv0(cx - uw * 0.5f, std::clamp(cy - vh * 0.5f, 0.0f, 1 - vh));
 +    const ImVec2 uv1(uv0.x + uw, uv0.y + vh);
-+    dl_->AddImage(a_.hero.id, ImVec2(0, top), ImVec2(size.x, bottom), uv0, uv1);
++    dl_->AddImage(hero.id, ImVec2(0, top), ImVec2(size.x, bottom), uv0, uv1);
 +    dl_->AddRectFilled(ImVec2(0, top), ImVec2(size.x, bottom), Black(0.22f));
 +    const float fade_to = P(1000, 0).x;
 +    dl_->AddRectFilledMultiColor(ImVec2(0, top), ImVec2(fade_to, bottom), Black(0.7f), Black(0), Black(0), Black(0.7f));
@@ -27378,6 +27507,91 @@ index 00000000..894cfa1d
 +            T("Press X to set it up from your disc image and title update."));
 +    Fade(v0, in);
 +  }
++}
++
++namespace {
++// Each game's colour, for the glow round its panel.
++ImU32 GameColor(int game) {
++  return game == 1 ? Rgba(214, 92, 38)     // The Lost and Damned: rust
++         : game == 2 ? Rgba(232, 72, 150)  // The Ballad of Gay Tony: pink
++                     : kAccent;            // GTA IV: the menu's gold
++}
++}  // namespace
++
++// Home once an episode is installed: a tall panel for each game, side by side
++// across the band between the rules (as the Complete Edition's cover). The
++// chosen one opens to twice the others' width, in colour, a glow at its edges
++// and its logo over it; the others are narrower, black and white and dimmer.
++// Left and Right choose, X plays.
++void Hub::DrawHomePanels(const std::vector<int>& games) {
++  constexpr float kOpen = 1.0f;  // (the chosen one's extra width, in the others' widths)
++  const ImVec2 size = ImGui::GetIO().DisplaySize;
++  const float top = P(0, kRuleTop + 2).y, bottom = P(0, kRuleBottom).y;
++  const float gap = std::round(8 * s_);
++  const int chosen = HomeGame();
++  float shares = 0;
++  for (const int g : games) {
++    Ease(home_wide_[g], g == chosen ? 1.0f : 0.0f, 12);
++    shares += 1 + home_wide_[g] * kOpen;
++  }
++  const float room = size.x - gap * float(games.size() - 1);
++  float x = 0;
++  for (const int g : games) {
++    const float w = room * (1 + home_wide_[g] * kOpen) / shares;
++    DrawHomePanel(g, x, top, w, bottom - top, Smooth(home_wide_[g]));
++    x += w + gap;
++  }
++}
++
++void Hub::DrawHomePanel(int game, float x, float y, float w, float h, float on) {
++  const Assets::HomeArt& art = a_.home[game];
++  const ImVec2 p0(x, y), p1(x + w, y + h);
++  dl_->PushClipRect(p0, p1, true);
++  if (art.picture) {
++    // the picture covers the panel, cut round the person (its middle, the
++    // face in its top third), a touch closer when chosen
++    const float zoom = 1.0f + 0.05f * on;
++    const float panel = w / std::max(1.0f, h), picture = art.picture.width / std::max(1.0f, art.picture.height);
++    float uw = 1, vh = 1;
++    if (picture > panel) uw = panel / picture;
++    else vh = picture / panel;
++    uw /= zoom, vh /= zoom;
++    const ImVec2 uv0(0.5f - uw * 0.5f, std::clamp(0.36f - vh * 0.5f, 0.0f, 1 - vh));
++    const ImVec2 uv1(uv0.x + uw, uv0.y + vh);
++    if (!art.grey || on < 0.999f) dl_->AddImage((art.grey ? art.grey : art.picture).id, p0, p1, uv0, uv1);
++    if (art.grey && on > 0.001f) dl_->AddImage(art.picture.id, p0, p1, uv0, uv1, White(on));
++  } else {
++    // (no picture: a dark panel)
++    dl_->AddRectFilledMultiColor(p0, p1, Rgba(38, 38, 42), Rgba(38, 38, 42), Rgba(12, 12, 14), Rgba(12, 12, 14));
++  }
++  // the others dimmer; under the logo, darker toward the bottom
++  dl_->AddRectFilled(p0, p1, Black(0.5f * (1 - on)));
++  dl_->AddRectFilledMultiColor(ImVec2(x, y + h * 0.5f), p1, Black(0), Black(0), Black(0.75f * on), Black(0.75f * on));
++  // the logo (the game's name without one), at the foot of the chosen one
++  if (on > 0.01f) {
++    const float hx = (x - ox_) / s_, hw = w / s_, foot = (y + h - oy_) / s_ - 56;
++    if (art.logo) {
++      const float lw = std::min(hw * 0.72f, 620.0f), lh = std::min(lw * art.logo.height / art.logo.width, 230.0f);
++      const float fw = lh * art.logo.width / art.logo.height;
++      dl_->AddImage(art.logo.id, P(hx + (hw - fw) * 0.5f, foot - lh), P(hx + (hw + fw) * 0.5f, foot), ImVec2(0, 0),
++                    ImVec2(1, 1), White(on));
++    } else {
++      const std::string name = game ? T(install::EpisodeName(game - 1)) : "Grand Theft Auto IV";
++      TextMid(Bold(), 52, hx + hw * 0.5f, foot - 30, White(on), Fit(Bold(), 52, name, hw - 80), 0.5f);
++    }
++  }
++  // the glow round the chosen one, in its colour: bright at the edge, fading in
++  if (on > 0.01f) {
++    const ImU32 col = GameColor(game);
++    const float step = std::max(1.0f, 1.5f * s_);
++    for (int k = 0; k < 16; ++k) {
++      const float t = 1 - float(k) / 16;
++      const float in = k * step;
++      dl_->AddRect(ImVec2(x + in, y + in), ImVec2(x + w - in, y + h - in), WithAlpha(col, on * 0.6f * t * t), 0, 0,
++                   step);
++    }
++  }
++  dl_->PopClipRect();
 +}
 +
 +int Hub::SettingIndex(const Setting& r) const {
@@ -27765,6 +27979,8 @@ index 00000000..894cfa1d
 +  auto start = [&] {
 +    state_ = install::Look(paths_.app);
 +    if (state_.installed) {
++      // (the game reads it at its start: gta4_start_episode, -1 the game's own way)
++      Save("gta4_start_episode", HomeGames().size() > 1 ? std::to_string(HomeGame()) : "-1");
 +      press_ = 1, launch_ = true;
 +    } else {
 +      Play(Sound::kSelect);
@@ -27786,6 +28002,15 @@ index 00000000..894cfa1d
 +    return;
 +  }
 +  if (tab_ == kHome) {
++    const std::vector<int> games = HomeGames();
++    if (games.size() > 1 && (p & (kLeft | kRight))) {
++      const int at = int(std::find(games.begin(), games.end(), HomeGame()) - games.begin());
++      const int to = at + ((p & kRight) ? 1 : -1);
++      if (to >= 0 && to < int(games.size())) {
++        home_game_ = games[size_t(to)];
++        Play(Sound::kMove);
++      }
++    }
 +    if (p & kCross) start();
 +    return;
 +  }
@@ -27907,10 +28132,10 @@ index 00000000..894cfa1d
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
 new file mode 100644
-index 00000000..4124d9e3
+index 00000000..79e37993
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
-@@ -0,0 +1,370 @@
+@@ -0,0 +1,399 @@
 +// GTA IV PS5 - the hub: the screen the app opens on, before the game
 +// (the PC launcher's settings, driven by the controller), drawn after GTA IV's
 +// own pause menu: tabs across the top in its condensed type, the chosen one in
@@ -27995,6 +28220,14 @@ index 00000000..4124d9e3
 +  std::vector<ImFont*> menu_sizes, menu_regular_sizes;  // ascending
 +  Image logo;                  // the game's logo
 +  Image hero;                   // the picture behind it all
++  // Home once an episode is installed: a panel for each game, by the game's
++  // numbers (0 GTA IV, 1 The Lost and Damned, 2 The Ballad of Gay Tony): its
++  // picture, a black and white copy, and its logo. hub/home/gta4.jpg (or
++  // .png), tlad, tbogt, and gta4-logo.png, tlad-logo.png, tbogt-logo.png.
++  struct HomeArt {
++    Image picture, grey, logo;
++  };
++  HomeArt home[3];
 +  std::map<uint32_t, Image> buttons;  // the PS5's button pictures, by Button (kLeft | kRight: the d-pad)
 +};
 +
@@ -28002,6 +28235,18 @@ index 00000000..4124d9e3
 +// to the atlas at the hub's sizes, for a 1080p and a 4K screen.
 +void AddMenuFonts(ImFontAtlas* atlas, const void* bold, int bold_bytes, const void* regular, int regular_bytes,
 +                  Assets& a);
++
++// A picture's pixels (RGBA).
++struct Pixels {
++  int w = 0, h = 0;
++  std::vector<unsigned char> rgba;
++};
++// At most max_h tall (each pixel the average of those it covers): Home's
++// pictures need no more than the 4K screen's band.
++Pixels Shrink(const unsigned char* rgba, int w, int h, int max_h);
++// Black and white.
++Pixels Grey(const Pixels& p);
++constexpr int kHomePictureHeight = 1400;
 +
 +struct Paths {
 +  std::filesystem::path app;        // the app folder (/data/homebrew/PPSA94004)
@@ -28107,6 +28352,15 @@ index 00000000..4124d9e3
 +  void DrawHints();
 +  void DrawConfirm();
 +  void DrawHome();
++  // Home: the game PLAY starts in, by the game's numbers (gta4_start_episode):
++  // 0 GTA IV, 1 The Lost and Damned, 2 The Ballad of Gay Tony. A choice once
++  // an episode is installed; kept in native.toml for the next time.
++  int home_game_ = 0;  // (GTA IV at each start)
++  float home_wide_[3] = {1, 0, 0};  // how far each panel is open (the chosen one)
++  std::vector<int> HomeGames() const;  // GTA IV and the episodes installed, left to right
++  int HomeGame() const;                // home_game_, or GTA IV if it's gone
++  void DrawHomePanels(const std::vector<int>& games);
++  void DrawHomePanel(int game, float x, float y, float w, float h, float on);
 +  void DrawSettings();
 +  void DrawSaves();
 +  void DrawEpisodes();
@@ -28283,10 +28537,10 @@ index 00000000..4124d9e3
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
 new file mode 100644
-index 00000000..9d91f1d3
+index 00000000..51a3be29
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
-@@ -0,0 +1,403 @@
+@@ -0,0 +1,438 @@
 +// GTA IV PS5 - the hub on the console (see hub_ui.h):
 +// shown before the game is set up (ReXApp::OnFinalizePaths, asynchronous),
 +// driven by the DualSense through scePad, with the menu music (hub/music,
@@ -28590,6 +28844,19 @@ index 00000000..9d91f1d3
 +    a.logo = Load(immediate, hub / "logo.png");
 +    a.hero = Load(immediate, hub / "hero.jpg");
 +    if (!a.hero) a.hero = Load(immediate, hub / "hero.png");
++    // Home's panels (hub/home; GTA IV's: the hero and the logo without them)
++    const char* games[] = {"gta4", "tlad", "tbogt"};
++    for (int g = 0; g < 3; ++g) {
++      auto& art = a.home[g];
++      for (const char* ext : {".jpg", ".png"})
++        if (!art.picture) LoadHomePicture(immediate, hub / "home" / (std::string(games[g]) + ext), art.picture, art.grey);
++      art.logo = Load(immediate, hub / "home" / (std::string(games[g]) + "-logo.png"));
++    }
++    if (!a.home[0].picture) {
++      LoadHomePicture(immediate, hub / "hero.jpg", a.home[0].picture, a.home[0].grey);
++      if (!a.home[0].picture) LoadHomePicture(immediate, hub / "hero.png", a.home[0].picture, a.home[0].grey);
++    }
++    if (!a.home[0].logo) a.home[0].logo = a.logo;
 +    // the button pictures (hub/buttons/<name>.png; drawn ones where missing)
 +    const std::pair<uint32_t, const char*> names[] = {
 +        {kCross, "Cross"}, {kCircle, "Circle"},   {kSquare, "Square"},         {kTriangle, "Triangle"}, {kL1, "L1"},
@@ -28631,6 +28898,28 @@ index 00000000..9d91f1d3
 +  }
 +
 + private:
++  Image Texture(rex::ui::ImmediateDrawer* immediate, const Pixels& p) {
++    auto tex = immediate->CreateTexture(uint32_t(p.w), uint32_t(p.h), rex::ui::ImmediateTextureFilter::kLinear, false,
++                                        p.rgba.data());
++    if (!tex) return {};
++    Image img{reinterpret_cast<ImTextureID>(tex.get()), float(p.w), float(p.h)};
++    g_textures->push_back(std::move(tex));
++    return img;
++  }
++
++  // A Home picture, no taller than the 4K screen's band, and its black and white copy.
++  void LoadHomePicture(rex::ui::ImmediateDrawer* immediate, const fs::path& file, Image& picture, Image& grey) {
++    if (!immediate) return;
++    int w = 0, h = 0, n = 0;
++    unsigned char* px = stbi_load(file.string().c_str(), &w, &h, &n, 4);
++    if (!px) return;
++    const Pixels p = Shrink(px, w, h, kHomePictureHeight);
++    stbi_image_free(px);
++    picture = Texture(immediate, p);
++    if (picture) grey = Texture(immediate, Grey(p));
++    REXLOG_INFO("PS5 hub: Home picture {} ({}x{}, shown at {}x{})", file.filename().string(), w, h, p.w, p.h);
++  }
++
 +  Image Load(rex::ui::ImmediateDrawer* immediate, const fs::path& file) {
 +    if (!immediate) return {};
 +    int w = 0, h = 0, n = 0;

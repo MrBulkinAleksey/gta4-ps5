@@ -140,6 +140,29 @@ int main(int argc, char** argv) {
         a.buttons[b] = img;
       }
   }
+  // Home's panels (HUB_HOME: a folder as hub/home)
+  auto tex = [](const Pixels& p) {
+    auto* t = new Tex{p.w, p.h, p.rgba};
+    return Image{reinterpret_cast<ImTextureID>(t), float(p.w), float(p.h)};
+  };
+  if (const char* dir = std::getenv("HUB_HOME")) {
+    const char* games[] = {"gta4", "tlad", "tbogt"};
+    for (int g = 0; g < 3; ++g) {
+      for (const char* ext : {".jpg", ".png"}) {
+        int w, h, n;
+        if (a.home[g].picture) break;
+        unsigned char* p = stbi_load((std::string(dir) + "/" + games[g] + ext).c_str(), &w, &h, &n, 4);
+        if (!p) continue;
+        const Pixels px = Shrink(p, w, h, kHomePictureHeight);
+        stbi_image_free(p);
+        a.home[g].picture = tex(px);
+        a.home[g].grey = tex(Grey(px));
+      }
+      if (Tex* t = LoadPng(std::string(dir) + "/" + games[g] + "-logo.png"))
+        a.home[g].logo = {reinterpret_cast<ImTextureID>(t), float(t->w), float(t->h)};
+    }
+  }
+  if (!a.home[0].logo) a.home[0].logo = a.logo;
   Hub hub;
   Paths paths{app, app + "/native.toml", app + "/UserData"};
   hub.SetImageLoader([](const std::filesystem::path& file) {
