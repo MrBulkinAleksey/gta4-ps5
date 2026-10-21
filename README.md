@@ -36,7 +36,7 @@ The easiest way to play is **[Recomp Store](https://recompstore.com)**. It insta
 > [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/ripalda)
 
 ## Install by hand
-1. Download `PPSA94004-1.0.zip` from [Releases](../../releases) and copy the `PPSA94004` folder to `/data/homebrew/` on your PS5.
+1. Download `PPSA94004.zip` from [Releases](../../releases) and copy the `PPSA94004` folder to `/data/homebrew/` on your PS5.
 2. Put your disc image and Title Update 8 in its `install` folder:
 
 ```
