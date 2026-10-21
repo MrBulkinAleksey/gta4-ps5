@@ -47,6 +47,11 @@ The FidelityFX lines add FSR 3 (the hub's Frame Generation option). They need Wi
 first build compiles about 2,700 motion-vector shader variants, which takes a while.
 Leave those four lines out to build without FSR 3.
 
+The hub draws The Lost and Damned's and The Ballad of Gay Tony's tabs in
+Helvetica Neue Heavy, as those games' menus do. Its licence doesn't allow
+sharing it, so it isn't in this repo: put your own `HelveticaNeue-Heavy.ttf` in
+`ps5/assets/fonts/` before building, or those tabs use the hub's usual type.
+
 
 ## On the PS5
 
@@ -62,5 +67,5 @@ Leave those four lines out to build without FSR 3.
 | `glue/rexglue-sdk-main/gta4-recomp/src/ps5/game/` | trophies, the FPS counter and watermark, 360 save import, sound |
 | `glue/rexglue-sdk-main/gta4-recomp/src/ps5/gta4_ps5_app.cpp` | where the game and the hub meet |
 | `ps5/payload/installer/` | the installer payload: the app sends it to the payload loader on port 9021 to install the game at full speed (built by `ps5_package.sh`) |
-| `ps5/package/` | home screen icon, hub art and music, the button pictures |
+| `ps5/package/` | home screen icon, hub art, each game's menu music and the menu sounds, the button pictures |
 | `ps5/tools/` | packaging, the button pictures, the hub preview |

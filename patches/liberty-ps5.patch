@@ -201,7 +201,7 @@ index 9ffeffdf..1f19e16d 100644
      endif()
  
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
-index 3b033069..0ff254fa 100644
+index 3b033069..4ff089be 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
 @@ -22,6 +22,7 @@ set(GTA4_APP_SOURCES
@@ -212,7 +212,7 @@ index 3b033069..0ff254fa 100644
      src/gta4_input_hooks.cpp
      src/gta4_sony_feedback.cpp
      src/gta4_sony_event_hooks.cpp
-@@ -443,6 +444,104 @@ elseif(ANDROID)
+@@ -443,6 +444,111 @@ elseif(ANDROID)
              -Wno-backend-plugin)
          target_link_options(LibertyRecomp PRIVATE "-fprofile-use=${LIBERTY_ANDROID_PGO}")
      endif()
@@ -246,8 +246,15 @@ index 3b033069..0ff254fa 100644
 +    # (the fonts are built into it: a changed one rebuilds it)
 +    file(GLOB GTA4_PS5_FONTS CONFIGURE_DEPENDS "${GTA4_PS5_DIR}/assets/fonts/*.ttf"
 +         "${GTA4_PS5_DIR}/assets/fonts/*.otf")
++    # (Helvetica Neue Heavy, the episodes' tabs, only when it's in fonts/: its
++    # licence doesn't let it be shared, so the public repository goes without
++    # and those tabs use the menu type)
++    set(GTA4_PS5_TAB_FONT 0)
++    if(EXISTS "${GTA4_PS5_DIR}/assets/fonts/HelveticaNeue-Heavy.ttf")
++        set(GTA4_PS5_TAB_FONT 1)
++    endif()
 +    set_source_files_properties(src/ps5/hub/ps5_hub.cpp PROPERTIES
-+        COMPILE_DEFINITIONS "GTA4PS5_FONTS_DIR=\"${GTA4_PS5_DIR}/assets/fonts\""
++        COMPILE_DEFINITIONS "GTA4PS5_FONTS_DIR=\"${GTA4_PS5_DIR}/assets/fonts\";GTA4PS5_TAB_FONT=${GTA4_PS5_TAB_FONT}"
 +        OBJECT_DEPENDS "${GTA4_PS5_FONTS}")
 +    message(STATUS "GTA IV for PS5 ${GTA4_PS5_VERSION}")
 +
@@ -24269,7 +24276,7 @@ index 00000000..cb123449
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
 new file mode 100644
-index 00000000..d0f39c4b
+index 00000000..4c2145f4
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
 @@ -0,0 +1,376 @@
@@ -24368,7 +24375,7 @@ index 00000000..d0f39c4b
 +  const float cy = y + 64, icon_x = x + w - 18;
 +  switch (status) {
 +    case kRowChecking: Spinner(icon_x, cy, 13, kMenuGray); break;
-+    case kRowOk: Tick(icon_x, cy, 24, kAccent); break;
++    case kRowOk: Tick(icon_x, cy, 24, pal_.title); break;
 +    case kRowBad: XMark(icon_x, cy, 22, kBad); break;
 +    default: break;
 +  }
@@ -24443,7 +24450,7 @@ index 00000000..d0f39c4b
 +                          : "Making sure the disc image is the USA disc of GTA IV. This takes a few seconds."),
 +                1.38f);
 +      } else if (st.phase == Phase::kReady) {
-+        TextMid(Bold(), 40, px, py + 20, kAccent, T("Ready"));
++        TextMid(Bold(), 40, px, py + 20, pal_.title, T("Ready"));
 +        py += 62;
 +        py += Wrapped(Regular(), 28, px, py, pw, text,
 +                      T(ep >= 0 ? "Press Cross to install. Keep the app open until it's done. The package isn't changed."
@@ -24516,7 +24523,7 @@ index 00000000..d0f39c4b
 +  const float bx = kPageL, by = 652, bw = kPageR - kPageL, bh = 14;
 +  Rect(bx, by, bw, bh, kBarBack);
 +  const float fw = std::max(bh, bw * p);
-+  Rect(bx, by, fw, bh, kAccent);
++  Rect(bx, by, fw, bh, pal_.title);
 +  if (!done) {  // a light running along the filled part
 +    dl_->PushClipRect(P(bx, by), P(bx + fw, by + bh), true);
 +    const float run = std::fmod(time_ * 520.0f, fw + 400.0f) - 200.0f;
@@ -24651,10 +24658,10 @@ index 00000000..d0f39c4b
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp
 new file mode 100644
-index 00000000..4f6f8eb6
+index 00000000..8a45a03a
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp
-@@ -0,0 +1,1131 @@
+@@ -0,0 +1,1161 @@
 +// GTA IV PS5 - the hub's languages (see hub_lang.h).
 +#include "hub_lang.h"
 +
@@ -25785,13 +25792,43 @@ index 00000000..4f6f8eb6
 +  return buf;
 +}
 +
++std::string Clock(int64_t t) {
++  // clang-format off
++  static const char* const kDays[kLangCount][7] = {
++      {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"},
++      {"DIM", "LUN", "MAR", "MER", "JEU", "VEN", "SAM"},
++      {"SO", "MO", "DI", "MI", "DO", "FR", "SA"},
++      {"DOM", "LUN", "MAR", "MI\u00C9", "JUE", "VIE", "S\u00C1B"},
++      {"DOM", "LUN", "MAR", "MER", "GIO", "VEN", "SAB"}};
++  static const char* const kMonths[kLangCount][12] = {
++      {"JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"},
++      {"JANV", "F\u00C9VR", "MARS", "AVR", "MAI", "JUIN", "JUIL", "AO\u00DBT", "SEPT", "OCT", "NOV", "D\u00C9C"},
++      {"JAN", "FEB", "M\u00C4R", "APR", "MAI", "JUN", "JUL", "AUG", "SEP", "OKT", "NOV", "DEZ"},
++      {"ENE", "FEB", "MAR", "ABR", "MAY", "JUN", "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"},
++      {"GEN", "FEB", "MAR", "APR", "MAG", "GIU", "LUG", "AGO", "SET", "OTT", "NOV", "DIC"}};
++  // clang-format on
++  const std::time_t tt = std::time_t(t);
++  std::tm tm{};
++  localtime_r(&tt, &tm);
++  const Lang l = Current();
++  const int hour = tm.tm_hour % 12 ? tm.tm_hour % 12 : 12;
++  char buf[64];
++  if (l == kEnglish)
++    std::snprintf(buf, sizeof(buf), "%s / %s %d / %d:%02d %s", kDays[l][tm.tm_wday % 7], kMonths[l][tm.tm_mon % 12],
++                  tm.tm_mday, hour, tm.tm_min, tm.tm_hour < 12 ? "AM" : "PM");
++  else  // (the day before the month)
++    std::snprintf(buf, sizeof(buf), "%s / %d %s / %d:%02d %s", kDays[l][tm.tm_wday % 7], tm.tm_mday,
++                  kMonths[l][tm.tm_mon % 12], hour, tm.tm_min, tm.tm_hour < 12 ? "AM" : "PM");
++  return buf;
++}
++
 +}  // namespace gta4ps5::hub::lang
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.h
 new file mode 100644
-index 00000000..c2f93da1
+index 00000000..b187c5c0
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.h
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,44 @@
 +// GTA IV PS5 - languages: the hub's text in English, French, German, Spanish
 +// and Italian (the five the Xbox 360 disc has the game's text in), and the
 +// Language setting (ps5_language) that picks one for the hub and the game.
@@ -25830,16 +25867,20 @@ index 00000000..c2f93da1
 +std::string Units(std::string s);
 +// A date and time (unix time; "-" for none).
 +std::string Date(int64_t t);
++// The footer's clock, as the game's pause menu has its day and time: the
++// day of the week, the date and the time on a 12-hour clock ("WED / OCT 21 /
++// 8:45 PM"), in capitals.
++std::string Clock(int64_t t);
 +
 +}  // namespace gta4ps5::hub::lang
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.cpp
 new file mode 100644
-index 00000000..4276bd77
+index 00000000..6ef1d980
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.cpp
-@@ -0,0 +1,176 @@
-+// GTA IV PS5 - the PS5 hub's menu sounds, made here (no
-+// sound files needed): short, soft clicks and tones (see hub_sfx.h).
+@@ -0,0 +1,100 @@
++// GTA IV PS5 - the trophy chime, made here: a struck bell or two (see
++// hub_sfx.h).
 +#include "hub_sfx.h"
 +
 +#include <algorithm>
@@ -25912,68 +25953,6 @@ index 00000000..4276bd77
 +
 +}  // namespace
 +
-+std::vector<float> SynthSound(Sound sound) {
-+  switch (sound) {
-+    case Sound::kMove: {  // a soft tick
-+      Buffer b(0.06f);
-+      b.Tone(0, 0.05f, 2600, 2400, 0.10f, 0.0008f, 0.006f, 0.1f);
-+      b.Tone(0, 0.05f, 1300, 1250, 0.06f, 0.0008f, 0.012f, 0.1f);
-+      return b.Stereo();
-+    }
-+    case Sound::kSelect: {  // up a fifth
-+      Buffer b(0.22f);
-+      b.Tone(0.000f, 0.10f, 880, 880, 0.14f, 0.002f, 0.035f);
-+      b.Tone(0.045f, 0.16f, 1320, 1320, 0.14f, 0.002f, 0.05f);
-+      b.Room();
-+      return b.Stereo();
-+    }
-+    case Sound::kBack: {  // down a fifth, softer
-+      Buffer b(0.2f);
-+      b.Tone(0.000f, 0.10f, 1320, 1320, 0.10f, 0.002f, 0.03f);
-+      b.Tone(0.040f, 0.14f, 880, 860, 0.11f, 0.002f, 0.045f);
-+      b.Room();
-+      return b.Stereo();
-+    }
-+    case Sound::kPage: {  // a short swish and a tick
-+      Buffer b(0.22f);
-+      b.Noise(0, 0.2f, 1800, 7000, 0.20f, 0.035f, 0.05f);
-+      b.Tone(0.03f, 0.05f, 2000, 1900, 0.05f, 0.001f, 0.01f, 0.1f);
-+      return b.Stereo();
-+    }
-+    case Sound::kOn: {  // a click and a rising chirp
-+      Buffer b(0.16f);
-+      b.Noise(0, 0.01f, 2000, 9000, 0.12f, 0.0005f, 0.002f);
-+      b.Tone(0.004f, 0.09f, 700, 1150, 0.13f, 0.002f, 0.03f);
-+      b.Room();
-+      return b.Stereo();
-+    }
-+    case Sound::kOff: {  // a click and a falling chirp
-+      Buffer b(0.16f);
-+      b.Noise(0, 0.01f, 2000, 9000, 0.12f, 0.0005f, 0.002f);
-+      b.Tone(0.004f, 0.09f, 1000, 620, 0.12f, 0.002f, 0.03f);
-+      b.Room();
-+      return b.Stereo();
-+    }
-+    case Sound::kStart: {  // a deep hit and a rising chord
-+      Buffer b(1.6f);
-+      b.Tone(0, 0.6f, 90, 42, 0.38f, 0.003f, 0.16f, 0.15f);       // the thump
-+      b.Noise(0, 0.12f, 300, 5000, 0.18f, 0.002f, 0.03f);         // its crack
-+      const float chord[] = {440.0f, 554.37f, 659.25f, 880.0f};   // A major
-+      for (int k = 0; k < 4; ++k) b.Tone(0.05f + k * 0.045f, 1.3f, chord[k], chord[k], 0.07f, 0.01f, 0.45f, 0.35f);
-+      b.Noise(0.05f, 0.9f, 4000, 12000, 0.04f, 0.3f, 0.25f);      // a shimmer
-+      b.Room();
-+      return b.Stereo();
-+    }
-+    case Sound::kError: {  // two low buzzes
-+      Buffer b(0.22f);
-+      b.Tone(0.00f, 0.07f, 196, 196, 0.12f, 0.002f, 0.05f, 0.9f);
-+      b.Tone(0.09f, 0.09f, 185, 180, 0.12f, 0.002f, 0.06f, 0.9f);
-+      return b.Stereo();
-+    }
-+  }
-+  return {};
-+}
-+
 +std::vector<float> TrophyChime(bool platinum) {
 +  // A bell: each note a struck tone with a quieter, quicker partial above it (2.76x: a bell's, not a string's).
 +  auto bell = [](Buffer& b, float at, float f, float amp, float decay) {
@@ -25999,51 +25978,32 @@ index 00000000..4276bd77
 +  return b.Stereo();
 +}
 +
-+const char* SoundName(Sound sound) {
-+  switch (sound) {
-+    case Sound::kMove: return "move";
-+    case Sound::kSelect: return "select";
-+    case Sound::kBack: return "back";
-+    case Sound::kPage: return "page";
-+    case Sound::kOn: return "on";
-+    case Sound::kOff: return "off";
-+    case Sound::kStart: return "start";
-+    case Sound::kError: return "error";
-+  }
-+  return "";
-+}
-+
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.h
 new file mode 100644
-index 00000000..4f4ac5e2
+index 00000000..07d3d923
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_sfx.h
-@@ -0,0 +1,18 @@
-+// GTA IV PS5 - the PS5 hub's menu sounds (hub_sfx.cpp):
-+// made in code at 48 kHz, stereo interleaved. hub/sfx/<name>.wav (or .mp3,
-+// .flac, .ogg) replaces one (ps5_hub.cpp).
+@@ -0,0 +1,13 @@
++// GTA IV PS5 - the trophy chime (hub_sfx.cpp): made in code at 48 kHz,
++// stereo interleaved. (The hub's menu sounds are recordings: hub/sfx,
++// ps5_hub.cpp.)
 +#pragma once
 +
 +#include <vector>
 +
-+#include "hub_ui.h"
-+
 +namespace gta4ps5::hub {
 +
-+std::vector<float> SynthSound(Sound sound);
-+// Its file name in hub/sfx ("move", "select", ...).
-+const char* SoundName(Sound sound);
 +// A trophy's chime (the popup in the game); `platinum`: a fuller one.
 +std::vector<float> TrophyChime(bool platinum);
 +
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_style.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_style.h
 new file mode 100644
-index 00000000..2d761cfb
+index 00000000..cd4eed9e
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_style.h
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,144 @@
 +// GTA IV PS5 - the PS5 hub's colours and small helpers
 +// (hub_ui.cpp).
 +#pragma once
@@ -26085,8 +26045,8 @@ index 00000000..2d761cfb
 +  t = std::clamp(t, 0.0f, 1.0f);
 +  return t * t * (3 - 2 * t);
 +}
-+inline ImU32 Mix(ImU32 a, ImU32 b, float t) {
-+  t = std::clamp(t, 0.0f, 1.0f);
++constexpr ImU32 Mix(ImU32 a, ImU32 b, float t) {
++  t = t < 0 ? 0 : t > 1 ? 1 : t;
 +  ImU32 out = 0;
 +  for (int sh = 0; sh < 32; sh += 8) {
 +    const float ca = float((a >> sh) & 0xFF), cb = float((b >> sh) & 0xFF);
@@ -26103,6 +26063,46 @@ index 00000000..2d761cfb
 +const ImU32 kRuleGray = Rgba(96, 96, 96);     // the rules
 +const ImU32 kBarBack = Rgba(58, 58, 58);      // a level's bar, behind
 +const ImU32 kBad = Rgba(232, 58, 46);         // something wrong (the installer)
++
++// Each game's menu, as its own pause menu: the hub takes on the look of the
++// game chosen on Home (0 GTA IV, 1 The Lost and Damned, 2 The Ballad of Gay
++// Tony), easing from one to the next. GTA IV's is the gold and grey above; The
++// Lost and Damned's a dark red over grey, the tabs scuffed; The Ballad of Gay
++// Tony's a rainbow (each tab its colour, the rules a gradient), pink rows, sky
++// blue hints, white for what's chosen.
++struct Palette {
++  ImU32 tab_off, tab_on;        // a tab, and the chosen one
++  ImU32 row, focus;             // a row of a page, and the focused one
++  ImU32 title;                  // titles and paths
++  ImU32 hint;                   // the footer's labels
++  ImU32 toast;                  // the message at the footer's left
++  ImU32 rule_top, rule_bottom;  // the rules (The Ballad of Gay Tony: its gradient over them)
++};
++inline const Palette& GamePalette(int game) {
++  static const Palette kPalettes[3] = {
++      {Rgba(148, 148, 148), kAccent, kMenuGray, kAccent, kAccent, kMenuGray, kAccent, kRuleGray, kRuleGray},
++      {Rgba(146, 146, 146), Rgba(104, 14, 14), Rgba(128, 128, 128), Rgba(156, 26, 26), Rgba(156, 26, 26),
++       Rgba(112, 112, 112), Rgba(156, 26, 26), Rgba(52, 52, 52), Rgba(40, 40, 40)},
++      {Rgba(192, 18, 96), Rgba(244, 244, 244), Rgba(192, 18, 96), Rgba(244, 244, 244), Rgba(208, 28, 108),
++       Rgba(88, 116, 168), Rgba(206, 162, 46), Rgba(140, 70, 110), Rgba(90, 44, 70)},
++  };
++  return kPalettes[std::clamp(game, 0, 2)];
++}
++// The Ballad of Gay Tony's colours, left to right (its tabs, from the game's
++// Map to Game) and its rule under the tabs (the one over the footer is darker).
++constexpr ImU32 kTbogtTabs[] = {IM_COL32(192, 150, 36, 255), IM_COL32(204, 120, 42, 255), IM_COL32(198, 72, 66, 255),
++                                IM_COL32(192, 18, 96, 255),  IM_COL32(150, 30, 120, 255), IM_COL32(120, 60, 132, 255),
++                                IM_COL32(78, 102, 150, 255)};
++constexpr ImU32 kTbogtRule[] = {IM_COL32(202, 190, 58, 255), IM_COL32(213, 154, 54, 255), IM_COL32(208, 99, 71, 255),
++                                IM_COL32(193, 34, 101, 255), IM_COL32(163, 33, 121, 255), IM_COL32(128, 69, 137, 255),
++                                IM_COL32(94, 106, 157, 255), IM_COL32(72, 131, 165, 255)};
++// A colour along one of those, 0..1.
++template <size_t N>
++inline ImU32 Along(const ImU32 (&stops)[N], float t) {
++  const float f = std::clamp(t, 0.0f, 1.0f) * float(N - 1);
++  const size_t i = std::min(N - 2, size_t(f));
++  return Mix(stops[i], stops[i + 1], f - float(i));
++}
 +
 +// Capitals, accented letters too (UTF-8: à..þ to À..Þ, œ to Œ, ß to SS).
 +inline std::string Upper(const std::string& s) {
@@ -26591,7 +26591,7 @@ index 00000000..26b22864
 +}  // namespace gta4ps5::trophies
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies_page.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies_page.cpp
 new file mode 100644
-index 00000000..a24e8a62
+index 00000000..00324a8c
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies_page.cpp
 @@ -0,0 +1,207 @@
@@ -26719,7 +26719,7 @@ index 00000000..a24e8a62
 +  const float by = y + 82;
 +  Rect(x, by, w, 10, kBarBack);
 +  const float f = std::clamp(trophies_.points ? float(trophies_.points_earned) / float(trophies_.points) : 0.0f, 0.0f, 1.0f);
-+  if (f > 0) Rect(x, by, std::max(4.0f, w * f), 10, plat ? trophies::GradeColor(trophies::Grade::kPlatinum) : kAccent);
++  if (f > 0) Rect(x, by, std::max(4.0f, w * f), 10, plat ? trophies::GradeColor(trophies::Grade::kPlatinum) : pal_.title);
 +  return by + 10;
 +}
 +
@@ -26766,7 +26766,7 @@ index 00000000..a24e8a62
 +    const bool earned = plat ? trophies_.Platinum() : trophies_.trophies[size_t(it.index)].earned != 0;
 +    const float cy = ry + kRowH * 0.5f;
 +    TrophyIcon(it.index, x, cy - 24, 48, 0);
-+    const ImU32 col = Mix(earned ? kMenuGray : kDimGray, kAccent, over);
++    const ImU32 col = Mix(earned ? pal_.row : kDimGray, pal_.focus, over);
 +    TextMid(Bold(), 31, x + 70, cy, col, Fit(Bold(), 31, name_of(it), right - x - 70 - 50));
 +    const trophies::Grade g = plat ? trophies::Grade::kPlatinum : trophies_.trophies[size_t(it.index)].grade();
 +    trophies::DrawCup(dl_, P(right - 14, cy), 30 * s_, g, 1, earned);
@@ -26804,10 +26804,10 @@ index 00000000..a24e8a62
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..65c1c5d9
+index 00000000..3b9503eb
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1865 @@
+@@ -0,0 +1,2017 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -27403,6 +27403,92 @@ index 00000000..65c1c5d9
 +  a.menu_regular = a.menu_regular_sizes.empty() ? nullptr : a.menu_regular_sizes.back();
 +}
 +
++// Helvetica Neue Heavy for the episodes' tabs, at the sizes they're drawn at
++// (66 or less on a 1080p screen, twice that at 4K). The handle is the largest.
++void AddTabFonts(ImFontAtlas* atlas, const void* data, int bytes, Assets& a) {
++  static const ImWchar kLetters[] = {0x0020, 0x007E, 0x00A0, 0x00FF, 0x0152, 0x0153, 0};
++  a.tab_sizes.clear();
++  for (float px : {40.0f, 52.0f, 66.0f, 84.0f, 104.0f, 132.0f}) {
++    ImFontConfig cfg;
++    cfg.FontDataOwnedByAtlas = false;  // (built into the app; shared by every size)
++    cfg.OversampleH = px < 60 ? 2 : 1;
++    cfg.OversampleV = 1;
++    cfg.GlyphRanges = kLetters;
++    if (ImFont* f = atlas->AddFontFromMemoryTTF(const_cast<void*>(data), bytes, px, &cfg)) a.tab_sizes.push_back(f);
++  }
++  a.tab = a.tab_sizes.empty() ? nullptr : a.tab_sizes.back();
++}
++
++// The Lost and Damned's scuffs (see hub_ui.h): soft blotches where the paint
++// is thinner, specks, and short scratches, as its menu's type has. A fixed
++// seed: the tabs look the same each time.
++Pixels Grunge(int w, int h) {
++  Pixels p;
++  p.w = w, p.h = h;
++  std::vector<float> dark(size_t(w) * size_t(h), 0.0f);
++  uint32_t seed = 0x2C1B3C6Du;
++  auto rnd = [&] {
++    seed ^= seed << 13, seed ^= seed >> 17, seed ^= seed << 5;
++    return float(seed & 0xFFFFFF) / float(0x1000000);
++  };
++  // blotches: value noise on two scales, only its peaks
++  auto lattice = [](int x, int y, uint32_t salt) {
++    uint32_t v = uint32_t(x) * 0x8DA6B343u ^ uint32_t(y) * 0xD8163841u ^ salt * 0xCB1AB31Fu;
++    v ^= v >> 13, v *= 0x5BD1E995u, v ^= v >> 15;
++    return float(v & 0xFFFF) / 65535.0f;
++  };
++  auto noise = [&](float x, float y, float cell, uint32_t salt) {
++    const float fx = x / cell, fy = y / cell;
++    const int ix = int(std::floor(fx)), iy = int(std::floor(fy));
++    const float tx = Smooth(fx - float(ix)), ty = Smooth(fy - float(iy));
++    const float a = lattice(ix, iy, salt), b = lattice(ix + 1, iy, salt);
++    const float c = lattice(ix, iy + 1, salt), d = lattice(ix + 1, iy + 1, salt);
++    return (a + (b - a) * tx) * (1 - ty) + (c + (d - c) * tx) * ty;
++  };
++  for (int y = 0; y < h; ++y)
++    for (int x = 0; x < w; ++x) {
++      const float n = 0.6f * noise(float(x), float(y), 22, 1) + 0.4f * noise(float(x), float(y), 7, 2);
++      // (and a fine grit all over)
++      const float grit = noise(float(x), float(y), 2.2f, 3);
++      dark[size_t(y) * w + x] = 1 - (1 - std::clamp((n - 0.5f) / 0.3f, 0.0f, 1.0f) * 0.55f) *
++                                        (1 - std::clamp((grit - 0.55f) / 0.45f, 0.0f, 1.0f) * 0.35f);
++    }
++  auto blend = [&](int x, int y, float v) {
++    if (x < 0 || y < 0 || x >= w || y >= h) return;
++    float& d = dark[size_t(y) * w + x];
++    d = 1 - (1 - d) * (1 - std::clamp(v, 0.0f, 1.0f));
++  };
++  // specks
++  const int specks = w * h / 110;
++  for (int i = 0; i < specks; ++i) {
++    const float cx = rnd() * float(w), cy = rnd() * float(h), r = 0.5f + rnd() * rnd() * 2.2f, v = 0.45f + 0.5f * rnd();
++    for (int y = int(cy - r - 1); y <= int(cy + r + 1); ++y)
++      for (int x = int(cx - r - 1); x <= int(cx + r + 1); ++x) {
++        const float dist = std::hypot(float(x) + 0.5f - cx, float(y) + 0.5f - cy);
++        blend(x, y, v * std::clamp(r + 0.5f - dist, 0.0f, 1.0f));
++      }
++  }
++  // scratches: short, thin and wandering
++  const int scratches = w / 6;
++  for (int i = 0; i < scratches; ++i) {
++    float x = rnd() * float(w), y = rnd() * float(h), angle = rnd() * 6.2832f;
++    const int steps = 6 + int(rnd() * 34);
++    const float v = 0.5f + 0.45f * rnd();
++    for (int k = 0; k < steps; ++k) {
++      blend(int(x), int(y), v);
++      if (rnd() < 0.35f) blend(int(x) + 1, int(y), v * 0.5f);
++      angle += (rnd() - 0.5f) * 0.5f;
++      x += std::cos(angle), y += std::sin(angle);
++    }
++  }
++  p.rgba.resize(size_t(w) * size_t(h) * 4);
++  for (size_t i = 0; i < dark.size(); ++i) {
++    p.rgba[i * 4 + 0] = p.rgba[i * 4 + 1] = p.rgba[i * 4 + 2] = 255;
++    p.rgba[i * 4 + 3] = static_cast<unsigned char>(std::clamp(dark[i], 0.0f, 1.0f) * 255.0f + 0.5f);
++  }
++  return p;
++}
++
 +// ------------------------------------------------------------------ drawing
 +
 +float Hub::Ease(float& v, float target, float speed) {
@@ -27419,7 +27505,10 @@ index 00000000..65c1c5d9
 +}
 +
 +ImFont* Hub::Pick(ImFont* f, float size, const std::string* t) const {
-+  const std::vector<ImFont*>* sizes = f == a_.menu ? &a_.menu_sizes : f == a_.menu_regular ? &a_.menu_regular_sizes : nullptr;
++  const std::vector<ImFont*>* sizes = f == a_.menu           ? &a_.menu_sizes
++                                     : f == a_.menu_regular ? &a_.menu_regular_sizes
++                                     : f == a_.tab          ? &a_.tab_sizes
++                                                            : nullptr;
 +  if (!sizes || sizes->empty()) return f;
 +  const float want = size * s_ * 0.94f;  // (a touch smaller is still sharp)
 +  auto has_all = [&](ImFont* face) {
@@ -27642,14 +27731,14 @@ index 00000000..65c1c5d9
 +  const float tw = TextWidth(Regular(), kSize, text, kSpacing);
 +  const float gw = GlyphWidth(button, kButton);
 +  const float x = right - tw;
-+  TextMid(Regular(), kSize, x, cy, kMenuGray, text, 0, kSpacing);
++  TextMid(Regular(), kSize, x, cy, pal_.hint, text, 0, kSpacing);
 +  Glyph(button, x - kGap - gw * 0.5f, cy, White(0.92f), kButton);
 +  return x - kGap - gw - kBetween;
 +}
 +
 +// A title over a page of its own (the installer), in the menu's yellow.
 +void Hub::Heading(const std::string& title, const std::string& subtitle) {
-+  TextMid(Bold(), 54, kPageL, kListY + 30, kAccent, title);
++  TextMid(Bold(), 54, kPageL, kListY + 30, pal_.title, title);
 +  if (!subtitle.empty()) TextMid(Regular(), 28, kPageL, kListY + 84, kMenuGray, subtitle);
 +}
 +
@@ -27735,39 +27824,104 @@ index 00000000..65c1c5d9
 +}
 +
 +// The tabs across the top, as the game's: the chosen one in yellow (easing
-+// over as L1 and R1 change it), the others grey. Over the installer, its one.
++// over as L1 and R1 change it), the others grey; in an episode's look, as that
++// episode's menu (DrawTabs). Over the installer, its one.
 +void Hub::DrawTopBar() {
++  for (int i = 0; i < kTabCount; ++i) Ease(tab_lit_[i], i == tab_ ? 1.0f : 0.0f, 26);
++  for (int g = 0; g < 3; ++g)
++    if (theme_[g] > 0.004f) DrawTabs(g, Smooth(theme_[g]));
++}
++
++// The tabs in one game's look, faded by `alpha` (two of them while the look
++// changes). The episodes' in Helvetica Neue Heavy as their menus: The Lost
++// and Damned's spaced out, grey and the chosen one dark red, scuffed (Grunge);
++// The Ballad of Gay Tony's each in its colour along the rainbow, the chosen
++// one white.
++void Hub::DrawTabs(int game, float alpha) {
 +  constexpr float kSize = 66, kGap = 60;
-+  float x = kPageL;
++  ImFont* const f = game && a_.tab ? a_.tab : Bold();
++  const float track = game == 1 && a_.tab ? 0.09f : 0.0f;  // (of the size, between letters)
++  const Palette& p = GamePalette(game);
++  std::vector<std::string> names;
 +  if (installer_) {
-+    TextMid(Bold(), kSize, x, kTabsY, kAccent, T("Install|tab"));
-+    return;
++    names.push_back(T("Install|tab"));
++  } else {
++    for (int i = 0; i < kTabCount; ++i) names.push_back(T(kTabNames[i]));
 +  }
-+  // (longer names in some languages: smaller, to fit the page's width)
++  // (longer names in some languages, a wider type: smaller, to fit the page's width)
 +  float total = 0;
-+  for (int i = 0; i < kTabCount; ++i) total += TextWidth(Bold(), kSize, T(kTabNames[i])) + (i ? kGap : 0);
++  for (size_t i = 0; i < names.size(); ++i)
++    total += TextWidth(f, kSize, names[i], kSize * track) + (i ? kGap : 0);
 +  const float fit = std::min(1.0f, (kPageR - kPageL) / std::max(1.0f, total));
 +  const float size = kSize * fit, gap = kGap * fit;
-+  for (int i = 0; i < kTabCount; ++i) {
-+    Ease(tab_lit_[i], i == tab_ ? 1.0f : 0.0f, 26);
-+    const char* name = T(kTabNames[i]);
-+    TextMid(Bold(), size, x, kTabsY, Mix(Rgba(148, 148, 148), kAccent, tab_lit_[i]), name);
-+    x += TextWidth(Bold(), size, name) + gap;
++  float x = kPageL;
++  for (size_t i = 0; i < names.size(); ++i) {
++    const float lit = installer_ ? 1.0f : tab_lit_[i];
++    const ImU32 off = game == 2 ? Along(kTbogtTabs, names.size() > 1 ? float(i) / float(names.size() - 1) : 0.0f)
++                                : p.tab_off;
++    const float spacing = size * track;
++    const float w = TextWidth(f, size, names[i], spacing);
++    TextMid(f, size, x, kTabsY, WithAlpha(Mix(off, p.tab_on, lit), alpha), names[i], 0, spacing);
++    if (game == 1 && a_.grunge) {
++      // (black over black outside the letters: only they show it)
++      const float x0 = x - 4, x1 = x + w + 4, y0 = kTabsY - size * 0.62f, y1 = kTabsY + size * 0.46f;
++      const float u0 = (x0 - kPageL) / (kPageR - kPageL + 40), u1 = (x1 - kPageL) / (kPageR - kPageL + 40);
++      dl_->AddImage(a_.grunge.id, P(x0, y0), P(x1, y1), ImVec2(u0, 0), ImVec2(u1, 1), Black(0.92f * alpha));
++    }
++    x += w + gap;
 +  }
 +}
 +
-+// The rules under the tabs and over the footer (across the whole screen),
-+// and the game's logo at the footer's left, as on the Xbox 360.
++// Each game's share of the look eases to the one chosen on Home (quickly: the
++// pillars open as fast), and this frame's colours are mixed from them.
++void Hub::Theme() {
++  const int game = HomeGames().size() > 1 ? HomeGame() : 0;
++  for (int g = 0; g < 3; ++g) Ease(theme_[g], g == game ? 1.0f : 0.0f, 9);
++  float sum = 0;
++  for (float w : theme_) sum += w;
++  auto mix = [&](ImU32 Palette::*field) {
++    float c[4] = {};
++    for (int g = 0; g < 3; ++g) {
++      const ImU32 v = GamePalette(g).*field;
++      for (int k = 0; k < 4; ++k) c[k] += float((v >> (8 * k)) & 0xFF) * theme_[g] / std::max(sum, 1e-4f);
++    }
++    ImU32 out = 0;
++    for (int k = 0; k < 4; ++k) out |= ImU32(std::clamp(c[k] + 0.5f, 0.0f, 255.0f)) << (8 * k);
++    return out;
++  };
++  for (ImU32 Palette::*field : {&Palette::tab_off, &Palette::tab_on, &Palette::row, &Palette::focus, &Palette::title,
++                                &Palette::hint, &Palette::toast, &Palette::rule_top, &Palette::rule_bottom})
++    pal_.*field = mix(field);
++}
++
++// The rules under the tabs and over the footer (across the whole screen; The
++// Ballad of Gay Tony's in its rainbow, the lower one darker), and the clock.
 +void Hub::DrawFooter() {
 +  const ImVec2 size = ImGui::GetIO().DisplaySize;
-+  for (const float y : {kRuleTop, kRuleBottom})
-+    dl_->AddRectFilled(ImVec2(0, P(0, y).y), ImVec2(size.x, P(0, y + 2).y), kRuleGray);
-+  if (a_.logo) {
-+    constexpr float kLogoH = 104;
-+    const float lw = kLogoH * a_.logo.width / a_.logo.height;
-+    const float ly = kRuleBottom + (kH - kRuleBottom - kLogoH) * 0.5f;
-+    dl_->AddImage(a_.logo.id, P(kPageL, ly), P(kPageL + lw, ly + kLogoH));
++  for (const float y : {kRuleTop, kRuleBottom}) {
++    const float y0 = P(0, y).y, y1 = P(0, y + 2).y;
++    dl_->AddRectFilled(ImVec2(0, y0), ImVec2(size.x, y1), y == kRuleTop ? pal_.rule_top : pal_.rule_bottom);
++    if (theme_[2] > 0.004f) {
++      constexpr int kStops = int(sizeof(kTbogtRule) / sizeof(kTbogtRule[0]));
++      const float a = Smooth(theme_[2]) * (y == kRuleTop ? 1.0f : 0.62f);
++      for (int k = 0; k + 1 < kStops; ++k) {
++        const float xa = size.x * float(k) / float(kStops - 1), xb = size.x * float(k + 1) / float(kStops - 1);
++        const ImU32 ca = WithAlpha(kTbogtRule[k], a), cb = WithAlpha(kTbogtRule[k + 1], a);
++        dl_->AddRectFilledMultiColor(ImVec2(xa, y0), ImVec2(xb, y1), ca, cb, cb, ca);
++      }
++    }
 +  }
++  // At the footer's left, as the game's pause menu has its day, time and
++  // money: the day, the date and the time. A message takes its place for a
++  // while (Toast).
++  const float message = ToastShown();
++  if (message < 0.999f)
++    TextMid(Regular(), 32, kPageL, kHintsY, WithAlpha(pal_.toast, 1 - message),
++            lang::Clock(int64_t(std::time(nullptr))), 0, 0.6f);
++}
++
++float Hub::ToastShown() const {
++  return toast_time_ > 0 ? Smooth(std::min(toast_time_ * 3, (3.0f - toast_time_) * 6)) : 0.0f;
 +}
 +
 +void Hub::DrawHints() {
@@ -27815,19 +27969,16 @@ index 00000000..65c1c5d9
 +      const std::string text = Upper(T("Tab"));
 +      const float tw = TextWidth(Regular(), kSize, text, kSpacing);
 +      const float x = r2 - tw;
-+      TextMid(Regular(), kSize, x, cy, kMenuGray, text, 0, kSpacing);
++      TextMid(Regular(), kSize, x, cy, pal_.hint, text, 0, kSpacing);
 +      const float r1 = GlyphWidth(kR1, kButton), l1 = GlyphWidth(kL1, kButton);
 +      Glyph(kR1, x - kGap - r1 * 0.5f, cy, White(0.92f), kButton);
 +      Glyph(kL1, x - kGap - r1 - 8 - l1 * 0.5f, cy, White(0.92f), kButton);
 +    }
 +  }
-+  // a message: yellow capitals at the footer's left, after the logo (as the
++  // a message: capitals at the footer's left, in the clock's place (as the
 +  // game's PAUSED)
-+  if (toast_time_ > 0) {
-+    const float a = Smooth(std::min(toast_time_ * 3, (3.0f - toast_time_) * 6));
-+    const float lx = a_.logo ? kPageL + 104 * a_.logo.width / a_.logo.height + 48 : kPageL;
-+    TextMid(Bold(), 28, lx + (1 - a) * 10, kHintsY + 20, WithAlpha(kAccent, a), Upper(toast_), 0, 0.8f);
-+  }
++  if (const float a = ToastShown(); a > 0)
++    TextMid(Bold(), 28, kPageL + (1 - a) * 10, kHintsY, WithAlpha(pal_.toast, a), Upper(toast_), 0, 0.8f);
 +}
 +
 +// A question over everything (restore a backup?): the screen goes dark and it
@@ -27844,7 +27995,7 @@ index 00000000..65c1c5d9
 +  const float line_h = 31 * 1.45f;
 +  const float h = 74 + float(lines.size()) * line_h + 40 + 40;
 +  float y = (kH - h) * 0.5f - 20 + (1 - a) * 16;
-+  TextMid(Bold(), 56, cx, y + 26, kAccent, confirm_title_, 0.5f);
++  TextMid(Bold(), 56, cx, y + 26, pal_.title, confirm_title_, 0.5f);
 +  y += 74;
 +  for (const std::string& l : lines) Text(Regular(), 31, cx, y, kText, l, 0.5f), y += line_h;
 +  y += 40;
@@ -27864,7 +28015,7 @@ index 00000000..65c1c5d9
 +    const float gw = GlyphWidth(c.button, kButton);
 +    Glyph(c.button, x + gw * 0.5f, y + 16, White(0.92f), kButton);
 +    x += gw + kGap;
-+    TextMid(Regular(), kSize, x, y + 16, kMenuGray, c.text, 0, kSpacing);
++    TextMid(Regular(), kSize, x, y + 16, pal_.hint, c.text, 0, kSpacing);
 +    x += TextWidth(Regular(), kSize, c.text, kSpacing) + kBetween;
 +  }
 +  Fade(v0, a);
@@ -28188,7 +28339,7 @@ index 00000000..65c1c5d9
 +  List(rows, sel, kRowH, [&](int i, float ry, float over) {
 +    const auto& r = set[size_t(on[size_t(i)])];
 +    const float cy = ry + kRowH * 0.5f;
-+    const ImU32 col = Mix(kMenuGray, kAccent, over);
++    const ImU32 col = Mix(pal_.row, pal_.focus, over);
 +    // (a long name, in some languages: smaller, to stay clear of its value)
 +    const std::string label = T(r.label);
 +    const float room = kValueX - kListX - 28, lw = TextWidth(Bold(), kSize, label);
@@ -28198,7 +28349,7 @@ index 00000000..65c1c5d9
 +      const float bw = 280, bh = 18, by = cy - bh * 0.5f;
 +      const float f = r.values.size() > 1 ? float(idx) / float(r.values.size() - 1) : 0;
 +      Rect(kValueX, by, bw, bh, kBarBack);
-+      if (f > 0) Rect(kValueX, by, bw * f, bh, Mix(Rgba(206, 206, 206), kAccent, over));
++      if (f > 0) Rect(kValueX, by, bw * f, bh, Mix(Rgba(206, 206, 206), pal_.focus, over));
 +      return;
 +    }
 +    // the value just changed: it slides in from the side it was changed toward
@@ -28218,7 +28369,7 @@ index 00000000..65c1c5d9
 +    if (IsLevel(r) || r.labels.size() > 6) return;
 +    const int cur = SettingIndex(r);
 +    for (int k = 0; k < int(r.labels.size()); ++k) {
-+      TextMid(Bold(), 29, px, py + 18, k == cur ? kAccent : kDimGray, ValueLabel(r, k));
++      TextMid(Bold(), 29, px, py + 18, k == cur ? pal_.focus : kDimGray, ValueLabel(r, k));
 +      py += 44;
 +    }
 +  });
@@ -28255,7 +28406,7 @@ index 00000000..65c1c5d9
 +      name = T(f.name.c_str()), value = T(f.kind.c_str());
 +    }
 +    const float cy = ry + kRowH * 0.5f;
-+    const ImU32 col = Mix(kMenuGray, kAccent, over);
++    const ImU32 col = Mix(pal_.row, pal_.focus, over);
 +    TextMid(Bold(), kSize, kListX, cy, col, Fit(Bold(), kSize, name, kSavesValueX - kListX - 30));
 +    if (!value.empty()) TextMid(Bold(), kSize, kSavesValueX, cy, col, Fit(Bold(), kSize, value, kPanelX - 50 - kSavesValueX));
 +  });
@@ -28268,7 +28419,7 @@ index 00000000..65c1c5d9
 +      py += Wrapped(Regular(), 29, px, py + 6, pw, text,
 +                    T("Bring your Xbox 360 progress over. Copy the save files from your 360 (on its drive they're "
 +                      "in Content/<your profile>/545407F2/00000001) into this folder on the PS5:"), 1.38f) + 22;
-+      py += Wrapped(Bold(), 28, px, py, pw, kAccent, "/data/homebrew/PPSA94004/import/") + 26;
++      py += Wrapped(Bold(), 28, px, py, pw, pal_.title, "/data/homebrew/PPSA94004/import/") + 26;
 +      Wrapped(Regular(), 27, px, py, pw, kMenuGray,
 +              T("Press Cross to import them. Your saves are backed up first, and imported files move to "
 +                "import/done."), 1.38f);
@@ -28303,7 +28454,7 @@ index 00000000..65c1c5d9
 +  };
 +  List(rows, sel, kRowH, [&](int i, float ry, float over) {
 +    const float cy = ry + kRowH * 0.5f;
-+    const ImU32 col = Mix(kMenuGray, kAccent, over);
++    const ImU32 col = Mix(pal_.row, pal_.focus, over);
 +    TextMid(Bold(), kSize, kListX, cy, col, Fit(Bold(), kSize, T(install::EpisodeName(i)), kEpisodeValueX - kListX - 30));
 +    TextMid(Bold(), kSize, kEpisodeValueX, cy, col, Fit(Bold(), kSize, status(i), kPanelX - 50 - kEpisodeValueX));
 +  });
@@ -28328,7 +28479,7 @@ index 00000000..65c1c5d9
 +                  T("Copy the episode's package from your Xbox 360 (on its drive it's in "
 +                    "Content/0000000000000000/545407F2/00000002) into this folder on the PS5:"),
 +                  1.38f) + 22;
-+    py += Wrapped(Bold(), 28, px, py, pw, kAccent, "/data/homebrew/PPSA94004/install/") + 26;
++    py += Wrapped(Bold(), 28, px, py, pw, pal_.title, "/data/homebrew/PPSA94004/install/") + 26;
 +    Wrapped(Regular(), 27, px, py, pw, kMenuGray,
 +            T(state_.episode_found[sel] ? "Its package is there. Press Cross to install it."
 +                                        : "Then press Cross to install it."),
@@ -28637,6 +28788,7 @@ index 00000000..65c1c5d9
 +  ox_ = (size.x - kW * s_) * 0.5f;
 +  oy_ = (size.y - kH * s_) * 0.5f;
 +  dl_ = ImGui::GetForegroundDrawList();
++  Theme();
 +  DrawBackdrop();
 +  DrawTopBar();
 +  // the page comes up quickly (the game's menu just switches), from a touch
@@ -28675,10 +28827,10 @@ index 00000000..65c1c5d9
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
 new file mode 100644
-index 00000000..564cf383
+index 00000000..de6c6711
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
-@@ -0,0 +1,411 @@
+@@ -0,0 +1,436 @@
 +// GTA IV PS5 - the hub: the screen the app opens on, before the game
 +// (the PC launcher's settings, driven by the controller), drawn after GTA IV's
 +// own pause menu: tabs across the top in its condensed type, the chosen one in
@@ -28701,6 +28853,7 @@ index 00000000..564cf383
 +#include <vector>
 +
 +#include "hub_install.h"
++#include "hub_style.h"
 +#include "hub_trophies.h"
 +#include "imgui.h"
 +
@@ -28761,6 +28914,12 @@ index 00000000..564cf383
 +  ImFont* menu = nullptr;          // (a face's handle: its largest size)
 +  ImFont* menu_regular = nullptr;
 +  std::vector<ImFont*> menu_sizes, menu_regular_sizes;  // ascending
++  // The episodes' tabs: Helvetica Neue Heavy, as their own menus (null when
++  // the app was built without it: their tabs in the menu type), at its sizes.
++  ImFont* tab = nullptr;
++  std::vector<ImFont*> tab_sizes;
++  // The Lost and Damned's scuffs over its tabs (Grunge): white, the alpha how dark.
++  Image grunge;
 +  Image logo;                  // the game's logo
 +  Image hero;                   // the picture behind it all
 +  // Home once an episode is installed: a panel for each game, by the game's
@@ -28780,11 +28939,19 @@ index 00000000..564cf383
 +void AddMenuFonts(ImFontAtlas* atlas, const void* bold, int bold_bytes, const void* regular, int regular_bytes,
 +                  Assets& a);
 +
++// Adds the episodes' tab type (Helvetica Neue Heavy, the file's bytes) at the
++// sizes the tabs are drawn at.
++void AddTabFonts(ImFontAtlas* atlas, const void* data, int bytes, Assets& a);
++
 +// A picture's pixels (RGBA).
 +struct Pixels {
 +  int w = 0, h = 0;
 +  std::vector<unsigned char> rgba;
 +};
++// The Lost and Damned's scuffed type: blotches, specks and scratches over the
++// width of the tabs (white; the alpha is how much darker), the same each time.
++Pixels Grunge(int w, int h);
++constexpr int kGrungeW = 2048, kGrungeH = 96;
 +// At most max_h tall (each pixel the average of those it covers): Home's
 +// pictures need no more than the 4K screen's band.
 +Pixels Shrink(const unsigned char* rgba, int w, int h, int max_h);
@@ -28829,6 +28996,9 @@ index 00000000..564cf383
 +  bool HasMusic() const { return music_; }
 +  // The game is installed (PLAY starts it; else it opens the installer).
 +  bool Installed() const { return state_.installed; }
++  // The game chosen on Home (0 GTA IV, 1 The Lost and Damned, 2 The Ballad of
++  // Gay Tony): the hub has its look and plays its menu music, on every page.
++  int Game() const { return HomeGame(); }
 +  // Installing: the PS5 should stay awake.
 +  bool Busy() const;
 +  void SetHasMusic(bool on) { music_ = on; }
@@ -29034,6 +29204,13 @@ index 00000000..564cf383
 +  float value_in_ = 1, value_dir_ = 0;  // a value, after it changes
 +  float press_ = 0;             // a flash on the focused thing when it's pressed
 +  float hero_x_ = -1;           // the picture drifts sideways with the pages
++  // Each game's share of the look (easing to the one chosen on Home), and
++  // the colours mixed from them for this frame.
++  float theme_[3] = {1, 0, 0};
++  Palette pal_ = GamePalette(0);
++  void Theme();
++  void DrawTabs(int game, float alpha);
++  float ToastShown() const;  // how much the footer's message shows (0..1)
 +  bool leaving_ = false;        // PLAY: fading out
 +  float leave_ = 0;
 +  float scroll_f_ = 0, scroll_px_ = 0;  // the page's list: its scroll, shown and wanted
@@ -29092,14 +29269,14 @@ index 00000000..564cf383
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
 new file mode 100644
-index 00000000..323a08c8
+index 00000000..ce9ae74d
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
-@@ -0,0 +1,447 @@
+@@ -0,0 +1,461 @@
 +// GTA IV PS5 - the hub on the console (see hub_ui.h):
 +// shown before the game is set up (ReXApp::OnFinalizePaths, asynchronous),
-+// driven by the DualSense through scePad, with the menu music (hub/music,
-+// a random song first, then the next), and PLAY resumes the start.
++// driven by the DualSense through scePad, with each game's menu music
++// (hub/music) and the menu sounds (hub/sfx), and PLAY resumes the start.
 +#if defined(__PROSPERO__)
 +
 +#include "ps5_hub.h"
@@ -29140,7 +29317,8 @@ index 00000000..323a08c8
 +}
 +
 +// The fonts, built into the app (fonts/: Oswald and Inter under the SIL Open
-+// Font License, TeX Gyre Heros Cn under the GUST Font License).
++// Font License, TeX Gyre Heros Cn under the GUST Font License; Helvetica Neue
++// Heavy, the episodes' tabs, when the build has it: GTA4PS5_TAB_FONT).
 +#define SVR_INCBIN(name, file)                                                        \
 +  __asm__(".section .rodata\n.global " #name "\n.balign 16\n" #name ":\n.incbin \"" \
 +          file "\"\n.global " #name "_end\n" #name "_end:\n.byte 0\n.previous\n");    \
@@ -29152,6 +29330,9 @@ index 00000000..323a08c8
 +SVR_INCBIN(gta4ps5_font_inter_bold, GTA4PS5_FONTS_DIR "/inter-latin-600-normal.ttf")
 +SVR_INCBIN(gta4ps5_font_menu, GTA4PS5_FONTS_DIR "/texgyreheroscn-bold.otf")
 +SVR_INCBIN(gta4ps5_font_menu_regular, GTA4PS5_FONTS_DIR "/texgyreheroscn-regular.otf")
++#if GTA4PS5_TAB_FONT
++SVR_INCBIN(gta4ps5_font_tab, GTA4PS5_FONTS_DIR "/HelveticaNeue-Heavy.ttf")
++#endif
 +
 +namespace gta4ps5::hub {
 +namespace {
@@ -29237,145 +29418,149 @@ index 00000000..323a08c8
 +  std::chrono::steady_clock::time_point repeat_at_{};
 +};
 +
-+// The hub's sound (ps5/sound.h): the menu music, one song after another
-+// from hub/music (a random one first), and the menu sounds (hub_sfx.h, or
-+// hub/sfx/<name>.*).
-+class HubAudio {
++// The menu sounds: three recordings in hub/sfx (click, tab and confirm, as
++// .ogg, .wav, .mp3 or .flac), decoded once and kept in memory. Moving, choosing
++// and changing a setting click; L1 and R1 beep; PLAY (and choosing the game on
++// Home) confirms. Nothing else makes a sound.
++class MenuClips {
 + public:
-+  HubAudio(const fs::path& hub, float level) : level_(level) {
-+    if (!gta4ps5::sound::StartOutput()) REXLOG_WARN("PS5 hub: no audio port for the hub's sounds");
-+    music_ = gta4ps5::sound::NewVoice();
-+    for (auto& v : sfx_) v = gta4ps5::sound::NewVoice();
-+    for (int k = 0; k <= int(Sound::kError); ++k) {
-+      const Sound s = Sound(k);
-+      for (const char* ext : {".wav", ".mp3", ".flac", ".ogg"}) {
-+        const auto file = hub / "sfx" / (std::string(SoundName(s)) + ext);
-+        std::error_code ec;
-+        if (fs::is_regular_file(file, ec)) {
-+          files_[k] = file;
-+          break;
-+        }
-+      }
-+      if (files_[k].empty()) synth_[k] = std::make_shared<const std::vector<float>>(SynthSound(s));
++  explicit MenuClips(const fs::path& hub) {
++    const char* names[] = {"click", "tab", "confirm"};
++    for (int c = 0; c < 3; ++c) clips_[c] = Decode(hub / "sfx", names[c]);
++  }
++  std::shared_ptr<const std::vector<float>> For(Sound s) const {
++    switch (s) {
++      case Sound::kPage: return clips_[1];
++      case Sound::kStart: return clips_[2];
++      case Sound::kError: return nullptr;
++      default: return clips_[0];
 +    }
-+    // the songs (by name), and a random one to start with
-+    std::error_code ec;
-+    for (fs::directory_iterator it(hub / "music", ec), end; !ec && it != end; it.increment(ec))
-+      if (it->is_regular_file(ec) && gta4ps5::sound::CanOpen(it->path())) songs_.push_back(it->path());
-+    std::sort(songs_.begin(), songs_.end());
-+    if (!songs_.empty()) {
-+      const uint64_t t = uint64_t(std::chrono::system_clock::now().time_since_epoch().count()) ^
-+                         uint64_t(std::chrono::steady_clock::now().time_since_epoch().count()) * 0x9E3779B97F4A7C15ull;
-+      song_ = size_t((t >> 17) % songs_.size());
-+      StartSong();
-+    }
-+    REXLOG_INFO("PS5 hub: {} songs in {}", songs_.size(), (hub / "music").string());
-+  }
-+  bool HasMusic() const { return !songs_.empty(); }
-+  std::string Current() const { return songs_.empty() ? std::string() : songs_[song_].stem().string(); }
-+
-+  void Sfx(Sound s) {
-+    const int k = int(s);
-+    std::unique_ptr<gta4ps5::sound::Source> src =
-+        files_[k].empty() ? gta4ps5::sound::Memory(synth_[k]) : gta4ps5::sound::Open(files_[k]);
-+    if (!src) return;
-+    auto* v = sfx_[next_++ % sfx_.size()];  // (a few at once: quick presses overlap)
-+    v->SetVolume(1);
-+    v->Play(std::move(src), false);
-+  }
-+
-+  // R3: the song fades down quickly, then the next one plays. Returns its name.
-+  std::string Next() {
-+    if (songs_.empty() || leaving_) return {};
-+    song_ = (song_ + 1) % songs_.size();
-+    if (switch_in_ <= 0) music_->FadeOut(kSwitchFade);
-+    switch_in_ = kSwitchFade + 0.05f;
-+    return Current();
-+  }
-+
-+  // Every frame: a switch finishing, or a song that ended (the next one
-+  // follows). Returns the name of a song that started by itself (else "").
-+  std::string Tick(float dt) {
-+    if (songs_.empty() || leaving_) return {};
-+    if (switch_in_ > 0) {
-+      switch_in_ -= dt;
-+      if (switch_in_ <= 0) StartSong();
-+      return {};
-+    }
-+    if (!music_->Active()) {  // (it ended, or couldn't be played)
-+      if (++failed_ > int(songs_.size()) * 2) return {};  // (none of them plays: stop trying)
-+      song_ = (song_ + 1) % songs_.size();
-+      StartSong();
-+      return Current();
-+    }
-+    return {};
-+  }
-+
-+  // Settings' Menu Music level (0..1): the song follows it right away.
-+  void SetLevel(float level) {
-+    if (level == level_) return;
-+    level_ = level;
-+    if (!leaving_ && switch_in_ <= 0) music_->SetVolume(level_);
-+  }
-+
-+  void FadeOut() {
-+    leaving_ = true;
-+    music_->FadeOut(0.6f);
 +  }
 +
 + private:
-+  static constexpr float kSwitchFade = 0.35f;
-+
-+  void StartSong() {
-+    auto src = gta4ps5::sound::Open(songs_[song_]);
-+    if (!src) {
-+      REXLOG_WARN("PS5 hub: can't play {}", songs_[song_].string());
-+      return;  // (Tick moves on)
++  static std::shared_ptr<const std::vector<float>> Decode(const fs::path& dir, const char* name) {
++    for (const char* ext : {".ogg", ".wav", ".mp3", ".flac"}) {
++      const fs::path file = dir / (std::string(name) + ext);
++      std::error_code ec;
++      if (!fs::is_regular_file(file, ec)) continue;
++      std::unique_ptr<gta4ps5::sound::Source> src = gta4ps5::sound::Open(file);
++      if (!src) break;
++      auto lr = std::make_shared<std::vector<float>>();
++      std::vector<float> chunk(4096 * 2);
++      while (const size_t n = src->Read(chunk.data(), 4096)) lr->insert(lr->end(), chunk.begin(), chunk.begin() + n * 2);
++      return lr;
 +    }
-+    failed_ = 0;
-+    music_->SetVolume(level_);
-+    music_->Play(std::move(src), songs_.size() == 1);  // (one song: it loops)
-+    REXLOG_INFO("PS5 hub: playing {}", songs_[song_].filename().string());
++    REXLOG_WARN("PS5 hub: no {} sound in {}", name, dir.string());
++    return nullptr;
++  }
++  std::array<std::shared_ptr<const std::vector<float>>, 3> clips_;
++};
++
++// The hub's sound (ps5/sound.h): each game's menu song (hub/music: "GTA IV
++// Menu", "The Lost and Damned Menu", "The Ballad of Gay Tony Menu", any of the
++// four types), all three playing from the start and looping, the one of the
++// game chosen on Home heard: moving to another fades it over without starting
++// either song again. A game without its song has GTA IV's. And the menu
++// sounds (MenuClips).
++class HubAudio {
++ public:
++  HubAudio(const fs::path& hub, float level) : level_(level), clips_(hub) {
++    if (!gta4ps5::sound::StartOutput()) REXLOG_WARN("PS5 hub: no audio port for the hub's sounds");
++    for (auto& v : sfx_) v = gta4ps5::sound::NewVoice();
++    const char* songs[3] = {"GTA IV Menu", "The Lost and Damned Menu", "The Ballad of Gay Tony Menu"};
++    for (int g = 0; g < 3; ++g) {
++      for (const char* ext : {".mp3", ".ogg", ".flac", ".wav"}) {
++        const fs::path file = hub / "music" / (std::string(songs[g]) + ext);
++        std::error_code ec;
++        if (fs::is_regular_file(file, ec)) {
++          names_[g] = file.stem().string();
++          if (auto src = gta4ps5::sound::Open(file)) {
++            music_[g] = gta4ps5::sound::NewVoice();
++            music_[g]->SetVolume(0);
++            music_[g]->Play(std::move(src), true);
++          }
++          break;
++        }
++      }
++      REXLOG_INFO("PS5 hub: {}: {}", songs[g], music_[g] ? "playing" : "none");
++    }
++  }
++  bool HasMusic() const { return music_[0] || music_[1] || music_[2]; }
++  std::string Current() const { return names_[Heard(game_)]; }
++
++  void Sfx(Sound s) {
++    auto clip = clips_.For(s);
++    if (!clip) return;
++    auto* v = sfx_[next_++ % sfx_.size()];  // (a few at once: quick presses overlap)
++    v->SetVolume(1);
++    v->Play(gta4ps5::sound::Memory(std::move(clip)), false);
 +  }
 +
-+  gta4ps5::sound::Voice* music_ = nullptr;
++  // (each game has one song now: no next one)
++  std::string Next() { return {}; }
++
++  // Every frame, with the game chosen on Home: its song up to the Menu Music
++  // level, the others down, over about half a second.
++  void Tick(float dt, int game) {
++    game_ = game;
++    const int heard = Heard(game);
++    for (int g = 0; g < 3; ++g) {
++      if (!music_[g]) continue;
++      const float target = !leaving_ && g == heard ? level_ : 0.0f;
++      gain_[g] += (target - gain_[g]) * (1.0f - std::exp(-dt * 7.0f));
++      if (std::fabs(target - gain_[g]) < 0.002f) gain_[g] = target;
++      music_[g]->SetVolume(gain_[g]);
++    }
++  }
++
++  // Settings' Menu Music level (0..1): the song follows it right away.
++  void SetLevel(float level) { level_ = level; }
++
++  void FadeOut() {
++    leaving_ = true;
++    for (auto* v : music_)
++      if (v) v->FadeOut(0.6f);
++  }
++
++ private:
++  int Heard(int game) const { return game >= 0 && game < 3 && music_[game] ? game : 0; }
++
 +  float level_ = 0.6f;
++  MenuClips clips_;
++  std::array<gta4ps5::sound::Voice*, 3> music_{};
++  std::array<float, 3> gain_{};
++  std::array<std::string, 3> names_;
++  int game_ = 0;
 +  std::array<gta4ps5::sound::Voice*, 6> sfx_{};
 +  size_t next_ = 0;
-+  std::array<fs::path, 8> files_;
-+  std::array<std::shared_ptr<const std::vector<float>>, 8> synth_;
-+  std::vector<fs::path> songs_;
-+  size_t song_ = 0;
-+  float switch_in_ = 0;
-+  int failed_ = 0;
 +  bool leaving_ = false;
 +};
 +
 +// The menu sounds for the game's own dialogs (the on-screen keyboard), after
-+// the hub has gone: made in code, a few voices of their own.
++// the hub has gone: the hub's (MenuClips), a few voices of their own.
 +class MenuSfx {
 + public:
-+  MenuSfx() {
++  explicit MenuSfx(const fs::path& hub) : clips_(hub) {
 +    for (auto& v : voices_) v = gta4ps5::sound::NewVoice();
-+    for (int k = 0; k <= int(Sound::kError); ++k)
-+      synth_[k] = std::make_shared<const std::vector<float>>(SynthSound(Sound(k)));
 +  }
 +  void Play(int k) {
 +    if (k < 0 || k > int(Sound::kError)) return;
++    auto clip = clips_.For(Sound(k));
++    if (!clip) return;
 +    auto* v = voices_[next_++ % voices_.size()];
 +    v->SetVolume(0.85f);
-+    v->Play(gta4ps5::sound::Memory(synth_[k]), false);
++    v->Play(gta4ps5::sound::Memory(std::move(clip)), false);
 +  }
 +
 + private:
++  MenuClips clips_;
 +  std::array<gta4ps5::sound::Voice*, 4> voices_{};
-+  std::array<std::shared_ptr<const std::vector<float>>, 8> synth_;
 +  size_t next_ = 0;
 +};
 +
 +// The game's on-screen keyboard in the hub's style (rex/ui/pad_dialog_style.h).
-+void StyleGameDialogs(const Assets& a) {
-+  static MenuSfx* sfx = new MenuSfx();  // (for the app's life)
++void StyleGameDialogs(const Assets& a, const fs::path& hub) {
++  static MenuSfx* sfx = new MenuSfx(hub);  // (for the app's life)
 +  rex::ui::PadDialogStyle st;
 +  st.title = a.display;
 +  st.body = a.body;
@@ -29413,6 +29598,8 @@ index 00000000..323a08c8
 +      if (!a.home[0].picture) LoadHomePicture(immediate, hub / "hero.png", a.home[0]);
 +    }
 +    if (!a.home[0].logo) a.home[0].logo = a.logo;
++    // The Lost and Damned's scuffs (made here)
++    a.grunge = Texture(immediate, Grunge(kGrungeW, kGrungeH));
 +    // the button pictures (hub/buttons/<name>.png; drawn ones where missing)
 +    const std::pair<uint32_t, const char*> names[] = {
 +        {kCross, "Cross"}, {kCircle, "Circle"},   {kSquare, "Square"},         {kTriangle, "Triangle"}, {kL1, "L1"},
@@ -29423,7 +29610,7 @@ index 00000000..323a08c8
 +    hub_.SetSaveImport(g_save_import);
 +    hub_.SetDisplay(g_display);
 +    hub_.Init(paths, a, GTA4PS5_VERSION);
-+    StyleGameDialogs(a);
++    StyleGameDialogs(a, hub);
 +    audio_ = std::make_unique<HubAudio>(hub, hub_.MusicVolume());
 +    Audio hooks;
 +    hooks.sfx = [this](Sound s) { audio_->Sfx(s); };
@@ -29438,7 +29625,7 @@ index 00000000..323a08c8
 +    if (done_) return;
 +    const Pad pad = pad_.read();
 +    audio_->SetLevel(hub_.MusicVolume());
-+    hub_.NowPlaying(audio_->Tick(io.DeltaTime));
++    audio_->Tick(io.DeltaTime, hub_.Game());
 +    const bool go = hub_.Draw(pad, io.DeltaTime);
 +    // installing: the PS5 stays awake (no rest mode, no screen dimming)
 +    if (hub_.Busy() && (awake_ -= io.DeltaTime) <= 0) {
@@ -29525,6 +29712,10 @@ index 00000000..323a08c8
 +  // the hub's menu type (GTA IV's: a Helvetica Condensed), at its sizes
 +  AddMenuFonts(atlas, gta4ps5_font_menu, int(gta4ps5_font_menu_end - gta4ps5_font_menu), gta4ps5_font_menu_regular,
 +               int(gta4ps5_font_menu_regular_end - gta4ps5_font_menu_regular), g_assets);
++#if GTA4PS5_TAB_FONT
++  // the episodes' tabs (Helvetica Neue Heavy)
++  AddTabFonts(atlas, gta4ps5_font_tab, int(gta4ps5_font_tab_end - gta4ps5_font_tab), g_assets);
++#endif
 +}
 +
 +const Assets& Fonts() { return g_assets; }

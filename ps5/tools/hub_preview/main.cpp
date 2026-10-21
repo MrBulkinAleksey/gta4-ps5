@@ -120,6 +120,9 @@ int main(int argc, char** argv) {
     const auto* bold = read(fonts + "/texgyreheroscn-bold.otf");
     const auto* regular = read(fonts + "/texgyreheroscn-regular.otf");
     AddMenuFonts(io.Fonts, bold->data(), int(bold->size()), regular->data(), int(regular->size()), a);
+    // the episodes' tab type, when it's there
+    const auto* tab = read(fonts + "/HelveticaNeue-Heavy.ttf");
+    if (!tab->empty()) AddTabFonts(io.Fonts, tab->data(), int(tab->size()), a);
   }
   unsigned char* px;
   int fw, fh;
@@ -166,6 +169,7 @@ int main(int argc, char** argv) {
     }
   }
   if (!a.home[0].logo) a.home[0].logo = a.logo;
+  a.grunge = tex(Grunge(kGrungeW, kGrungeH));
   Hub hub;
   Paths paths{app, app + "/native.toml", app + "/UserData"};
   hub.SetImageLoader([](const std::filesystem::path& file) {
