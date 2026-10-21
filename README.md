@@ -4,7 +4,7 @@ A PS5 homebrew port of Grand Theft Auto IV (Xbox 360), built on
 [Liberty Recompiled](https://github.com/OZORDI/LibertyRecomp) by OZORDI and
 [LibertyRecompAndroid](https://github.com/vaduur/LibertyRecompAndroid) by vaduur.
 
-Early beta (0.5b). PS5 port by [@elripalda](https://www.elripalda.com).
+Version 1.0, in testing (1.0 Test 1). PS5 port by [@elripalda](https://www.elripalda.com).
 
 This repo holds the PS5 port: `setup.sh` gets the Liberty Recompiled source
 it's built on and applies `patches/liberty-ps5.patch`, and `ps5/` is the PS5
