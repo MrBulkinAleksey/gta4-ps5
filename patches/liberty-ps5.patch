@@ -26804,10 +26804,10 @@ index 00000000..00324a8c
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..3b9503eb
+index 00000000..be4a42ca
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,2017 @@
+@@ -0,0 +1,2018 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -27403,7 +27403,7 @@ index 00000000..3b9503eb
 +  a.menu_regular = a.menu_regular_sizes.empty() ? nullptr : a.menu_regular_sizes.back();
 +}
 +
-+// Helvetica Neue Heavy for the episodes' tabs, at the sizes they're drawn at
++// Helvetica Neue Heavy for the tabs, at the sizes they're drawn at
 +// (66 or less on a 1080p screen, twice that at 4K). The handle is the largest.
 +void AddTabFonts(ImFontAtlas* atlas, const void* data, int bytes, Assets& a) {
 +  static const ImWchar kLetters[] = {0x0020, 0x007E, 0x00A0, 0x00FF, 0x0152, 0x0153, 0};
@@ -27833,14 +27833,13 @@ index 00000000..3b9503eb
 +}
 +
 +// The tabs in one game's look, faded by `alpha` (two of them while the look
-+// changes). The episodes' in Helvetica Neue Heavy as their menus: The Lost
-+// and Damned's spaced out, grey and the chosen one dark red, scuffed (Grunge);
-+// The Ballad of Gay Tony's each in its colour along the rainbow, the chosen
-+// one white.
++// changes), all three in Helvetica Neue Heavy: GTA IV's grey and the chosen
++// one gold; The Lost and Damned's grey and the chosen one dark red, scuffed
++// (Grunge); The Ballad of Gay Tony's each in its colour along the rainbow, the
++// chosen one white.
 +void Hub::DrawTabs(int game, float alpha) {
 +  constexpr float kSize = 66, kGap = 60;
-+  ImFont* const f = game && a_.tab ? a_.tab : Bold();
-+  const float track = game == 1 && a_.tab ? 0.09f : 0.0f;  // (of the size, between letters)
++  ImFont* const f = a_.tab ? a_.tab : Bold();
 +  const Palette& p = GamePalette(game);
 +  std::vector<std::string> names;
 +  if (installer_) {
@@ -27851,7 +27850,7 @@ index 00000000..3b9503eb
 +  // (longer names in some languages, a wider type: smaller, to fit the page's width)
 +  float total = 0;
 +  for (size_t i = 0; i < names.size(); ++i)
-+    total += TextWidth(f, kSize, names[i], kSize * track) + (i ? kGap : 0);
++    total += TextWidth(f, kSize, names[i]) + (i ? kGap : 0);
 +  const float fit = std::min(1.0f, (kPageR - kPageL) / std::max(1.0f, total));
 +  const float size = kSize * fit, gap = kGap * fit;
 +  float x = kPageL;
@@ -27859,9 +27858,8 @@ index 00000000..3b9503eb
 +    const float lit = installer_ ? 1.0f : tab_lit_[i];
 +    const ImU32 off = game == 2 ? Along(kTbogtTabs, names.size() > 1 ? float(i) / float(names.size() - 1) : 0.0f)
 +                                : p.tab_off;
-+    const float spacing = size * track;
-+    const float w = TextWidth(f, size, names[i], spacing);
-+    TextMid(f, size, x, kTabsY, WithAlpha(Mix(off, p.tab_on, lit), alpha), names[i], 0, spacing);
++    const float w = TextWidth(f, size, names[i]);
++    TextMid(f, size, x, kTabsY, WithAlpha(Mix(off, p.tab_on, lit), alpha), names[i]);
 +    if (game == 1 && a_.grunge) {
 +      // (black over black outside the letters: only they show it)
 +      const float x0 = x - 4, x1 = x + w + 4, y0 = kTabsY - size * 0.62f, y1 = kTabsY + size * 0.46f;
@@ -27914,10 +27912,13 @@ index 00000000..3b9503eb
 +  // At the footer's left, as the game's pause menu has its day, time and
 +  // money: the day, the date and the time. A message takes its place for a
 +  // while (Toast).
++  // (a touch heavier than the regular type: drawn twice, half a pixel apart)
 +  const float message = ToastShown();
-+  if (message < 0.999f)
-+    TextMid(Regular(), 32, kPageL, kHintsY, WithAlpha(pal_.toast, 1 - message),
-+            lang::Clock(int64_t(std::time(nullptr))), 0, 0.6f);
++  if (message < 0.999f) {
++    const std::string clock = lang::Clock(int64_t(std::time(nullptr)));
++    for (const float dx : {0.0f, 0.5f})
++      TextMid(Regular(), 32, kPageL + dx, kHintsY, WithAlpha(pal_.toast, 1 - message), clock, 0, 0.6f);
++  }
 +}
 +
 +float Hub::ToastShown() const {
@@ -28827,7 +28828,7 @@ index 00000000..3b9503eb
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
 new file mode 100644
-index 00000000..de6c6711
+index 00000000..c6f8cf67
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
 @@ -0,0 +1,436 @@
@@ -28914,8 +28915,8 @@ index 00000000..de6c6711
 +  ImFont* menu = nullptr;          // (a face's handle: its largest size)
 +  ImFont* menu_regular = nullptr;
 +  std::vector<ImFont*> menu_sizes, menu_regular_sizes;  // ascending
-+  // The episodes' tabs: Helvetica Neue Heavy, as their own menus (null when
-+  // the app was built without it: their tabs in the menu type), at its sizes.
++  // The tabs: Helvetica Neue Heavy (null when the app was built without it:
++  // the tabs in the menu type), at its sizes.
 +  ImFont* tab = nullptr;
 +  std::vector<ImFont*> tab_sizes;
 +  // The Lost and Damned's scuffs over its tabs (Grunge): white, the alpha how dark.
@@ -28939,8 +28940,8 @@ index 00000000..de6c6711
 +void AddMenuFonts(ImFontAtlas* atlas, const void* bold, int bold_bytes, const void* regular, int regular_bytes,
 +                  Assets& a);
 +
-+// Adds the episodes' tab type (Helvetica Neue Heavy, the file's bytes) at the
-+// sizes the tabs are drawn at.
++// Adds the tabs' type (Helvetica Neue Heavy, the file's bytes) at the sizes
++// the tabs are drawn at.
 +void AddTabFonts(ImFontAtlas* atlas, const void* data, int bytes, Assets& a);
 +
 +// A picture's pixels (RGBA).
@@ -29269,7 +29270,7 @@ index 00000000..de6c6711
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
 new file mode 100644
-index 00000000..ce9ae74d
+index 00000000..bdfaf426
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
 @@ -0,0 +1,461 @@
@@ -29318,7 +29319,7 @@ index 00000000..ce9ae74d
 +
 +// The fonts, built into the app (fonts/: Oswald and Inter under the SIL Open
 +// Font License, TeX Gyre Heros Cn under the GUST Font License; Helvetica Neue
-+// Heavy, the episodes' tabs, when the build has it: GTA4PS5_TAB_FONT).
++// Heavy, the tabs, when the build has it: GTA4PS5_TAB_FONT).
 +#define SVR_INCBIN(name, file)                                                        \
 +  __asm__(".section .rodata\n.global " #name "\n.balign 16\n" #name ":\n.incbin \"" \
 +          file "\"\n.global " #name "_end\n" #name "_end:\n.byte 0\n.previous\n");    \
@@ -29713,7 +29714,7 @@ index 00000000..ce9ae74d
 +  AddMenuFonts(atlas, gta4ps5_font_menu, int(gta4ps5_font_menu_end - gta4ps5_font_menu), gta4ps5_font_menu_regular,
 +               int(gta4ps5_font_menu_regular_end - gta4ps5_font_menu_regular), g_assets);
 +#if GTA4PS5_TAB_FONT
-+  // the episodes' tabs (Helvetica Neue Heavy)
++  // the tabs (Helvetica Neue Heavy)
 +  AddTabFonts(atlas, gta4ps5_font_tab, int(gta4ps5_font_tab_end - gta4ps5_font_tab), g_assets);
 +#endif
 +}

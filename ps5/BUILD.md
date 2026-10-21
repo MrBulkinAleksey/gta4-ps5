@@ -47,10 +47,10 @@ The FidelityFX lines add FSR 3 (the hub's Frame Generation option). They need Wi
 first build compiles about 2,700 motion-vector shader variants, which takes a while.
 Leave those four lines out to build without FSR 3.
 
-The hub draws The Lost and Damned's and The Ballad of Gay Tony's tabs in
-Helvetica Neue Heavy, as those games' menus do. Its licence doesn't allow
-sharing it, so it isn't in this repo: put your own `HelveticaNeue-Heavy.ttf` in
-`ps5/assets/fonts/` before building, or those tabs use the hub's usual type.
+The hub draws its tabs in Helvetica Neue Heavy, as the episodes' menus do.
+Its licence doesn't allow sharing it, so it isn't in this repo: put your own
+`HelveticaNeue-Heavy.ttf` in `ps5/assets/fonts/` before building, or the tabs
+use the hub's usual type.
 
 
 ## On the PS5
