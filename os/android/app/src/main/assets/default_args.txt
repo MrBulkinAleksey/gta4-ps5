@@ -1,0 +1,17 @@
+--log_level=warn
+# Display settings (resolution, upscaler, VSync, frame limit, anti-aliasing,
+# draw distance, shadows, reflections, motion blur) belong to the in-game
+# Display menu: a line here would override its saved choice on every launch.
+--gta4_dynamic_draw_distance=true
+--gta4_dynamic_draw_distance_min=0.80
+--gta4_shadow_distance_scale=1.0
+--gta4_reflection_capture_distance=near
+--gta4_traffic_density_scale=0.4
+--gta4_parked_car_density_scale=0.4
+--gta4_ped_density_scale=0.4
+--gta4_scenario_ped_density_scale=0.4
+--gta4_profile_native_detailed_cpu=false
+--gta4_profile_native_detailed_gpu=false
+--gta4_native_max_queued_frames=3
+# The 30 FPS guard (environment reflection rate only now) is off by default.
+--gta4_fps_guard=0

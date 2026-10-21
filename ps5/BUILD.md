@@ -15,9 +15,13 @@ No game files are needed to build: the recompiled code is already in the repo.
 ## 1. Source
 
 ```
+git clone https://github.com/elripalda/gta4-ps5
+cd gta4-ps5
 ./setup.sh
-cd LibertyRecompAndroid
 ```
+
+`setup.sh` fetches the third-party code the build uses (git submodules) and
+applies the PS5's patches to FFmpeg and libmspack.
 
 ## 2. Build
 

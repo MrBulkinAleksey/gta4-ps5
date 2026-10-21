@@ -29,6 +29,12 @@ The easiest way to play is **[Recomp Store](https://recompstore.com)**. It insta
 - For the episodes, their package from your Xbox 360
 - About 17 GB free
 
+> [!TIP]
+> ### 💙 Enjoying the port?
+> If you've gotten some enjoyment out of this project, donations and love are always appreciated. Every bit helps keep these ports growing. Thank you!
+>
+> [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/ripalda)
+
 ## Install by hand
 1. Download `PPSA94004-1.0.zip` from [Releases](../../releases) and copy the `PPSA94004` folder to `/data/homebrew/` on your PS5.
 2. Put your disc image and Title Update 8 in its `install` folder:
@@ -56,8 +62,19 @@ Copy your saves off the 360 (`Content/<your profile>/545407F2/00000001/`) into `
 | Triangle | Reset the settings |
 | Circle | Back to Home |
 
+## Known issues
+- The busiest streets can drop below 60 FPS at 4K.
+- Only the USA disc and Title Update 8 are supported.
+
+## Reporting a problem
+Report bugs on the **[RIPALDA Discord](https://discord.gg/GgDE5Vynyu)**. Send the newest file from `/data/homebrew/PPSA94004/logs/`, with what you were doing and your settings.
+
 ## Building from source
-The port is a patch over LibertyRecompAndroid plus the `ps5` folder. `setup.sh` gets the source at the commit it's built on and applies the patch. Build steps are in [ps5/BUILD.md](ps5/BUILD.md). You don't need the game to build it, and nothing from the game is stored here.
+The whole source is in this repository. Its root is [LibertyRecompAndroid](https://github.com/vaduur/LibertyRecompAndroid) as vaduur made it (his README is [README-LibertyRecompAndroid.md](README-LibertyRecompAndroid.md), Liberty Recompiled's is [README_UPSTREAM.md](README_UPSTREAM.md)), with the PS5 changes marked `[ps5 port]`. The PS5 port itself is in [`ps5/`](ps5) and `glue/rexglue-sdk-main/gta4-recomp/src/ps5/`: the hub, the PS5 start-up, the trophies, the build and the packaging. [`patches/liberty-ps5.patch`](patches/liberty-ps5.patch) has every change against LibertyRecompAndroid in one file.
+
+Run `./setup.sh` to fetch the third-party code (git submodules) and patch it, then follow [ps5/BUILD.md](ps5/BUILD.md). You don't need the game to build it, and nothing from the game is stored here. The hub's Helvetica Neue Heavy can't be shared, so put your own `HelveticaNeue-Heavy.ttf` in `ps5/assets/fonts/` (without it the tabs use the hub's usual type).
+
+A few big reference copies in LibertyRecompAndroid's `tools/` aren't used to build and are left out here: Ghidra, FusionFix's source, the FidelityFX SDK and a copy of Xenia. They're in LibertyRecompAndroid and their own projects.
 
 ## Credits
 - **[OZORDI](https://github.com/OZORDI)**: [Liberty Recompiled](https://github.com/OZORDI/LibertyRecomp), the GTA IV recompilation this is built on, with its contributors
