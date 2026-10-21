@@ -781,7 +781,7 @@ index 68fcf860..e8c5ee1c 100644
    c.replay = list != 0; c.command_list = list; c.replay_ordinal = ordinal;
    if (replay_live) c.replay_live = *replay_live;
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_hooks.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_hooks.cpp
-index b63d73e6..a9cf9aff 100644
+index b63d73e6..35ac0f92 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_hooks.cpp
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_frontend_hooks.cpp
 @@ -33,6 +33,7 @@
@@ -835,7 +835,7 @@ index b63d73e6..a9cf9aff 100644
      return false;
    }
    if (target_screen) {
-@@ -1758,22 +1779,62 @@ bool SwitchPauseTab(PPCContext& parent, uint8_t* base, policy::PauseTabDirection
+@@ -1758,22 +1779,74 @@ bool SwitchPauseTab(PPCContext& parent, uint8_t* base, policy::PauseTabDirection
    if (policy::ShouldRestorePrimaryBeforeSwitch(g_display_menu.page, target, kDisplayScreen)) {
      PublishPrimaryPage(base);
    }
@@ -877,6 +877,11 @@ index b63d73e6..a9cf9aff 100644
 +// (gta4_start_episode) goes the same way, the question answered Yes unseen.
 +constexpr uint32_t kNewEpisodeQuestion = 52;
 +constexpr uint32_t kNewEpisodeAddress = 0x82BF9864;
++// The episode the session starts in (sub_82142230 hands it to sub_82141F00,
++// which starts it and loads its latest save). The start's first step sets it
++// to the episode the profile played last (sub_8221B198, from the profile's
++// flags) before asking sub_82241428; the question's Yes sets it to the new one.
++constexpr uint32_t kStartEpisodeAddress = 0x82BF9858;
 +int32_t g_answer_yes_for = -1;  // (the episode whose question is answered)
 +bool g_start_episode_used = false;  // (the start only: later checks are the game's)
 +}  // namespace
@@ -890,7 +895,14 @@ index b63d73e6..a9cf9aff 100644
 +    g_start_episode_used = true;
 +    if (start == 0) {
 +      ctx.r3.s64 = -1;
-+      REXLOG_INFO("GTA IV episode startup: GTA IV chosen (retail result {} not asked)", retail_episode);
++      // [ps5 port] No question, and GTA IV itself: left alone, the session
++      // started in the episode last played (The Ballad of Gay Tony's latest
++      // save, with GTA IV chosen on Home).
++      const int32_t profile_episode = static_cast<int32_t>(REX_LOAD_U32(kStartEpisodeAddress));
++      REX_STORE_U32(kStartEpisodeAddress, 0);
++      REXLOG_INFO("GTA IV episode startup: GTA IV chosen (retail result {} not asked; the profile's last "
++                  "episode {} not started)",
++                  retail_episode, profile_episode);
 +    } else {
 +      ctx.r3.s64 = start;
 +      g_answer_yes_for = start;
@@ -901,7 +913,7 @@ index b63d73e6..a9cf9aff 100644
    const std::string policy = REXCVAR_GET(gta4_episode_startup_prompt);
  
    if (policy == "off") {
-@@ -1842,6 +1903,14 @@ extern "C" void sub_8223F9F0(PPCContext& ctx, uint8_t* base) {
+@@ -1842,6 +1915,14 @@ extern "C" void sub_8223F9F0(PPCContext& ctx, uint8_t* base) {
    // and the save-block serializer. Observe them without changing save flow.
    thread_local uint32_t previous_reason = std::numeric_limits<uint32_t>::max();
    const uint32_t reason = ctx.r3.u32;
