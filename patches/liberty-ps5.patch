@@ -22612,10 +22612,10 @@ index 00000000..a631ae40
 +*/
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
 new file mode 100644
-index 00000000..84cb72c1
+index 00000000..e43fbcfc
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.cpp
-@@ -0,0 +1,1127 @@
+@@ -0,0 +1,1163 @@
 +// GTA IV PS5 - the hub's check of the game's files and its installer (see
 +// hub_install.h). The install itself is LibertyRecomp's (install/), written by
 +// the installer payload (ps5/payload/installer) when a payload loader runs it.
@@ -22676,16 +22676,50 @@ index 00000000..84cb72c1
 +  return !std::memcmp(magic, "CON ", 4) || !std::memcmp(magic, "LIVE", 4) || !std::memcmp(magic, "PIRS", 4);
 +}
 +
-+// A content package's kind, from its header: GTA IV's title update or an
-+// episode (marketplace content), or something else.
++// A content package's kind, from its header (one small read): GTA IV's title
++// update or an episode (marketplace content), or something else; for an
++// episode, which, from the name in the header (-1: not known from it).
++// (Opening an episode's package reads its whole file table: seconds, never
++// done here, as the hub waits on this.)
 +enum class PackageKind { kOther, kUpdate, kEpisode };
-+PackageKind KindOf(const fs::path& file) {
++struct PackageInfo {
++  PackageKind kind = PackageKind::kOther;
++  int episode = -1;
++};
++PackageInfo Inspect(const fs::path& file) {
++  PackageInfo info;
 +  const auto header = rex::filesystem::StfsContainerDevice::ReadPackageHeader(file);
-+  if (!header || uint32_t(header->metadata.execution_info.title_id) != 0x545407F2) return PackageKind::kOther;
++  if (!header || uint32_t(header->metadata.execution_info.title_id) != 0x545407F2) return info;
 +  const auto type = static_cast<uint32_t>(static_cast<rex::system::XContentType>(header->metadata.content_type));
-+  if (type == 0x000B0000) return PackageKind::kUpdate;
-+  if (type == 0x00000002) return PackageKind::kEpisode;
-+  return PackageKind::kOther;
++  if (type == 0x000B0000) {
++    info.kind = PackageKind::kUpdate;
++  } else if (type == 0x00000002) {
++    info.kind = PackageKind::kEpisode;
++    std::string name;
++    for (const char16_t c : header->metadata.display_name(rex::system::XLanguage::kEnglish))
++      name += c < 128 ? char(std::tolower(int(c))) : ' ';
++    if (name.find("lost") != std::string::npos && name.find("damned") != std::string::npos) info.episode = 0;
++    else if (name.find("gay tony") != std::string::npos || name.find("ballad") != std::string::npos) info.episode = 1;
++  }
++  return info;
++}
++
++// A folder of an episode's files (the package's contents copied out), at its
++// top or one folder down: which episode (-1: none). Only a few file checks.
++int FolderEpisode(const fs::path& dir) {
++  auto at = [](const fs::path& d) {
++    std::error_code ec;
++    if (!fs::is_regular_file(d / "setup2.xml", ec) || !fs::is_regular_file(d / "content.dat", ec)) return -1;
++    const bool e1 = fs::is_regular_file(d / "e1_audio.xml", ec), e2 = fs::is_regular_file(d / "e2_audio.xml", ec);
++    return e1 && !e2 ? 0 : e2 && !e1 ? 1 : -1;
++  };
++  if (const int e = at(dir); e >= 0) return e;
++  for (const auto& sub : ListDir(dir)) {
++    std::error_code ec;
++    if (sub.is_directory(ec))
++      if (const int e = at(sub.path()); e >= 0) return e;
++  }
++  return -1;
 +}
 +
 +uint64_t FolderSize(const fs::path& dir) {
@@ -22756,12 +22790,7 @@ index 00000000..84cb72c1
 +        continue;
 +      }
 +      // an episode's files copied out of its package
-+      gta4::install::EpisodePlan plan;
-+      std::string why;
-+      if (gta4::install::PlanEpisode(p, plan, why)) {
-+        const int k = int(plan.episode);
-+        if (s.episode[k].empty()) s.episode[k] = p, s.episode_bytes[k] = plan.copy_bytes;
-+      }
++      if (const int k = FolderEpisode(p); k >= 0 && s.episode[k].empty()) s.episode[k] = p, s.episode_bytes[k] = FolderSize(p);
 +      continue;
 +    }
 +    if (!e.is_regular_file(ec)) continue;
@@ -22772,19 +22801,13 @@ index 00000000..84cb72c1
 +    } else if (ext == ".xexp" || name.rfind("tu_", 0) == 0) {
 +      if (s.update.empty()) s.update = p, s.update_bytes = size;
 +    } else if (IsPackage(p)) {
-+      // (what it is, from its header: an episode is opened to see which)
-+      switch (KindOf(p)) {
-+        case PackageKind::kEpisode: {
-+          gta4::install::EpisodePlan plan;
-+          std::string why;
-+          if (gta4::install::PlanEpisode(p, plan, why)) {
-+            const int k = int(plan.episode);
-+            if (s.episode[k].empty()) s.episode[k] = p, s.episode_bytes[k] = size;
-+          } else {
-+            REXLOG_WARN("PS5 hub: {} isn't an episode the game takes: {}", p.filename().string(), why);
-+          }
++      // (what it is, from its header)
++      const PackageInfo info = Inspect(p);
++      switch (info.kind) {
++        case PackageKind::kEpisode:
++          if (info.episode < 0) s.other_episodes.push_back(p);  // (opened when an episode is installed)
++          else if (s.episode[info.episode].empty()) s.episode[info.episode] = p, s.episode_bytes[info.episode] = size;
 +          break;
-+        }
 +        case PackageKind::kUpdate:
 +          if (s.update.empty()) s.update = p, s.update_bytes = size;
 +          break;
@@ -23576,6 +23599,19 @@ index 00000000..84cb72c1
 +  void RunEpisode() {
 +    const char* name = EpisodeName(episode);
 +    episode_source = found.episode[episode];
++    // (a package whose name didn't say which episode: opened to see)
++    for (size_t i = 0; episode_source.empty() && i < found.other_episodes.size(); ++i) {
++      gta4::install::EpisodePlan plan;
++      std::string why;
++      if (gta4::install::PlanEpisode(found.other_episodes[i], plan, why) && int(plan.episode) == episode)
++        episode_source = found.other_episodes[i];
++    }
++    if (!episode_source.empty()) {
++      std::error_code ec;
++      std::lock_guard lock(m);
++      st.source = episode_source.filename().string();
++      st.source_bytes = fs::is_directory(episode_source, ec) ? FolderSize(episode_source) : fs::file_size(episode_source, ec);
++    }
 +    REXLOG_INFO("PS5 installer: episode {} from '{}'", name, episode_source.string());
 +    std::string reason;
 +    if (!gta4::install::IsInstallReady(GameRoot(app), &reason)) {
@@ -23745,10 +23781,10 @@ index 00000000..84cb72c1
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h
 new file mode 100644
-index 00000000..8a6086f0
+index 00000000..cb123449
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_install.h
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,134 @@
 +// GTA IV PS5 - the hub's check of the game's files, and its installer: the
 +// game is installed from the disc image and Title Update 8 in the app's
 +// install folder; after that it runs from UserData/LibertyRecomp/game. The
@@ -23812,6 +23848,7 @@ index 00000000..8a6086f0
 +  uint64_t disc_bytes = 0, update_bytes = 0;
 +  fs::path episode[kEpisodeCount];
 +  uint64_t episode_bytes[kEpisodeCount] = {};
++  std::vector<fs::path> other_episodes;  // episode packages whose header's name doesn't say which
 +};
 +Sources Find(const fs::path& app);
 +
@@ -23846,6 +23883,8 @@ index 00000000..8a6086f0
 +  struct Status {
 +    Phase phase = Phase::kChecking;
 +    std::string disc;     // what the disc image is ("USA  ·  Retail 1.00"), or the episode's package
++    std::string source;     // an episode's package (its file name), once found
++    uint64_t source_bytes = 0;
 +    std::string problem;  // why it can't install, or why the install stopped
 +    // installing: 1 copying from the disc image, 2 unpacking the archives,
 +    // 3 checking the installed game and putting it in place
@@ -23882,10 +23921,10 @@ index 00000000..8a6086f0
 +}  // namespace gta4ps5::hub::install
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
 new file mode 100644
-index 00000000..1c9c60c2
+index 00000000..d0f39c4b
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_installer_page.cpp
-@@ -0,0 +1,375 @@
+@@ -0,0 +1,376 @@
 +// GTA IV PS5 - the hub's installer (see hub_ui.h, hub_install.h): PLAY
 +// opens it while the game isn't installed, and the Episodes page for an
 +// episode. It shows what's in install/ and the disc image's (or the episode
@@ -23943,7 +23982,7 @@ index 00000000..1c9c60c2
 +void Hub::CloseInstaller() {
 +  installer_ = false;
 +  job_.reset();
-+  state_ = install::Look(paths_.app);
++  LookAgain();
 +  page_in_ = 0;
 +  page_dir_ = -1;
 +}
@@ -23998,7 +24037,7 @@ index 00000000..1c9c60c2
 +      case Phase::kFailed: Play(Sound::kError); break;
 +      case Phase::kDone:
 +        Play(Sound::kOn);
-+        state_ = install::Look(paths_.app);
++        LookAgain();
 +        break;
 +      default: break;
 +    }
@@ -24015,8 +24054,10 @@ index 00000000..1c9c60c2
 +  }
 +  const install::Sources& found = job_->Found();
 +  const int ep = installer_episode_;
-+  const uint64_t needed =
-+      ep >= 0 ? found.episode_bytes[ep] + (256ull << 20) : install::SpaceNeeded(found.disc_bytes);
++  // (an episode: its package as the installer found it, else as the folder's scan did)
++  const std::string episode_file = ep < 0 ? std::string() : !st.source.empty() ? st.source : found.episode[ep].filename().string();
++  const uint64_t episode_bytes = ep < 0 ? 0 : st.source_bytes ? st.source_bytes : found.episode_bytes[ep];
++  const uint64_t needed = ep >= 0 ? episode_bytes + (256ull << 20) : install::SpaceNeeded(found.disc_bytes);
 +
 +  // ---- the setup: what's there, and whether it can install
 +  if (st.phase == Phase::kChecking || st.phase == Phase::kReady || st.phase == Phase::kProblem) {
@@ -24024,10 +24065,9 @@ index 00000000..1c9c60c2
 +    float y = kListY + 130;
 +    if (ep >= 0) {
 +      Heading(T(install::EpisodeName(ep)), T("One time only: the episode is copied off its Xbox 360 package."));
-+      const bool bad = st.phase == Phase::kProblem && (found.episode[ep].empty() || st.disc.empty());
-+      Row3(y, "Episode Package", found.episode[ep].filename().string(),
-+           checking ? kRowChecking : bad ? kRowBad : kRowOk,
-+           checking ? T("Checking") : bad ? T(found.episode[ep].empty() ? "Missing" : "Can't use") : st.disc);
++      const bool bad = st.phase == Phase::kProblem && (episode_file.empty() || st.disc.empty());
++      Row3(y, "Episode Package", episode_file, checking ? kRowChecking : bad ? kRowBad : kRowOk,
++           checking ? T("Checking") : bad ? T(episode_file.empty() ? "Missing" : "Can't use") : st.disc);
 +      y += 110;
 +    } else {
 +      Heading(T("Your game files"), T("One time only: the game is copied off your Xbox 360 disc image."));
@@ -26139,16 +26179,17 @@ index 00000000..26b22864
 +}  // namespace gta4ps5::trophies
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies_page.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies_page.cpp
 new file mode 100644
-index 00000000..ebe44a36
+index 00000000..a24e8a62
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_trophies_page.cpp
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,207 @@
 +// GTA IV PS5 - the hub's Trophies page (see hub_ui.h, hub_trophies.h):
 +// how far along you are, then the trophies - earned (newest first), then not
 +// yet - with the focused one's details.
 +#include <algorithm>
 +#include <cmath>
 +#include <ctime>
++#include <future>
 +#include <string>
 +
 +#include "hub_style.h"
@@ -26167,7 +26208,13 @@ index 00000000..ebe44a36
 +}  // namespace
 +
 +void Hub::LoadTrophies() {
-+  trophies_ = trophies::Load(paths_.user_data);
++  if (trophies_load_.valid()) return;  // (one at a time)
++  trophies_load_ =
++      std::async(std::launch::async, [user_data = paths_.user_data] { return trophies::Load(user_data); });
++}
++
++void Hub::TakeTrophies(trophies::List list) {
++  trophies_ = std::move(list);
 +  trophy_items_.clear();
 +  if (!trophies_.loaded) return;
 +  const auto& all = trophies_.trophies;
@@ -26193,6 +26240,10 @@ index 00000000..ebe44a36
 +Image Hub::TrophyPicture(int index) {
 +  const uint32_t key = index < 0 ? 0 : std::max(1u, trophies_.trophies[size_t(index)].image_id);
 +  if (auto it = trophy_pictures_.find(key); it != trophy_pictures_.end()) return it->second;
++  // (two a frame at most: a page of them at once held the hub up when the
++  // page first came by; the rest show the frame after)
++  if (pictures_this_frame_ >= 2) return Image{};
++  ++pictures_this_frame_;
 +  Image img;
 +  if (load_image_)
 +    img = load_image_(index < 0 ? trophies::TitleIconFile(paths_.user_data)
@@ -26341,10 +26392,10 @@ index 00000000..ebe44a36
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..f8afcf03
+index 00000000..894cfa1d
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1484 @@
+@@ -0,0 +1,1509 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -26352,6 +26403,7 @@ index 00000000..f8afcf03
 +#include <sys/stat.h>
 +
 +#include <algorithm>
++#include <chrono>
 +#include <cctype>
 +#include <cmath>
 +#include <cstdio>
@@ -26634,12 +26686,11 @@ index 00000000..f8afcf03
 +  state_ = install::Look(paths_.app);
 +}
 +
-+void Hub::LoadSaves() {
-+  save_items_.clear();
-+  backups_.clear();
++Hub::SavesScan Hub::ScanSaves(const Paths& paths, const std::function<int()>& pending) {
++  SavesScan out;
 +  std::error_code ec;
 +  // UserData/<profile>/<title>/<content type>/<name>: one save each
-+  for (const fs::path& profile : Profiles(paths_.user_data)) {
++  for (const fs::path& profile : Profiles(paths.user_data)) {
 +    for (const auto& title : ListDir(profile)) {
 +      if (!title.is_directory(ec) || !Hex(title.path().filename().string(), 8)) continue;
 +      for (const auto& type : ListDir(title.path())) {
@@ -26658,21 +26709,33 @@ index 00000000..f8afcf03
 +          s.kind = t == "00000001" ? "Saved game" : "Game data";
 +          s.bytes = FolderBytes(pkg.path(), &s.files);
 +          s.modified = NewestIn(pkg.path());
-+          save_items_.push_back(std::move(s));
++          out.saves.push_back(std::move(s));
 +        }
 +      }
 +    }
 +  }
-+  std::sort(save_items_.begin(), save_items_.end(), [](const SaveItem& a, const SaveItem& b) { return a.name < b.name; });
-+  for (const auto& e : ListDir(paths_.app / "SaveBackups")) {
++  std::sort(out.saves.begin(), out.saves.end(), [](const SaveItem& a, const SaveItem& b) { return a.name < b.name; });
++  for (const auto& e : ListDir(paths.app / "SaveBackups")) {
 +    if (!e.is_directory(ec)) continue;
 +    Backup b;
 +    b.name = e.path().filename().string();
 +    b.bytes = FolderBytes(e.path(), &b.files);
-+    backups_.push_back(std::move(b));
++    out.backups.push_back(std::move(b));
 +  }
 +  // newest first (their names start with the date)
-+  std::sort(backups_.begin(), backups_.end(), [](const Backup& a, const Backup& b) { return a.name > b.name; });
++  std::sort(out.backups.begin(), out.backups.end(), [](const Backup& a, const Backup& b) { return a.name > b.name; });
++  out.pending = pending ? pending() : 0;
++  return out;
++}
++
++// (in the background: Draw takes the lists when they're made)
++void Hub::LoadSaves() {
++  if (saves_scan_.valid()) {
++    saves_again_ = true;
++    return;
++  }
++  saves_scan_ = std::async(std::launch::async,
++                           [paths = paths_, pending = save_import_.pending] { return ScanSaves(paths, pending); });
 +}
 +
 +void Hub::BackUpSaves(const std::string& why) {
@@ -27103,8 +27166,8 @@ index 00000000..f8afcf03
 +    }
 +    scroll_px_ = std::clamp(target, 0.0f, std::max(0.0f, total - view));
 +  }
-+  Ease(scroll_f_, scroll_px_, 18);
-+  Ease(focus_y_, rows[size_t(sel_row)].y, 24);
++  Ease(scroll_f_, scroll_px_, 28);
++  Ease(focus_y_, rows[size_t(sel_row)].y, 36);
 +  dl_->PushClipRect(P(0, y0 - 6), P(kW, y0 + view), true);
 +  for (size_t k = 0; k < rows.size(); ++k) {
 +    const Row& row = rows[k];
@@ -27162,7 +27225,7 @@ index 00000000..f8afcf03
 +  const float fit = std::min(1.0f, (kPageR - kPageL) / std::max(1.0f, total));
 +  const float size = kSize * fit, gap = kGap * fit;
 +  for (int i = 0; i < kTabCount; ++i) {
-+    Ease(tab_lit_[i], i == tab_ ? 1.0f : 0.0f, 16);
++    Ease(tab_lit_[i], i == tab_ ? 1.0f : 0.0f, 26);
 +    const char* name = T(kTabNames[i]);
 +    TextMid(Bold(), size, x, kTabsY, Mix(Rgba(148, 148, 148), kAccent, tab_lit_[i]), name);
 +    x += TextWidth(Bold(), size, name) + gap;
@@ -27767,15 +27830,28 @@ index 00000000..f8afcf03
 +  panel_in_ = 1;
 +  panel_item_ = item_[tab_];
 +  // (what these pages show can change while the hub is open: looked at again)
-+  if (tab == kSavesTab) {
-+    LoadSaves();
-+    pending_imports_ = save_import_.pending ? save_import_.pending() : 0;
-+  }
++  if (tab == kSavesTab) LoadSaves();
 +  if (tab == kTrophiesTab) LoadTrophies();
-+  if (tab == kEpisodesTab) state_ = install::Look(paths_.app);
++  if (tab == kEpisodesTab) LookAgain();
++}
++
++void Hub::LookAgain() {
++  if (looking_.valid()) return;  // (one at a time)
++  looking_ = std::async(std::launch::async, [app = paths_.app] { return install::Look(app); });
 +}
 +
 +bool Hub::Draw(const Pad& pad, float dt) {
++  if (looking_.valid() && looking_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) state_ = looking_.get();
++  if (saves_scan_.valid() && saves_scan_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
++    SavesScan scan = saves_scan_.get();
++    save_items_ = std::move(scan.saves);
++    backups_ = std::move(scan.backups);
++    pending_imports_ = scan.pending;
++    if (saves_again_) saves_again_ = false, LoadSaves();
++  }
++  if (trophies_load_.valid() && trophies_load_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
++    TakeTrophies(trophies_load_.get());
++  pictures_this_frame_ = 0;
 +  dt_ = std::clamp(dt, 0.0f, 0.1f);
 +  time_ += dt_;
 +  toast_time_ = std::max(0.0f, toast_time_ - dt_);
@@ -27785,8 +27861,8 @@ index 00000000..f8afcf03
 +    Play(Sound::kStart);
 +  }
 +  if (item_[tab_] != panel_item_) panel_item_ = item_[tab_], panel_in_ = 0;
-+  Ease(panel_in_, 1, 10);
-+  Ease(value_in_, 1, 12);
++  Ease(panel_in_, 1, 16);
++  Ease(value_in_, 1, 18);
 +  Ease(press_, 0, 9);
 +  const ImVec2 size = ImGui::GetIO().DisplaySize;
 +  s_ = std::min(size.x / kW, size.y / kH);
@@ -27797,7 +27873,7 @@ index 00000000..f8afcf03
 +  DrawTopBar();
 +  // the page comes up quickly (the game's menu just switches), from a touch
 +  // to the side it came from
-+  Ease(page_in_, 1, 15);
++  Ease(page_in_, 1, 24);
 +  const int first = dl_->VtxBuffer.Size;
 +  const float shift = (1 - page_in_) * 14 * page_dir_;
 +  ox_ += shift * s_;
@@ -27831,10 +27907,10 @@ index 00000000..f8afcf03
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
 new file mode 100644
-index 00000000..9e268c73
+index 00000000..4124d9e3
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.h
-@@ -0,0 +1,349 @@
+@@ -0,0 +1,370 @@
 +// GTA IV PS5 - the hub: the screen the app opens on, before the game
 +// (the PC launcher's settings, driven by the controller), drawn after GTA IV's
 +// own pause menu: tabs across the top in its condensed type, the chosen one in
@@ -27847,6 +27923,7 @@ index 00000000..9e268c73
 +// screen, reads the DualSense, plays the music and starts the game.
 +#pragma once
 +
++#include <future>
 +#include <cstdint>
 +#include <filesystem>
 +#include <functional>
@@ -27998,6 +28075,18 @@ index 00000000..9e268c73
 +    uint32_t files = 0;
 +    uint64_t bytes = 0;
 +  };
++  // The Saves page's lists, made off the hub's thread: every save and backup
++  // folder walked for its size (a backup is a whole copy of the saves), which
++  // held the hub up each time the page came by.
++  struct SavesScan {
++    std::vector<SaveItem> saves;
++    std::vector<Backup> backups;
++    int pending = 0;  // Xbox 360 saves waiting in import/
++  };
++  static SavesScan ScanSaves(const Paths& paths, const std::function<int()>& pending);
++  std::future<SavesScan> saves_scan_;
++  int pictures_this_frame_ = 0;  // trophy pictures loaded this frame
++  bool saves_again_ = false;  // (asked for again while one was being made)
 +  // A row of a list: an item, or a heading over the next ones.
 +  struct Row {
 +    int item = -1;  // -1: a heading
@@ -28047,7 +28136,11 @@ index 00000000..9e268c73
 +    int index;  // in trophies_.trophies; -1: the platinum
 +    int group;  // 0 earned, 1 not yet
 +  };
++  // The trophies read again (when the page comes by), off the hub's thread:
++  // the page takes them when they're there (TakeTrophies).
 +  void LoadTrophies();
++  void TakeTrophies(trophies::List list);
++  std::future<trophies::List> trophies_load_;
 +  void DrawTrophies();
 +  float TrophySummary();  // returns the y under it
 +  void TrophyIcon(int index, float x, float y, float size, float over);
@@ -28147,6 +28240,10 @@ index 00000000..9e268c73
 +  std::unique_ptr<install::Job> job_;
 +  bool installer_ = false;
 +  install::Job::Phase job_phase_ = install::Job::Phase::kChecking;
++  // The game's files looked at again, off the hub's thread (the drive can be
++  // slow): state_ takes the answer when it's there.
++  std::future<install::State> looking_;
++  void LookAgain();
 +  int installer_episode_ = -1;  // what the installer installs: the game (-1) or an episode
 +  float shown_progress_ = 0;
 +  uint64_t free_space_ = 0;
@@ -28186,7 +28283,7 @@ index 00000000..9e268c73
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
 new file mode 100644
-index 00000000..1e18d425
+index 00000000..9d91f1d3
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/ps5_hub.cpp
 @@ -0,0 +1,403 @@
@@ -28304,15 +28401,15 @@ index 00000000..1e18d425
 +    Pad p;
 +    p.held = b;
 +    p.pressed = b & ~last_;
-+    // (held directions repeat: after 0.4 s, every 0.09 s)
++    // (held directions repeat: after 0.3 s, every 0.06 s)
 +    const auto now = std::chrono::steady_clock::now();
 +    constexpr uint32_t kDirs = kUp | kDown | kLeft | kRight;
 +    if (b & kDirs) {
 +      if ((b & kDirs) != (last_ & kDirs)) {
-+        repeat_at_ = now + std::chrono::milliseconds(400);
++        repeat_at_ = now + std::chrono::milliseconds(300);
 +      } else if (now >= repeat_at_) {
 +        p.pressed |= b & kDirs;
-+        repeat_at_ = now + std::chrono::milliseconds(90);
++        repeat_at_ = now + std::chrono::milliseconds(60);
 +      }
 +    }
 +    last_ = b;
