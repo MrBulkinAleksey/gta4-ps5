@@ -25,6 +25,7 @@
  *     key=<the archives' AES key, 64 hex digits>
  *     needed=<bytes the install needs free>
  *     threads=<files unpacked at once>
+ * (An episode's job is another kind: see episode() below.)
  * It empties the staging folder, then
  *   1. copies the disc's files into <staging>/game, the title update's into
  *      <staging>/game/update (its default.xexp beside default.xex too) and writes
@@ -890,13 +891,12 @@ bool list_folder(const std::string &dir, std::vector<FolderItem> &out, std::stri
     return true;
 }
 
-/* The title update's package: its files under `root` into <game>/update, and its
- * default.xexp (`xexp`, its name in the package) also beside default.xex. */
-bool copy_package(recomp::stfs::Package &pkg, const std::string &root, const std::string &xexp, const std::string &game,
-                  std::string &error)
+/* A content package's files under `root` into `target` (`what` names it in messages:
+ * "The title update"; `shown` is the target's name: "update/"). */
+bool copy_package_files(recomp::stfs::Package &pkg, const std::string &root, const std::string &target, const char *what,
+                        const std::string &shown, std::string &error, const std::string &xexp = std::string(),
+                        std::string *xexp_copy = nullptr)
 {
-    const std::string target = game + "/update";
-    std::string xexp_copy;
     for (const recomp::stfs::Entry &e : pkg.entries())
     {
         std::string rel;
@@ -904,7 +904,7 @@ bool copy_package(recomp::stfs::Package &pkg, const std::string &root, const std
             continue;
         if (!recomp::zip::safe_name(rel))
         {
-            error = "The title update has a file with an unsafe name.";
+            error = std::string(what) + " has a file with an unsafe name.";
             return false;
         }
         const std::string dst = target + "/" + rel;
@@ -912,7 +912,7 @@ bool copy_package(recomp::stfs::Package &pkg, const std::string &root, const std
         const int fd = ::open(dst.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
         if (fd < 0)
         {
-            error = "Couldn't create update/" + rel + ".";
+            error = "Couldn't create " + shown + rel + ".";
             return false;
         }
         io::SetCurrent(dst, e.size);
@@ -938,17 +938,28 @@ bool copy_package(recomp::stfs::Package &pkg, const std::string &root, const std
         }
         if (!wrote || !closed)
         {
-            error = "Writing update/" + rel + " failed. Is the drive full?";
+            error = "Writing " + shown + rel + " failed. Is the drive full?";
             return false;
         }
         if (!read || stat(dst.c_str(), &st) != 0 || std::uint64_t(st.st_size) != e.size)
         {
-            error = "The title update couldn't be read at " + e.name + ". It may be incomplete.";
+            error = std::string(what) + " couldn't be read at " + e.name + ". It may be incomplete.";
             return false;
         }
-        if (lower(e.name) == lower(xexp))
-            xexp_copy = dst;
+        if (xexp_copy && lower(e.name) == lower(xexp))
+            *xexp_copy = dst;
     }
+    return true;
+}
+
+/* The title update's package: its files under `root` into <game>/update, and its
+ * default.xexp (`xexp`, its name in the package) also beside default.xex. */
+bool copy_package(recomp::stfs::Package &pkg, const std::string &root, const std::string &xexp, const std::string &game,
+                  std::string &error)
+{
+    std::string xexp_copy;
+    if (!copy_package_files(pkg, root, game + "/update", "The title update", "update/", error, xexp, &xexp_copy))
+        return false;
     if (xexp_copy.empty())
     {
         error = "The title update has no default.xexp.";
@@ -1177,6 +1188,124 @@ int install(const std::string &job)
     log_line("done in %.0f s (flushing %.1f s)", now_s() - g.t0, now_s() - t3);
     return 0;
 }
+/* ---- An episode ----------------------------------------------------------------------
+ *     kind=episode
+ *     staging=UserData/LibertyRecomp/.install-staging
+ *     source=install/<the episode's content package, or a folder of its files>
+ *     source_kind=package|folder
+ *     root=<the folder in it with setup2.xml; empty: the top>
+ *     name=TLAD|TBOGT
+ *     needed=<bytes the install needs free>
+ * The folder's files go into <staging>/dlc/<name>; the app checks them and moves them
+ * into place. */
+int episode(const std::string &job)
+{
+    const std::string staging_rel = field(job, "staging"), source_rel = field(job, "source"),
+                      source_kind = field(job, "source_kind"), root = field(job, "root"), name = field(job, "name");
+    const std::uint64_t needed = std::strtoull(field(job, "needed").c_str(), nullptr, 10);
+    const bool plain = staging_rel == kStagingRel && recomp::zip::safe_name(source_rel) &&
+                       (root.empty() || recomp::zip::safe_name(root)) && (name == "TLAD" || name == "TBOGT") &&
+                       (source_kind == "package" || source_kind == "folder");
+    if (!plain)
+        return fail("The install job is damaged. Start the install again.");
+    const std::string staging = g_app + "/" + staging_rel, target = staging + "/dlc/" + name;
+    const std::string source = g_app + "/" + source_rel;
+    drive_of(g_app);
+    log_line("started (pid %d): episode %s from %s, into %s (%s, %s free)", int(getpid()), name.c_str(),
+             source_rel.c_str(), target.c_str(), g.drive.c_str(), mb(g.free).c_str());
+
+    set_phase("reading", 1);
+    std::string error;
+    recomp::stfs::Package pkg;
+    std::vector<FolderItem> folder_items;
+    std::uint64_t total = 0;
+    if (source_kind == "package")
+    {
+        if (!pkg.open(source, error))
+            return fail("The episode's package: " + error);
+        for (const recomp::stfs::Entry &e : pkg.entries())
+        {
+            std::string rel;
+            if (under(e.name, root, rel))
+                total += e.size;
+        }
+    }
+    else
+    {
+        if (!list_folder(root.empty() ? source : source + "/" + root, folder_items, error))
+            return fail(error);
+        for (const FolderItem &f : folder_items)
+        {
+            if (!recomp::zip::safe_name(f.rel))
+                return fail("The episode's folder has a file the installer can't write: " + f.rel + ".");
+            total += f.size;
+        }
+    }
+    if (!total)
+        return fail("The episode's files couldn't be found in it. Check the package again.");
+    g.copy_total = total;
+
+    if (g_cancel.load())
+        return fail("Stopped.");
+    set_phase("clearing", 1);
+    {
+        std::uint64_t removed = 0;
+        if (!remove_tree(staging, removed, error))
+            return fail("The files of an earlier install couldn't be removed (" + error + ").");
+        if (removed)
+            log_line("removed an earlier install's %llu files and folders", (unsigned long long)removed);
+    }
+    recomp::zip::make_dirs(target);
+    {
+        const std::string mark = staging + "/.token";
+        const int fd = ::open(mark.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        const bool ok = fd >= 0 && write_all(fd, reinterpret_cast<const std::uint8_t *>(g.token.data()), g.token.size());
+        if (fd >= 0)
+            ::close(fd);
+        if (!ok)
+            return fail("Couldn't write in the app's folder. Is the drive full?");
+    }
+    drive_of(g_app);
+    if (needed && g.free && g.free < needed)
+        return fail("There isn't enough free space. The episode needs about " + mb(needed) + " and the drive has " +
+                        mb(g.free) + " free.",
+                    staging);
+
+    const double t1 = now_s();
+    set_phase("copying", 1);
+    log_line("copying %s of %s", mb(total).c_str(), name.c_str());
+    if (source_kind == "package")
+    {
+        if (!copy_package_files(pkg, root, target, "The episode's package", "dlc/" + name + "/", error))
+            return fail(error, staging);
+        pkg.close();
+    }
+    else
+    {
+        for (const FolderItem &f : folder_items)
+        {
+            const std::string dst = target + "/" + f.rel;
+            recomp::zip::make_dirs(dst.substr(0, dst.find_last_of('/')));
+            if (!copy_file(f.from, dst, error))
+                return fail(error, staging);
+        }
+    }
+    const double copy_s = now_s() - t1;
+    log_line("copied %s in %.1f s (%.0f MB/s)", mb(g.copy_done).c_str(), copy_s,
+             copy_s > 0 ? double(g.copy_done) / 1048576.0 / copy_s : 0.0);
+
+    set_phase("syncing", 1);
+    sync();
+    if (g_cancel.load())
+        return fail("Stopped.", staging);
+    {
+        std::lock_guard<std::mutex> l(g.m);
+        g.phase = "done";
+    }
+    write_status();
+    log_line("done in %.0f s", now_s() - g.t0);
+    return 0;
+}
 } // namespace
 
 int main()
@@ -1217,7 +1346,7 @@ int main()
     }
     write_status();
     std::thread status(status_main);
-    const int rc = install(job);
+    const int rc = field(job, "kind") == "episode" ? episode(job) : install(job);
     g_quit = true;
     status.join();
     write_status();

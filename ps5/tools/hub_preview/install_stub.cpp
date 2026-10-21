@@ -1,5 +1,7 @@
 // The hub preview's stand-in for hub_install.cpp (no game, no runtime).
 // HUB_INSTALLED=0: the game isn't installed (START GAME opens the installer).
+// HUB_EPISODES=<TLAD><TBOGT>, each i (installed), f (its package found) or -
+// (neither): the episodes ("i-" by default).
 // HUB_INSTALL=checking|ready|problem|installing|unpacking|finishing|stopping|
 // inapp|done|failed: the installer's state to show (inapp: installing without
 // the installer payload, no loader on port 9021).
@@ -24,11 +26,20 @@ std::string Bytes(uint64_t n) {
 }
 fs::path InstallFolder(const fs::path& app) { return app / "install"; }
 fs::path GameRoot(const fs::path& app) { return app / "UserData" / "LibertyRecomp" / "game"; }
+const char* EpisodeName(int episode) { return episode == 1 ? "The Ballad of Gay Tony" : "The Lost and Damned"; }
+namespace {
+char EpisodeState(int e) {
+  const char* v = std::getenv("HUB_EPISODES");
+  if (!v) v = "i-";
+  return std::strlen(v) > size_t(e) ? v[e] : '-';
+}
+}  // namespace
 State Look(const fs::path&) {
   State s;
   const char* e = std::getenv("HUB_INSTALLED");
   s.installed = !e || std::strcmp(e, "0") != 0;
   s.iso = s.update = true;
+  for (int k = 0; k < kEpisodeCount; ++k) s.episode[k] = EpisodeState(k) == 'i', s.episode_found[k] = EpisodeState(k) == 'f';
   return s;
 }
 Sources Find(const fs::path&) {
@@ -37,6 +48,11 @@ Sources Find(const fs::path&) {
   s.disc_bytes = 7838695424ull;
   s.update = "/app0/install/TU_1A581VI_000000K000000.0000000000205";
   s.update_bytes = 32571392ull;
+  for (int k = 0; k < kEpisodeCount; ++k)
+    if (EpisodeState(k) != '-') {
+      s.episode[k] = k ? "/app0/install/58410A28F8F18A2DC1A5F1B7C1E3F0E5D0C0B0A0" : "/app0/install/584109ACD8F5B4C91F2E3A4B5C6D7E8F90A1B2C3";
+      s.episode_bytes[k] = k ? 1938817024ull : 1816264704ull;
+    }
   return s;
 }
 uint64_t FreeSpace(const fs::path&) { return 0; }
@@ -54,11 +70,15 @@ struct Job::Impl {
   Sources found;
   Status st;
 };
-Job::Job(const fs::path& app, const fs::path&) : impl_(std::make_unique<Impl>()) {
+Job::Job(const fs::path& app, const fs::path&, int episode) : impl_(std::make_unique<Impl>()) {
   impl_->found = Find(app);
+  if (episode >= 0 && impl_->found.episode[episode].empty()) {
+    impl_->found.episode[episode] = "/app0/install/584109ACD8F5B4C91F2E3A4B5C6D7E8F90A1B2C3";
+    impl_->found.episode_bytes[episode] = 1816264704ull;
+  }
   const std::string k = std::getenv("HUB_INSTALL") ? std::getenv("HUB_INSTALL") : "ready";
   Status& s = impl_->st;
-  s.disc = "USA  \xC2\xB7  Retail 1.00";
+  s.disc = episode >= 0 ? "Xbox 360 package  \xC2\xB7  1.7 GB" : "USA  \xC2\xB7  Retail 1.00";
   if (k == "checking") s.phase = Phase::kChecking, s.disc.clear();
   else if (k == "ready") s.phase = Phase::kReady;
   else if (k == "problem") {
