@@ -201,10 +201,18 @@ index 9ffeffdf..1f19e16d 100644
      endif()
  
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
-index 3b033069..8ec19eb2 100644
+index 3b033069..0ff254fa 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
 +++ b/glue/rexglue-sdk-main/gta4-recomp/CMakeLists.txt
-@@ -443,6 +443,104 @@ elseif(ANDROID)
+@@ -22,6 +22,7 @@ set(GTA4_APP_SOURCES
+     src/gta4_presentation_hooks.cpp
+     src/gta4_aspect_hooks.cpp
+     src/gta4_quicksave_hooks.cpp
++    src/gta4_camera_hooks.cpp
+     src/gta4_input_hooks.cpp
+     src/gta4_sony_feedback.cpp
+     src/gta4_sony_event_hooks.cpp
+@@ -443,6 +444,104 @@ elseif(ANDROID)
              -Wno-backend-plugin)
          target_link_options(LibertyRecomp PRIVATE "-fprofile-use=${LIBERTY_ANDROID_PGO}")
      endif()
@@ -569,6 +577,46 @@ index 22adcbd5..7c5f2215 100644
    void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override;
    bool RequiresSynchronizedInitialThreadResume() const override;
    void OnShutdown() override;
+diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_camera_hooks.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_camera_hooks.cpp
+new file mode 100644
+index 00000000..cf95aa11
+--- /dev/null
++++ b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_camera_hooks.cpp
+@@ -0,0 +1,34 @@
++// GTA IV - the car camera's sideways offset, as an option (gta4_centered_vehicle_camera).
++//
++// The chase camera behind a car doesn't sit straight behind it: sub_82535D98,
++// called by the car camera's update (sub_8253AB20, CCamFollowVehicle), gives
++// an offset half a metre to the side in the vehicle's own space (0x82AAAFB0:
++// -0.5, 0, 0; 0x82AAAFC0 the same for The Ballad of Gay Tony's case), turned
++// with the vehicle, while the byte at 0x82AAADF3 is set (1 in the game's
++// image; the camera setup, sub_822148A0, may clear it). That byte is the PC
++// version's CCamFollowVehicle::ms_bAllowSideOffset, which FusionFix's
++// Centered Vehicle Camera clears. Centred, it's off for the call: the offset
++// is zero and the camera sits right behind. Off, the game's own way.
++#include <cstdint>
++
++#include <rex/cvar.h>
++
++#include "gta4_init.h"
++
++REXCVAR_DEFINE_BOOL(gta4_centered_vehicle_camera, false, "GTA IV/Camera",
++                    "Car camera straight behind the vehicle, without the game's sideways offset");
++
++namespace {
++constexpr uint32_t kAllowSideOffset = 0x82AAADF3;
++}  // namespace
++
++extern "C" void sub_82535D98(PPCContext& ctx, uint8_t* base) {
++  if (!REXCVAR_GET(gta4_centered_vehicle_camera)) {
++    __imp__sub_82535D98(ctx, base);
++    return;
++  }
++  const uint8_t allow = REX_LOAD_U8(kAllowSideOffset);
++  REX_STORE_U8(kAllowSideOffset, 0);
++  __imp__sub_82535D98(ctx, base);
++  REX_STORE_U8(kAllowSideOffset, allow);
++}
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_fire_escape_trace.inc b/glue/rexglue-sdk-main/gta4-recomp/src/gta4_fire_escape_trace.inc
 index 68fcf860..e8c5ee1c 100644
 --- a/glue/rexglue-sdk-main/gta4-recomp/src/gta4_fire_escape_trace.inc
@@ -24375,10 +24423,10 @@ index 00000000..d0f39c4b
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp
 new file mode 100644
-index 00000000..bee56742
+index 00000000..24bbaf23
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_lang.cpp
-@@ -0,0 +1,1067 @@
+@@ -0,0 +1,1079 @@
 +// GTA IV PS5 - the hub's languages (see hub_lang.h).
 +#include "hub_lang.h"
 +
@@ -24454,6 +24502,8 @@ index 00000000..bee56742
 +    {{"Small Object Shadows", "Ombres des petits objets", "Schatten kleiner Objekte", "Sombras de objetos pequeños", "Ombre oggetti piccoli"}},
 +    {{"Car Reflections", "Reflets des voitures", "Fahrzeugspiegelungen", "Reflejos de coches", "Riflessi auto"}},
 +    {{"Skip Intro", "Passer l'intro", "Intro überspringen", "Saltar intro", "Salta intro"}},
++    {{"Centered Car Camera", "Caméra de véhicule centrée", "Zentrierte Fahrzeugkamera", "Cámara de vehículo centrada",
++      "Telecamera veicolo centrata"}},
 +    {{"DualSense Features", "Fonctions DualSense", "DualSense-Funktionen", "Funciones DualSense", "Funzioni DualSense"}},
 +    {{"Menu Music", "Musique du menu", "Menümusik", "Música del menú", "Musica del menu"}},
 +    {{"Light Bar", "Barre lumineuse", "Lichtleiste", "Barra de luz", "Barra luminosa"}},
@@ -24716,6 +24766,16 @@ index 00000000..bee56742
 +      "y deja más tiempo para el resto del fotograma.",
 +      "Ogni quanto vengono ridisegnati i riflessi su auto e vetri. Un fotogramma su due sembra uguale in "
 +      "movimento e lascia più tempo al resto del fotogramma."}},
++    {{"Puts the camera straight behind the car instead of a little off to the side, like FusionFix's option on "
++      "PC. Off is the Xbox 360's.",
++      "Place la caméra juste derrière le véhicule au lieu d'un peu sur le côté, comme l'option de FusionFix sur "
++      "PC. Désactivé, c'est celle de la Xbox 360.",
++      "Setzt die Kamera direkt hinter das Fahrzeug statt etwas zur Seite, wie die Option von FusionFix am PC. "
++      "Aus entspricht der Xbox 360.",
++      "Coloca la cámara justo detrás del vehículo en vez de un poco a un lado, como la opción de FusionFix en PC. "
++      "Desactivada es la de Xbox 360.",
++      "Mette la telecamera proprio dietro al veicolo invece che un po' di lato, come l'opzione di FusionFix su PC. "
++      "Disattivata è quella di Xbox 360."}},
 +    {{"Goes straight to the game's start screen, past the logos and the legal screens.",
 +      "Va directement à l'écran titre du jeu, sans les logos ni les mentions légales.",
 +      "Geht direkt zum Startbildschirm des Spiels, vorbei an den Logos und Rechtshinweisen.",
@@ -26464,10 +26524,10 @@ index 00000000..a24e8a62
 +}  // namespace gta4ps5::hub
 diff --git a/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
 new file mode 100644
-index 00000000..b390c5ca
+index 00000000..66aab61f
 --- /dev/null
 +++ b/glue/rexglue-sdk-main/gta4-recomp/src/ps5/hub/hub_ui.cpp
-@@ -0,0 +1,1844 @@
+@@ -0,0 +1,1849 @@
 +// GTA IV PS5 - the hub (see hub_ui.h): the frame, the Home, Settings,
 +// Saves and About pages, and the controls.
 +#include "hub_ui.h"
@@ -26660,6 +26720,11 @@ index 00000000..b390c5ca
 +      {"GAME", "gta4_skip_intro", "Skip Intro", nullptr,
 +       "Goes straight to the game's start screen, past the logos and the legal screens.", false,
 +       {"false", "true"}, {"Off", "On"}, "false"},
++      // (the car camera's sideways offset: gta4_camera_hooks.cpp)
++      {"GAME", "gta4_centered_vehicle_camera", "Centered Car Camera", nullptr,
++       "Puts the camera straight behind the car instead of a little off to the side, like FusionFix's option "
++       "on PC. Off is the Xbox 360's.",
++       false, {"false", "true"}, {"Off", "On"}, "false"},
 +      {"CONTROLS", "gta4_sony_enabled", "DualSense Features", nullptr,
 +       "Turns the controller extras below on or off together: the light bar, adaptive triggers and extra rumble.",
 +       false, {"false", "true"}, {"Off", "On"}, "true"},
