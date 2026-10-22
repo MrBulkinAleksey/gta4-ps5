@@ -314,6 +314,36 @@ def tool_restart_game(_):
             "once it has loaded (call game_info until it answers)")
 
 
+WEATHERS = ["extra sunny", "sunny", "sunny windy", "cloudy", "rain", "drizzle", "foggy", "lightning",
+            "extra sunny 2", "sunny windy 2"]
+
+
+def tool_scene(_):
+    reply = GAME.call("scene")
+    weather = int(reply["weather"])
+    name = WEATHERS[weather] if 0 <= weather < len(WEATHERS) else "?"
+    return (f"player {reply['player']} heading {reply['heading']}{' (in a car)' if reply['in_car'] else ''}\n"
+            f"camera {reply['camera']} rotation {reply['camera_rotation']}\n"
+            f"time {reply['time']}, weather {weather} ({name})")
+
+
+def tool_teleport(args):
+    extra = {"heading": str(args["heading"])} if "heading" in args else {}
+    reply = GAME.call("teleport", x=str(args["x"]), y=str(args["y"]), z=str(args["z"]), **extra)
+    return f"player at {reply['player']}"
+
+
+def tool_set_time(args):
+    return "time " + GAME.call("set_time", hour=parse_int(args["hour"]), minute=parse_int(args.get("minute", 0)))["time"]
+
+
+def tool_set_weather(args):
+    weather = str(args["weather"])
+    if weather.lower() in WEATHERS:
+        weather = str(WEATHERS.index(weather.lower()))
+    return "weather " + GAME.call("set_weather", weather=weather)["weather"]
+
+
 def tool_modules(args):
     modules = GAME.call("modules")["modules"]
     needle = args.get("filter", "").lower()
@@ -409,6 +439,19 @@ else:
          "in a module (the game's exe unless module is given).",
          {"pattern": {"type": "string"}, "module": {"type": "string"}, "max_results": {"type": "integer"}},
          ["pattern"]),
+        ("scene", tool_scene,
+         "Where the player and the game camera are, the time and the weather (the game must be running, "
+         "not paused or in a menu).", {}, []),
+        ("teleport", tool_teleport,
+         "Move the player (and their car) to x, y, z (game units), optionally turned to heading in degrees; "
+         "the scene and its collision are loaded first.",
+         {"x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"},
+          "heading": {"type": "number"}}, ["x", "y", "z"]),
+        ("set_time", tool_set_time, "Set the time of day.",
+         {"hour": {"type": "integer"}, "minute": {"type": "integer"}}, ["hour"]),
+        ("set_weather", tool_set_weather,
+         f"Force the weather now: an id or a name ({', '.join(WEATHERS)}), or release for the game's own.",
+         {"weather": {"type": ["string", "integer"]}}, ["weather"]),
         ("ini_get", tool_ini_get, "A value from GTAIV.EFLC.FusionFix.ini.",
          {"section": {"type": "string"}, "key": {"type": "string"}}, ["section", "key"]),
         ("ini_set", tool_ini_set,
