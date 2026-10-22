@@ -7,6 +7,8 @@
 #include <atomic>
 #include <cstdint>
 
+#include <rex/platform.h>
+
 namespace rex::ps5diag {
 enum Counter : int {
   kAccessViolations,    // faults reaching the MMIO handler
@@ -22,7 +24,12 @@ enum Counter : int {
 extern std::atomic<uint64_t> counters[kCount];
 // The reserved guest address space (all views live inside it).
 extern uintptr_t guest_arena_lo, guest_arena_hi;
-inline void Add(Counter c) { counters[c].fetch_add(1, std::memory_order_relaxed); }
+// (counters are defined in ps5_diag.cpp, the PS5's only: elsewhere a no-op)
+inline void Add([[maybe_unused]] Counter c) {
+#if REX_PLATFORM_PS5
+  counters[c].fetch_add(1, std::memory_order_relaxed);
+#endif
+}
 
 // Guest threads blocked in a kernel wait: one slot per host thread, filled on
 // entering XObject::Wait / WaitMultiple / SignalAndWait and cleared on leaving.

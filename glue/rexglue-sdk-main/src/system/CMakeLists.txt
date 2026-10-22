@@ -105,7 +105,9 @@ if(REXGLUE_ENABLE_PERF_COUNTERS)
 endif()
 
 if(WIN32)
-    target_link_libraries(rexruntime PRIVATE ws2_32)
+    # (dxgi: the presenter follows the window's monitor through DXGI on
+    # Windows with the Vulkan backend too, not only with D3D12)
+    target_link_libraries(rexruntime PRIVATE ws2_32 dxgi dxguid)
     target_compile_definitions(rexruntime PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
