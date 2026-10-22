@@ -570,6 +570,55 @@ def tool_trace_list(_):
         for s in sessions) or "none"
 
 
+# ---- what is near (PC): buildings and objects within a radius, model hashes named from a list of names ----
+
+NAMES_FILE = os.environ.get("GTA4_LIVE_NAMES", str(Path(__file__).with_name("model_names.txt")))
+_names = None
+
+
+def joaat(text):
+    h = 0
+    for c in text.lower().encode():
+        h = (h + c) & 0xFFFFFFFF
+        h = (h + (h << 10)) & 0xFFFFFFFF
+        h ^= h >> 6
+    h = (h + (h << 3)) & 0xFFFFFFFF
+    h ^= h >> 11
+    return (h + (h << 15)) & 0xFFFFFFFF
+
+
+def model_name(hash_text):
+    """The model's name from model_names.txt (one name a line, or .ide lines: the name is the first field)."""
+    global _names
+    if _names is None:
+        _names = {}
+        try:
+            for line in Path(NAMES_FILE).read_text(errors="replace").splitlines():
+                name = line.split(",")[0].strip()
+                if name and not name.startswith("#") and " " not in name:
+                    _names[joaat(name)] = name
+        except OSError:
+            pass
+    return _names.get(int(hash_text, 16), "")
+
+
+def tool_nearby(args):
+    if "x" in args:
+        x, y, z = float(args["x"]), float(args["y"]), float(args["z"])
+    else:
+        x, y, z = (float(v) for v in GAME.call("scene")["player"])
+    reply = GAME.call("nearby", x=str(x), y=str(y), z=str(z), radius=str(args.get("radius", 10)),
+                      max=parse_int(args.get("max", 60)))
+    lines = [f"{reply['total']} within {args.get('radius', 10)} m of ({x:.1f}, {y:.1f}, {z:.1f})"]
+    for e in reply["entities"]:
+        size = " x ".join(f"{v:.1f}" for v in e["size"])
+        name = model_name(e["hash"])
+        lines.append(f"{e['distance']:>6.1f} m  {e['kind']:<8} model {e['model']:>5} {e['hash']}{' ' + name if name else ''}  "
+                     f"size {size}  at ({', '.join(f'{v:.1f}' for v in e['pos'])})  up {e['up']:.2f}  "
+                     f"+0x210 {e['flags210']}  entity {e['entity']} info {e['info']}")
+    return "\n".join(lines)
+
+
 ADDR = {"type": ["integer", "string"], "description": (
     "Address in the game process, e.g. \"0x00C64CB0\"" if TARGET == "pc"
     else "Guest address, e.g. \"0x82000000\"")}
@@ -696,6 +745,12 @@ else:
         ("trace_stop", tool_trace_stop, "End a watch or trace by name (unhooks, frees debug registers), or all.",
          {"name": {"type": "string"}}, []),
         ("trace_list", tool_trace_list, "The watches and traces running in the game.", {}, []),
+        ("nearby", tool_nearby,
+         "The buildings (map models, procedural props) and objects within radius (default 10 m) of x, y, z or of the "
+         "player, nearest first: model index and hash (named from model_names.txt next to the server, one name or "
+         ".ide line each), size from the model's bounds, position, uprightness, entity and model info addresses.",
+         {"x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"}, "radius": {"type": "number"},
+          "max": {"type": "integer"}}, []),
         ("ini_get", tool_ini_get, "A value from GTAIV.EFLC.FusionFix.ini.",
          {"section": {"type": "string"}, "key": {"type": "string"}}, ["section", "key"]),
         ("ini_set", tool_ini_set,
