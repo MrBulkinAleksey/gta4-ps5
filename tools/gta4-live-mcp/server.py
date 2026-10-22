@@ -247,6 +247,13 @@ def tool_log_tail(args):
     return f"{reply['file']}\n" + "\n".join(found)
 
 
+def tool_screenshot(args):
+    reply = GAME.call("screenshot", max_width=parse_int(args.get("max_width", 1600)))
+    note = f"{reply['width']}x{reply['height']}, also saved in the game's folder as {reply['file']}"
+    return [{"type": "image", "data": reply["data"], "mimeType": reply.get("mime", "image/png")},
+            {"type": "text", "text": note}]
+
+
 def tool_modules(args):
     modules = GAME.call("modules")["modules"]
     needle = args.get("filter", "").lower()
@@ -303,6 +310,9 @@ TOOLS = [
      {"addr": ADDR, "hex": {"type": "string"}, "format": {"type": "string"},
       "value": {"type": ["number", "string"]}, "values": {"type": "array"},
       **({"force": {"type": "boolean"}} if TARGET == "pc" else {})}, ["addr"]),
+    ("screenshot", tool_screenshot,
+     "The frame the game is showing, as an image (scaled down to at most max_width, default 1600).",
+     {"max_width": {"type": "integer"}}, []),
     ("log_tail", tool_log_tail,
      "The last lines of the newest log, optionally only those containing grep."
      + (" feature picks GTAIV.EFLC.FusionFix.<feature>.log." if TARGET == "pc" else ""),
@@ -366,10 +376,12 @@ def handle(message):
         if not handler:
             raise KeyError(f"unknown tool {params.get('name')}")
         try:
-            text, is_error = handler(params.get("arguments") or {}), False
+            result, is_error = handler(params.get("arguments") or {}), False
         except (GameError, KeyError, ValueError, struct.error) as error:
-            text, is_error = f"error: {error}", True
-        return {"content": [{"type": "text", "text": text}], "isError": is_error}
+            result, is_error = f"error: {error}", True
+        # (a tool gives text, or a list of content items such as an image)
+        content = result if isinstance(result, list) else [{"type": "text", "text": result}]
+        return {"content": content, "isError": is_error}
     raise NotImplementedError(method)
 
 

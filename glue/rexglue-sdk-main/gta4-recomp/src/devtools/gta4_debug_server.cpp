@@ -24,11 +24,14 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <zlib.h>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/runtime.h>
+#include <rex/system/interfaces/graphics.h>
 #include <rex/system/xmemory.h>
+#include <rex/ui/presenter.h>
 
 REXCVAR_DEFINE_UINT32(gta4_debug_server_port, 0, "GTA IV/Debug",
                       "Port of the debug server on 127.0.0.1 for tools/gta4-live-mcp (0 = off)")
@@ -195,6 +198,94 @@ json Find(rex::memory::Memory* memory, const json& request) {
   return {{"matches", matches}, {"truncated", matches.size() >= limit}};
 }
 
+std::string Base64(const uint8_t* bytes, size_t size) {
+  static constexpr char kTable[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve((size + 2) / 3 * 4);
+  for (size_t i = 0; i < size; i += 3) {
+    const uint32_t chunk = uint32_t(bytes[i]) << 16 | (i + 1 < size ? uint32_t(bytes[i + 1]) << 8 : 0) |
+                           (i + 2 < size ? uint32_t(bytes[i + 2]) : 0);
+    out += kTable[chunk >> 18 & 63];
+    out += kTable[chunk >> 12 & 63];
+    out += i + 1 < size ? kTable[chunk >> 6 & 63] : '=';
+    out += i + 2 < size ? kTable[chunk & 63] : '=';
+  }
+  return out;
+}
+
+void PutU32(std::vector<uint8_t>& out, uint32_t value) {
+  for (int shift = 24; shift >= 0; shift -= 8) out.push_back(uint8_t(value >> shift));
+}
+
+void PutChunk(std::vector<uint8_t>& out, const char (&type)[5], const uint8_t* data, size_t size) {
+  PutU32(out, uint32_t(size));
+  const size_t start = out.size();
+  out.insert(out.end(), type, type + 4);
+  out.insert(out.end(), data, data + size);
+  PutU32(out, uint32_t(crc32(0, out.data() + start, uInt(out.size() - start))));
+}
+
+// RGB rows (no padding) as PNG, every row unfiltered.
+std::vector<uint8_t> EncodePng(const std::vector<uint8_t>& rgb, uint32_t width, uint32_t height) {
+  std::vector<uint8_t> raw;
+  raw.reserve(size_t(width * 3 + 1) * height);
+  for (uint32_t y = 0; y < height; ++y) {
+    raw.push_back(0);
+    raw.insert(raw.end(), rgb.begin() + size_t(y) * width * 3, rgb.begin() + size_t(y + 1) * width * 3);
+  }
+  uLongf packed_size = compressBound(uLong(raw.size()));
+  std::vector<uint8_t> packed(packed_size);
+  if (compress2(packed.data(), &packed_size, raw.data(), uLong(raw.size()), 3) != Z_OK) {
+    throw std::runtime_error("PNG compression failed");
+  }
+  std::vector<uint8_t> png = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+  std::vector<uint8_t> header;
+  PutU32(header, width);
+  PutU32(header, height);
+  header.insert(header.end(), {8, 2, 0, 0, 0});  // 8-bit RGB
+  PutChunk(png, "IHDR", header.data(), header.size());
+  PutChunk(png, "IDAT", packed.data(), packed_size);
+  PutChunk(png, "IEND", nullptr, 0);
+  return png;
+}
+
+// The frame as the presenter last received it (R8G8B8X8), shrunk by whole factors to at most max_width
+// (each output pixel the mean of its block), as PNG.
+json Screenshot(const json& request) {
+  auto* runtime = rex::Runtime::instance();
+  auto* graphics = runtime ? runtime->graphics_system() : nullptr;
+  auto* presenter = graphics ? graphics->presenter() : nullptr;
+  if (!presenter) throw std::runtime_error("no presenter yet");
+  rex::ui::RawImage image;
+  if (!presenter->CaptureGuestOutput(image) || !image.width || !image.height) {
+    throw std::runtime_error("no frame to capture yet");
+  }
+  const uint32_t max_width = std::max<uint32_t>(request.value("max_width", 1920u), 16);
+  const uint32_t factor = (image.width + max_width - 1) / max_width;
+  const uint32_t width = image.width / factor, height = image.height / factor;
+  std::vector<uint8_t> rgb(size_t(width) * height * 3);
+  for (uint32_t y = 0; y < height; ++y) {
+    for (uint32_t x = 0; x < width; ++x) {
+      uint32_t sum[3] = {};
+      for (uint32_t dy = 0; dy < factor; ++dy) {
+        const uint8_t* row = image.data.data() + size_t(y * factor + dy) * image.stride;
+        for (uint32_t dx = 0; dx < factor; ++dx) {
+          for (int c = 0; c < 3; ++c) sum[c] += row[size_t(x * factor + dx) * 4 + c];
+        }
+      }
+      for (int c = 0; c < 3; ++c) {
+        rgb[(size_t(y) * width + x) * 3 + c] = uint8_t(sum[c] / (factor * factor));
+      }
+    }
+  }
+  const std::vector<uint8_t> png = EncodePng(rgb, width, height);
+  const auto path = g_logs_dir / "screenshot.png";
+  std::ofstream(path, std::ios::binary)
+      .write(reinterpret_cast<const char*>(png.data()), std::streamsize(png.size()));
+  return {{"mime", "image/png"}, {"width", width}, {"height", height}, {"file", path.string()},
+          {"data", Base64(png.data(), png.size())}};
+}
+
 json CvarDescription(const std::string& name) {
   json entry = {{"name", name}, {"value", rex::cvar::GetFlagByName(name)}};
   if (const auto* info = rex::cvar::GetFlagInfo(name)) {
@@ -266,6 +357,7 @@ json Handle(const json& request) {
   if (command == "cvar_get") return CvarDescription(request.at("name").get<std::string>());
   if (command == "cvar_set") return CvarSet(request);
   if (command == "log_tail") return LogTail(request);
+  if (command == "screenshot") return Screenshot(request);
   auto* memory = GuestMemory();
   if (!memory) throw std::runtime_error("the runtime is not up yet");
   if (command == "info") return Info(memory);
