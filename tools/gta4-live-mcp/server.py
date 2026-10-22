@@ -337,6 +337,20 @@ def tool_set_time(args):
     return "time " + GAME.call("set_time", hour=parse_int(args["hour"]), minute=parse_int(args.get("minute", 0)))["time"]
 
 
+def tool_freeze(args):
+    if args.get("on", True) is False:
+        GAME.call("freeze", on="false")
+        return "unfrozen: the game camera, the player's control and the clock are back"
+    extra = {}
+    if "x" in args:
+        extra.update(x=str(args["x"]), y=str(args["y"]), z=str(args["z"]),
+                     rx=str(args.get("rx", 0)), ry=str(args.get("ry", 0)), rz=str(args.get("rz", 0)))
+    if "fov" in args:
+        extra["fov"] = str(args["fov"])
+    reply = GAME.call("freeze", on="true", **extra)
+    return f"frozen: camera {reply['camera']} rotation {reply['camera_rotation']} fov {reply['fov']}"
+
+
 def tool_set_weather(args):
     weather = str(args["weather"])
     if weather.lower() in WEATHERS:
@@ -452,6 +466,13 @@ else:
         ("set_weather", tool_set_weather,
          f"Force the weather now: an id or a name ({', '.join(WEATHERS)}), or release for the game's own.",
          {"weather": {"type": ["string", "integer"]}}, ["weather"]),
+        ("freeze", tool_freeze,
+         "A still scene for comparing frames: a script camera where the game camera is (or at x, y, z turned "
+         "rx, ry, rz in degrees, with fov), the player frozen without control, the clock stopped (set_time keeps "
+         "it stopped). on: false gives the game camera, control and clock back.",
+         {"on": {"type": "boolean"}, "x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"},
+          "rx": {"type": "number"}, "ry": {"type": "number"}, "rz": {"type": "number"}, "fov": {"type": "number"}},
+         []),
         ("ini_get", tool_ini_get, "A value from GTAIV.EFLC.FusionFix.ini.",
          {"section": {"type": "string"}, "key": {"type": "string"}}, ["section", "key"]),
         ("ini_set", tool_ini_set,

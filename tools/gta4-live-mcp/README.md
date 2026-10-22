@@ -71,6 +71,7 @@ claude mcp add gtaiv-pc-live -e GTA4_LIVE_PORT=5051 -e GTA4_LIVE_TARGET=pc -- py
 | `ini_get` / `ini_set` (PC) | The FusionFix ini; `ini_set` has it read again at the next frame |
 | `screenshot` | The frame the game shows, as an image (both games) |
 | `scene` / `teleport` / `set_time` / `set_weather` (PC) | Player, camera, time and weather through script natives (not while paused or in a menu) |
+| `freeze` (PC) | A still scene for comparing frames: script camera at the game camera (or a given place), player frozen, clock stopped; `on: false` releases |
 | `shader_manifest` (recomp) | Find shader override entries by hash or source |
 | `shader_override_push` (recomp) | Compile entries here and send them as live overrides |
 | `shader_override_list` / `shader_override_remove` (recomp) | The live overrides the game holds |
