@@ -86,12 +86,13 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
-          cmake -S windows -B out/windows -G Ninja -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_LINKER_TYPE=LLD `
-            -DCMAKE_C_FLAGS=-march=x86-64-v3 -DCMAKE_CXX_FLAGS=-march=x86-64-v3 `
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
-            -DREXGLUE_ENABLE_TRACY=OFF `
+          # (every -D quoted: pwsh splits an unquoted "-DX=3.5" at the dot)
+          cmake -S windows -B out/windows -G Ninja "-DCMAKE_BUILD_TYPE=Release" `
+            "-DCMAKE_C_COMPILER=clang" "-DCMAKE_CXX_COMPILER=clang++" "-DCMAKE_LINKER_TYPE=LLD" `
+            "-DCMAKE_C_FLAGS=-march=x86-64-v3" "-DCMAKE_CXX_FLAGS=-march=x86-64-v3" `
+            "-DCMAKE_C_COMPILER_LAUNCHER=sccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache" `
+            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" `
+            "-DREXGLUE_ENABLE_TRACY=OFF" `
             "-DGTA4_NATIVE_DXC_LIBRARY_PATH=$env:DXC_BIN"
 
       # -k 0: every failing file in one run.
