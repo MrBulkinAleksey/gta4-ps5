@@ -97,6 +97,10 @@ class UserProfile {
     uint32_t ptr_;
   };
   struct Setting {
+    // (deleted through unique_ptr<Setting>: UnicodeSetting's string and
+    // BinarySetting's bytes are freed only with a virtual destructor)
+    virtual ~Setting() = default;
+
     enum class Type {
       CONTENT = 0,
       INT32 = 1,
