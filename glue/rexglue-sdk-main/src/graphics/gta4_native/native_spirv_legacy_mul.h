@@ -219,13 +219,13 @@ inline std::optional<SpirvLegacyMulResult> SimplifySpirvLegacyMultiplies(
       }
       const auto [min_id, zero_id] = splats[m.type];
       const uint32_t abs_a = bound++, abs_b = bound++, small_a = bound++, small_b = bound++,
-                     small = bound++;
+                     small_ab = bound++;  // (not "small": a <windows.h> macro)
       emit_to(out, kOpExtInst, {m.type, abs_a, glsl, kGlslFAbs, m.a});
       emit_to(out, kOpExtInst, {m.type, abs_b, glsl, kGlslFAbs, m.b});
       emit_to(out, kOpFOrdLessThan, {m.bool_type, small_a, abs_a, min_id});
       emit_to(out, kOpFOrdLessThan, {m.bool_type, small_b, abs_b, min_id});
-      emit_to(out, kOpLogicalOr, {m.bool_type, small, small_a, small_b});
-      emit_to(out, kOpSelect, {m.type, m.result, small, zero_id, m.product});
+      emit_to(out, kOpLogicalOr, {m.bool_type, small_ab, small_a, small_b});
+      emit_to(out, kOpSelect, {m.type, m.result, small_ab, zero_id, m.product});
       ++result.rewritten;
     }
     i += count;

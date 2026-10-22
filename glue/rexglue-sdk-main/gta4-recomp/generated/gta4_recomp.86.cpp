@@ -21649,7 +21649,7 @@ loc_82A35120:
 	if (cr6.eq) goto loc_82A35130;
 	// bl 0x82a11f68
 	ctx.lr = 0x82A35130;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_82A35130:
 	// lwz r3,84(r1)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 84);
@@ -24279,7 +24279,7 @@ loc_82A362C0:
 	if (cr6.eq) goto loc_82A362D0;
 	// bl 0x82a11f68
 	ctx.lr = 0x82A362D0;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_82A362D0:
 	// lwz r3,84(r1)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 84);
@@ -24625,7 +24625,7 @@ loc_82A36510:
 	if (cr6.eq) goto loc_82A36520;
 	// bl 0x82a11f68
 	ctx.lr = 0x82A36520;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_82A36520:
 	// lwz r3,84(r1)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 84);
@@ -25700,7 +25700,7 @@ loc_82A36BDC:
 	ctx.r3.u64 = REX_LOAD_U32(r22.u32 + 0);
 	// bl 0x82a11f68
 	ctx.lr = 0x82A36BE4;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// stw r28,0(r22)
 	REX_STORE_U32(r22.u32 + 0, r28.u32);
 	// b 0x82a36bf0

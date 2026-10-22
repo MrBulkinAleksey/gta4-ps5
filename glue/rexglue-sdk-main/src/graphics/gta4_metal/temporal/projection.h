@@ -18,11 +18,12 @@ inline std::optional<CameraProjection> DescribeProjection(const std::array<float
     return {};
   const double z0 = -double(p[14]) / p[10], z1 = -double(p[14]) / (double(p[10]) - p[11]);
   if (!std::isfinite(z0) || !std::isfinite(z1)) return {};
-  const float near = float(std::min(std::abs(z0), std::abs(z1))),
-              far = float(std::max(std::abs(z0), std::abs(z1)));
-  if (near <= 0 || far <= near || far > 1.0e8f) return {};
+  // (not near/far: <windows.h> defines both as macros)
+  const float z_near = float(std::min(std::abs(z0), std::abs(z1))),
+              z_far = float(std::max(std::abs(z0), std::abs(z1)));
+  if (z_near <= 0 || z_far <= z_near || z_far > 1.0e8f) return {};
   constexpr double pi = 3.1415926535897932384626433832795;
-  return CameraProjection{near, far, float(2 * std::atan(1.0 / std::abs(double(p[5]))) * 180 / pi),
+  return CameraProjection{z_near, z_far, float(2 * std::atan(1.0 / std::abs(double(p[5]))) * 180 / pi),
                           std::abs(p[5] / p[0]), std::abs(z0) > std::abs(z1)};
 }
 inline std::array<float, 16> JitterProjection(const std::array<float, 16>& p,

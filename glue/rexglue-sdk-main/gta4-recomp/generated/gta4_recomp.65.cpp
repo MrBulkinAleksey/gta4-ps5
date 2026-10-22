@@ -77430,7 +77430,7 @@ DEFINE_REX_FUNC(sub_828498B0) {
 	// beqlr cr6
 	if (cr6.eq) return;
 	// b 0x82a11f68
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	return;
 }
 
@@ -77471,7 +77471,7 @@ DEFINE_REX_FUNC(sub_828498C0) {
 	r31.u64 = __builtin_rotateleft64(ctx.r11.u32 | (ctx.r11.u64 << 32), 27) & 0x1;
 	// bl 0x82a11f68
 	ctx.lr = 0x828498F0;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// mr r3,r31
 	ctx.r3.u64 = r31.u64;
 	// addi r1,r1,96
@@ -78132,7 +78132,7 @@ loc_82849D00:
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 60);
 	// bl 0x82a11f68
 	ctx.lr = 0x82849D18;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// stw r30,60(r31)
 	REX_STORE_U32(r31.u32 + 60, r30.u32);
 	// li r3,1
@@ -78154,7 +78154,7 @@ loc_82849D28:
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 60);
 	// bl 0x82a11f68
 	ctx.lr = 0x82849D40;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// li r11,-1
 	ctx.r11.s64 = -1;
 	// li r3,1
@@ -79099,7 +79099,7 @@ loc_8284A2B8:
 	REX_STORE_U32(r31.u32 + 0, ctx.r11.u32);
 	// bl 0x82a11f68
 	ctx.lr = 0x8284A2FC;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// stw r29,0(r30)

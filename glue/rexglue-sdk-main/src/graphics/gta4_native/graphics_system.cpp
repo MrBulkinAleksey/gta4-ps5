@@ -700,9 +700,16 @@ struct FrameTimelineEntry {
 std::array<FrameTimelineEntry, 64> g_frame_timeline{};
 
 uint64_t FrameTimelineNow() {
+#if defined(_WIN32)
+  // [windows port] no CLOCK_MONOTONIC (and no SurfaceFlinger to join with)
+  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::steady_clock::now().time_since_epoch())
+                      .count());
+#else
   timespec now{};
   clock_gettime(CLOCK_MONOTONIC, &now);
   return uint64_t(now.tv_sec) * 1000000000ull + uint64_t(now.tv_nsec);
+#endif
 }
 
 void MarkFrameTimeline(uint32_t frame, FrameTimelineStage stage) {

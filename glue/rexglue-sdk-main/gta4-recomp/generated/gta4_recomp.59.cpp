@@ -27882,7 +27882,7 @@ loc_8278E65C:
 	if (cr6.eq) goto loc_8278E670;
 	// bl 0x82a11f68
 	ctx.lr = 0x8278E66C;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// stw r29,60(r31)
 	REX_STORE_U32(r31.u32 + 60, r29.u32);
 loc_8278E670:
@@ -28218,7 +28218,7 @@ loc_8278E858:
 	if (cr6.eq) goto loc_8278E86C;
 	// bl 0x82a11f68
 	ctx.lr = 0x8278E868;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// stw r27,60(r29)
 	REX_STORE_U32(r29.u32 + 60, r27.u32);
 loc_8278E86C:
@@ -28536,7 +28536,7 @@ loc_8278EA34:
 	if (cr6.eq) goto loc_8278EA48;
 	// bl 0x82a11f68
 	ctx.lr = 0x8278EA44;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// stw r27,60(r29)
 	REX_STORE_U32(r29.u32 + 60, r27.u32);
 loc_8278EA48:
@@ -29632,7 +29632,7 @@ loc_8278F120:
 	if (cr6.eq) goto loc_8278F134;
 	// bl 0x82a11f68
 	ctx.lr = 0x8278F130;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// stw r30,60(r31)
 	REX_STORE_U32(r31.u32 + 60, r30.u32);
 loc_8278F134:

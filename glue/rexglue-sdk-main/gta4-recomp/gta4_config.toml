@@ -890,25 +890,25 @@ memmove = 0x82A02230              # 40 xrefs — native rexcrt_memmove in memory
 "0x82A1858C" = { share_registers = true }
 
 # File CRT function boundaries
-"0x82A131B0" = { name = "CreateFileA" }
-"0x82A12958" = { name = "ReadFile" }
-"0x82A13618" = { name = "WriteFile" }
-"0x82A11F68" = { name = "CloseHandle" }
-"0x82A127E0" = { name = "SetFilePointer" }
-"0x82A14918" = { name = "GetFileSizeEx" }
+"0x82A131B0" = { name = "guest_CreateFileA" }
+"0x82A12958" = { name = "guest_ReadFile" }
+"0x82A13618" = { name = "guest_WriteFile" }
+"0x82A11F68" = { name = "guest_CloseHandle" }
+"0x82A127E0" = { name = "guest_SetFilePointer" }
+"0x82A14918" = { name = "guest_GetFileSizeEx" }
 "0x82A125D0" = {}   # XFileSectorInformation helper; not GetFileSize
-"0x82A135B0" = { name = "GetFileSize" }
-"0x82A14C68" = { name = "SetEndOfFile" }
-"0x82A14D10" = { name = "DeleteFileA" }
-"0x82A14DC8" = { name = "MoveFileA" }
-"0x82A14B30" = { name = "SetFileAttributesA" }
-"0x82A14AC8" = { name = "GetFileAttributesA" }
-"0x82A14A18" = { name = "SetFileTime" }
-"0x82A14988" = { name = "FindFirstFileA" }  # was 0x82A19F88 (NT-level, wrong)
+"0x82A135B0" = { name = "guest_GetFileSize" }
+"0x82A14C68" = { name = "guest_SetEndOfFile" }
+"0x82A14D10" = { name = "guest_DeleteFileA" }
+"0x82A14DC8" = { name = "guest_MoveFileA" }
+"0x82A14B30" = { name = "guest_SetFileAttributesA" }
+"0x82A14AC8" = { name = "guest_GetFileAttributesA" }
+"0x82A14A18" = { name = "guest_SetFileTime" }
+"0x82A14988" = { name = "guest_FindFirstFileA" }  # was 0x82A19F88 (NT-level, wrong)
 "0x82A14C10" = {}
 "0x82A1A100" = {}
-"0x82A188E0" = { name = "FlushFileBuffers" }
-"0x82A14E98" = { name = "CreateDirectoryA" }
+"0x82A188E0" = { name = "guest_FlushFileBuffers" }
+"0x82A14E98" = { name = "guest_CreateDirectoryA" }
 "0x82A14F28" = {}
 "0x82A1A160" = {}
 

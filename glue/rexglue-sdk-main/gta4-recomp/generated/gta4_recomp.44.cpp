@@ -56036,7 +56036,7 @@ DEFINE_REX_FUNC(sub_825FB7D8) {
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 0);
 	// bl 0x82a12958
 	ctx.lr = 0x825FB80C;
-	ReadFile(ctx, base);
+	guest_ReadFile(ctx, base);
 	// cmpwi cr6,r3,0
 	cr6.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// bne cr6,0x825fb870
@@ -56075,7 +56075,7 @@ loc_825FB814:
 	REX_STORE_U32(r31.u32 + 0, ctx.r3.u32);
 	// bl 0x82a127e0
 	ctx.lr = 0x825FB850;
-	SetFilePointer(ctx, base);
+	guest_SetFilePointer(ctx, base);
 loc_825FB850:
 	// li r7,0
 	ctx.r7.s64 = 0;
@@ -56089,7 +56089,7 @@ loc_825FB850:
 	ctx.r4.u64 = r29.u64;
 	// bl 0x82a12958
 	ctx.lr = 0x825FB868;
-	ReadFile(ctx, base);
+	guest_ReadFile(ctx, base);
 	// cmpwi cr6,r3,0
 	cr6.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// beq cr6,0x825fb814
@@ -56174,7 +56174,7 @@ DEFINE_REX_FUNC(sub_825FB888) {
 	REX_STORE_U32(ctx.r1.u32 + 112, ctx.r11.u32);
 	// bl 0x82a12958
 	ctx.lr = 0x825FB8F4;
-	ReadFile(ctx, base);
+	guest_ReadFile(ctx, base);
 	// cmpwi cr6,r3,0
 	cr6.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// bne cr6,0x825fb948
@@ -56218,7 +56218,7 @@ loc_825FB928:
 	ctx.r4.u64 = r30.u64;
 	// bl 0x82a12958
 	ctx.lr = 0x825FB940;
-	ReadFile(ctx, base);
+	guest_ReadFile(ctx, base);
 	// cmpwi cr6,r3,0
 	cr6.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// beq cr6,0x825fb8fc
@@ -56689,7 +56689,7 @@ loc_825FBC08:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 80);
 	// bl 0x82a11f68
 	ctx.lr = 0x825FBC4C;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// cmplwi cr6,r30,0
 	cr6.compare<uint32_t>(r30.u32, 0, xer);
 	// beq cr6,0x825fbc90

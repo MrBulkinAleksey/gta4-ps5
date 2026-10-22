@@ -39902,17 +39902,17 @@ DEFINE_REX_FUNC(sub_82A79DD0) {
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 20);
 	// bl 0x82a11f68
 	ctx.lr = 0x82A79DEC;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// lwz r3,12(r31)
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 12);
 	// bl 0x82a11f68
 	ctx.lr = 0x82A79DF4;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 8);
 	// bl 0x82a11f68
 	ctx.lr = 0x82A79DFC;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// lis r11,-31975
 	ctx.r11.s64 = -2095513600;
 	// lis r10,14563
@@ -40412,7 +40412,7 @@ loc_82A7A100:
 	ctx.r3.u64 = REX_LOAD_U32(r30.u32 + 4);
 	// bl 0x82a11f68
 	ctx.lr = 0x82A7A108;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// li r11,0
 	ctx.r11.s64 = 0;
 	// mr r3,r31
@@ -40679,12 +40679,12 @@ loc_82A7A2C4:
 	ctx.r3.u64 = REX_LOAD_U32(r28.u32 + 4);
 	// bl 0x82a11f68
 	ctx.lr = 0x82A7A2CC;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// lwz r3,4(r27)
 	ctx.r3.u64 = REX_LOAD_U32(r27.u32 + 4);
 	// bl 0x82a11f68
 	ctx.lr = 0x82A7A2D4;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// stw r26,4(r28)
 	REX_STORE_U32(r28.u32 + 4, r26.u32);
 	// mr r3,r31
@@ -51725,7 +51725,7 @@ loc_82A7F1F8:
 	ctx.r4.u64 = ctx.r11.u64 + r30.u64;
 	// bl 0x82a127e0
 	ctx.lr = 0x82A7F224;
-	SetFilePointer(ctx, base);
+	guest_SetFilePointer(ctx, base);
 	// stw r30,88(r31)
 	REX_STORE_U32(r31.u32 + 88, r30.u32);
 loc_82A7F228:
@@ -51741,7 +51741,7 @@ loc_82A7F228:
 	ctx.r4.u64 = r28.u64;
 	// bl 0x82a12958
 	ctx.lr = 0x82A7F240;
-	ReadFile(ctx, base);
+	guest_ReadFile(ctx, base);
 	// lwz r3,80(r1)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 80);
 	// cmplw cr6,r3,r29
@@ -52065,7 +52065,7 @@ loc_82A7F450:
 	ctx.r4.u64 = ctx.r11.u64 + r30.u64;
 	// bl 0x82a127e0
 	ctx.lr = 0x82A7F468;
-	SetFilePointer(ctx, base);
+	guest_SetFilePointer(ctx, base);
 	// stw r30,88(r31)
 	REX_STORE_U32(r31.u32 + 88, r30.u32);
 	// stw r30,92(r31)
@@ -52316,7 +52316,7 @@ loc_82A7F5C8:
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 84);
 	// bl 0x82a12958
 	ctx.lr = 0x82A7F5E8;
-	ReadFile(ctx, base);
+	guest_ReadFile(ctx, base);
 	// lwz r4,80(r1)
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r1.u32 + 80);
 	// cmplw cr6,r4,r27
@@ -52628,7 +52628,7 @@ loc_82A7F7E0:
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 84);
 	// bl 0x82a11f68
 	ctx.lr = 0x82A7F7F4;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_82A7F7F4:
 	// lwz r11,252(r31)
 	ctx.r11.u64 = REX_LOAD_U32(r31.u32 + 252);
@@ -52807,7 +52807,7 @@ loc_82A7F8F4:
 	ctx.r4.u64 = ctx.r10.u64 + ctx.r11.u64;
 	// bl 0x82a12958
 	ctx.lr = 0x82A7F91C;
-	ReadFile(ctx, base);
+	guest_ReadFile(ctx, base);
 	// lwz r3,80(r1)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 80);
 	// stw r27,36(r31)
@@ -53197,7 +53197,7 @@ DEFINE_REX_FUNC(sub_82A7FB48) {
 	REX_STORE_U32(r31.u32 + 120, ctx.r11.u32);
 	// bl 0x82a127e0
 	ctx.lr = 0x82A7FB98;
-	SetFilePointer(ctx, base);
+	guest_SetFilePointer(ctx, base);
 	// stw r3,124(r31)
 	REX_STORE_U32(r31.u32 + 124, ctx.r3.u32);
 loc_82A7FB9C:
@@ -53266,7 +53266,7 @@ loc_82A7FBFC:
 	ctx.r4.s64 = -2147483648;
 	// bl 0x82a131b0
 	ctx.lr = 0x82A7FC1C;
-	CreateFileA(ctx, base);
+	guest_CreateFileA(ctx, base);
 	// stw r3,84(r31)
 	REX_STORE_U32(r31.u32 + 84, ctx.r3.u32);
 	// lwz r11,84(r31)

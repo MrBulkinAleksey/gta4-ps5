@@ -8069,7 +8069,7 @@ loc_829E2DD0:
 	if (cr6.eq) goto loc_829E2DE4;
 	// bl 0x82a11f68
 	ctx.lr = 0x829E2DE0;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// stw r28,432(r31)
 	REX_STORE_U32(r31.u32 + 432, r28.u32);
 loc_829E2DE4:
@@ -8366,7 +8366,7 @@ loc_829E2FC0:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 92);
 	// bl 0x82a11f68
 	ctx.lr = 0x829E2FC8;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// addi r3,r1,80
 	ctx.r3.s64 = ctx.r1.s64 + 80;
 	// bl 0x82a12cd0
@@ -8933,7 +8933,7 @@ DEFINE_REX_FUNC(sub_829E3300) {
 	if (cr6.eq) goto loc_829E334C;
 	// bl 0x82a11f68
 	ctx.lr = 0x829E3348;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// stw r28,432(r29)
 	REX_STORE_U32(r29.u32 + 432, r28.u32);
 loc_829E334C:
@@ -15426,7 +15426,7 @@ loc_829E5D68:
 	if (cr6.eq) goto loc_829E5D7C;
 	// bl 0x82a11f68
 	ctx.lr = 0x829E5D78;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// stw r30,40(r31)
 	REX_STORE_U32(r31.u32 + 40, r30.u32);
 loc_829E5D7C:
@@ -36181,7 +36181,7 @@ loc_829EE344:
 	ctx.r3.u64 = r30.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x829EE34C;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_829EE34C:
 	// mr r3,r31
 	ctx.r3.u64 = r31.u64;
@@ -37056,7 +37056,7 @@ loc_829EE910:
 	ctx.r3.u64 = r25.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x829EE918;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_829EE918:
 	// lwz r3,-6968(r24)
 	ctx.r3.u64 = REX_LOAD_U32(r24.u32 + -6968);
@@ -37286,7 +37286,7 @@ DEFINE_REX_FUNC(sub_829EEA68) {
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 0);
 	// bl 0x82a11f68
 	ctx.lr = 0x829EEA88;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// li r11,0
 	ctx.r11.s64 = 0;
 	// addi r30,r31,16
@@ -38655,7 +38655,7 @@ loc_829EF334:
 	if (cr6.eq) goto loc_829EF344;
 	// bl 0x82a11f68
 	ctx.lr = 0x829EF344;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_829EF344:
 	// cmplwi cr6,r26,0
 	cr6.compare<uint32_t>(r26.u32, 0, xer);
@@ -38665,7 +38665,7 @@ loc_829EF344:
 	ctx.r3.u64 = r26.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x829EF354;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_829EF354:
 	// mr r3,r30
 	ctx.r3.u64 = r30.u64;
@@ -58155,7 +58155,7 @@ loc_829F6EA8:
 	ctx.r3.u64 = r28.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x829F6EB0;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_829F6EB0:
 	// mr r3,r29
 	ctx.r3.u64 = r29.u64;
@@ -58321,7 +58321,7 @@ loc_829F6FC0:
 	ctx.r3.u64 = r28.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x829F6FC8;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_829F6FC8:
 	// mr r3,r29
 	ctx.r3.u64 = r29.u64;
@@ -58516,7 +58516,7 @@ loc_829F7108:
 	ctx.r3.u64 = r28.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x829F7110;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_829F7110:
 	// mr r3,r29
 	ctx.r3.u64 = r29.u64;
@@ -58649,12 +58649,12 @@ loc_829F71E4:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 108);
 	// bl 0x82a11f68
 	ctx.lr = 0x829F71EC;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// lwz r3,504(r31)
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 504);
 	// bl 0x82a11f68
 	ctx.lr = 0x829F71F4;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// stw r30,504(r31)
 	REX_STORE_U32(r31.u32 + 504, r30.u32);
 loc_829F71F8:
@@ -58976,7 +58976,7 @@ loc_829F740C:
 	ctx.r3.u64 = r27.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x829F741C;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_829F741C:
 	// mr r3,r24
 	ctx.r3.u64 = r24.u64;
@@ -59228,7 +59228,7 @@ loc_829F75B0:
 	ctx.r3.u64 = r28.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x829F75C4;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_829F75C4:
 	// mr r3,r31
 	ctx.r3.u64 = r31.u64;
@@ -59482,7 +59482,7 @@ loc_829F7740:
 	ctx.r3.u64 = r30.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x829F7748;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_829F7748:
 	// mr r3,r27
 	ctx.r3.u64 = r27.u64;
@@ -59812,7 +59812,7 @@ loc_829F7960:
 	ctx.r3.u64 = r23.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x829F7970;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_829F7970:
 	// mr r3,r22
 	ctx.r3.u64 = r22.u64;
@@ -60026,7 +60026,7 @@ loc_829F7AC4:
 	ctx.r3.u64 = r29.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x829F7AD4;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_829F7AD4:
 	// mr r3,r28
 	ctx.r3.u64 = r28.u64;
@@ -60238,7 +60238,7 @@ loc_829F7C24:
 	ctx.r3.u64 = r27.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x829F7C2C;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_829F7C2C:
 	// mr r3,r28
 	ctx.r3.u64 = r28.u64;
@@ -63139,7 +63139,7 @@ loc_829F8CD4:
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 512);
 	// bl 0x82a11f68
 	ctx.lr = 0x829F8CFC;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// stw r30,512(r31)
 	REX_STORE_U32(r31.u32 + 512, r30.u32);
 loc_829F8D00:

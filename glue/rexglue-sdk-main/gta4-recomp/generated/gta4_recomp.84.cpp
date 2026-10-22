@@ -45446,7 +45446,7 @@ loc_82A0A84C:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r9.u32 + r28.u32);
 	// bl 0x82a13618
 	ctx.lr = 0x82A0A870;
-	WriteFile(ctx, base);
+	guest_WriteFile(ctx, base);
 	// cmpwi r3,0
 	cr0.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// beq 0x82a0a8c4
@@ -45480,7 +45480,7 @@ loc_82A0A898:
 	ctx.r4.u64 = r24.u64;
 	// bl 0x82a13618
 	ctx.lr = 0x82A0A8B0;
-	WriteFile(ctx, base);
+	guest_WriteFile(ctx, base);
 	// cmpwi r3,0
 	cr0.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// beq 0x82a0a8c4
@@ -46510,7 +46510,7 @@ loc_82A0AE5C:
 	sub_82A0F208(ctx, base);
 	// bl 0x82a11f68
 	ctx.lr = 0x82A0AE68;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// cmpwi r3,0
 	cr0.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// bne 0x82a0ae7c
@@ -51576,7 +51576,7 @@ loc_82A0CDBC:
 	ctx.r5.s64 = ctx.r1.s64 + 80;
 	// bl 0x82a127e0
 	ctx.lr = 0x82A0CDCC;
-	SetFilePointer(ctx, base);
+	guest_SetFilePointer(ctx, base);
 	// stw r3,84(r1)
 	REX_STORE_U32(ctx.r1.u32 + 84, ctx.r3.u32);
 	// cmpwi cr6,r3,-1

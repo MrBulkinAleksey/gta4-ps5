@@ -1650,7 +1650,7 @@ loc_8284ADEC:
 	ctx.r3.s64 = r31.s64 + 64;
 	// bl 0x82a131b0
 	ctx.lr = 0x8284AE40;
-	CreateFileA(ctx, base);
+	guest_CreateFileA(ctx, base);
 	// mr r27,r3
 	r27.u64 = ctx.r3.u64;
 	// cmpwi cr6,r27,-1
@@ -1661,7 +1661,7 @@ loc_8284ADEC:
 	ctx.r4.s64 = 0;
 	// bl 0x82a135b0
 	ctx.lr = 0x8284AE54;
-	GetFileSize(ctx, base);
+	guest_GetFileSize(ctx, base);
 	// cmpwi cr6,r3,-1
 	cr6.compare<int32_t>(ctx.r3.s32, -1, xer);
 	// bne cr6,0x8284ae6c
@@ -1673,7 +1673,7 @@ loc_8284ADEC:
 	ctx.r3.u64 = r27.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x8284AE68;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// b 0x8284ae8c
 	goto loc_8284AE8C;
 loc_8284AE6C:
@@ -1690,7 +1690,7 @@ loc_8284AE6C:
 	ctx.r3.u64 = r27.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x8284AE84;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// b 0x8284ae8c
 	goto loc_8284AE8C;
 loc_8284AE88:
@@ -2059,7 +2059,7 @@ loc_8284B0B8:
 	ctx.r3.s64 = r31.s64 + 64;
 	// bl 0x82a131b0
 	ctx.lr = 0x8284B108;
-	CreateFileA(ctx, base);
+	guest_CreateFileA(ctx, base);
 	// mr r28,r3
 	r28.u64 = ctx.r3.u64;
 	// cmpwi cr6,r28,-1
@@ -2070,7 +2070,7 @@ loc_8284B0B8:
 	ctx.r4.s64 = 0;
 	// bl 0x82a135b0
 	ctx.lr = 0x8284B11C;
-	GetFileSize(ctx, base);
+	guest_GetFileSize(ctx, base);
 	// cmpwi cr6,r3,-1
 	cr6.compare<int32_t>(ctx.r3.s32, -1, xer);
 	// bne cr6,0x8284b134
@@ -2082,7 +2082,7 @@ loc_8284B0B8:
 	ctx.r3.u64 = r28.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x8284B130;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// b 0x8284b154
 	goto loc_8284B154;
 loc_8284B134:
@@ -2099,7 +2099,7 @@ loc_8284B134:
 	ctx.r3.u64 = r28.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x8284B14C;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// b 0x8284b154
 	goto loc_8284B154;
 loc_8284B150:
@@ -3120,7 +3120,7 @@ DEFINE_REX_FUNC(sub_8284B750) {
 	ctx.r3.u64 = r31.u64;
 	// bl 0x82a131b0
 	ctx.lr = 0x8284B784;
-	CreateFileA(ctx, base);
+	guest_CreateFileA(ctx, base);
 	// mr r30,r3
 	r30.u64 = ctx.r3.u64;
 	// cmpwi cr6,r30,-1
@@ -3180,7 +3180,7 @@ loc_8284B7D8:
 	ctx.r3.u64 = r30.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x8284B7F0;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// addi r1,r1,128
 	ctx.r1.s64 = ctx.r1.s64 + 128;
 	// b 0x829ff81c
@@ -3199,7 +3199,7 @@ loc_8284B7F8:
 	ctx.r3.u64 = r30.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x8284B810;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 loc_8284B810:
 	// addi r1,r1,128
 	ctx.r1.s64 = ctx.r1.s64 + 128;
@@ -3459,7 +3459,7 @@ loc_8284B8D0:
 	ctx.r3.s64 = r31.s64 + 64;
 	// bl 0x82a131b0
 	ctx.lr = 0x8284B934;
-	CreateFileA(ctx, base);
+	guest_CreateFileA(ctx, base);
 	// cmpwi cr6,r3,-1
 	cr6.compare<int32_t>(ctx.r3.s32, -1, xer);
 	// stw r3,96(r31)
@@ -3515,7 +3515,7 @@ loc_8284B954:
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 96);
 	// bl 0x82a13618
 	ctx.lr = 0x8284B99C;
-	WriteFile(ctx, base);
+	guest_WriteFile(ctx, base);
 	// cmpwi cr6,r3,0
 	cr6.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// bne cr6,0x8284b8c4
@@ -3531,7 +3531,7 @@ loc_8284B954:
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 96);
 	// bl 0x82a11f68
 	ctx.lr = 0x8284B9B8;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// li r11,-1
 	ctx.r11.s64 = -1;
 	// stw r11,96(r31)
@@ -3575,7 +3575,7 @@ loc_8284B9FC:
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 96);
 	// bl 0x82a11f68
 	ctx.lr = 0x8284BA04;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// li r11,-1
 	ctx.r11.s64 = -1;
 	// mr r3,r31
@@ -3715,7 +3715,7 @@ loc_8284BAF4:
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 96);
 	// bl 0x82a11f68
 	ctx.lr = 0x8284BB04;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// li r11,-1
 	ctx.r11.s64 = -1;
 	// stw r11,96(r31)
@@ -3896,7 +3896,7 @@ loc_8284BBEC:
 	ctx.r3.s64 = r31.s64 + 64;
 	// bl 0x82a131b0
 	ctx.lr = 0x8284BC3C;
-	CreateFileA(ctx, base);
+	guest_CreateFileA(ctx, base);
 	// cmpwi cr6,r3,-1
 	cr6.compare<int32_t>(ctx.r3.s32, -1, xer);
 	// stw r3,96(r31)
@@ -3935,7 +3935,7 @@ loc_8284BC50:
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 96);
 	// bl 0x82a12958
 	ctx.lr = 0x8284BC84;
-	ReadFile(ctx, base);
+	guest_ReadFile(ctx, base);
 	// cmpwi cr6,r3,0
 	cr6.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// bne cr6,0x8284bbe0
@@ -3951,7 +3951,7 @@ loc_8284BC50:
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 96);
 	// bl 0x82a11f68
 	ctx.lr = 0x8284BCA0;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// li r11,-1
 	ctx.r11.s64 = -1;
 	// stw r11,96(r31)
@@ -3970,7 +3970,7 @@ loc_8284BCB0:
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 96);
 	// bl 0x82a11f68
 	ctx.lr = 0x8284BCC0;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// li r11,-1
 	ctx.r11.s64 = -1;
 	// mr r3,r31
@@ -4104,7 +4104,7 @@ loc_8284BDA8:
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 96);
 	// bl 0x82a11f68
 	ctx.lr = 0x8284BDB8;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// li r11,-1
 	ctx.r11.s64 = -1;
 	// stw r11,96(r31)
@@ -4323,7 +4323,7 @@ loc_8284BF18:
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 32);
 	// bl 0x82a11f68
 	ctx.lr = 0x8284BF24;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// mr r3,r31
 	ctx.r3.u64 = r31.u64;
 	// bl 0x8284b818
@@ -48996,7 +48996,7 @@ loc_8285DB08:
 	ctx.r3.u64 = REX_LOAD_U32(r31.u32 + 0);
 	// bl 0x82a11f68
 	ctx.lr = 0x8285DB10;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// addis r11,r30,1
 	ctx.r11.s64 = r30.s64 + 65536;
 	// addi r31,r31,160
@@ -53008,7 +53008,7 @@ loc_8285F4D0:
 	ctx.r6.s64 = 0;
 	// bl 0x82a131b0
 	ctx.lr = 0x8285F4E8;
-	CreateFileA(ctx, base);
+	guest_CreateFileA(ctx, base);
 	// addi r1,r1,352
 	ctx.r1.s64 = ctx.r1.s64 + 352;
 	// lwz r12,-8(r1)
@@ -53061,7 +53061,7 @@ DEFINE_REX_FUNC(sub_8285F4F8) {
 	ctx.r9.s64 = 0;
 	// bl 0x82a131b0
 	ctx.lr = 0x8285F540;
-	CreateFileA(ctx, base);
+	guest_CreateFileA(ctx, base);
 	// addi r1,r1,352
 	ctx.r1.s64 = ctx.r1.s64 + 352;
 	// lwz r12,-8(r1)
@@ -53108,7 +53108,7 @@ DEFINE_REX_FUNC(sub_8285F550) {
 	ctx.r9.s64 = 0;
 	// bl 0x82a131b0
 	ctx.lr = 0x8285F58C;
-	CreateFileA(ctx, base);
+	guest_CreateFileA(ctx, base);
 	// addi r1,r1,352
 	ctx.r1.s64 = ctx.r1.s64 + 352;
 	// lwz r12,-8(r1)
@@ -53155,7 +53155,7 @@ DEFINE_REX_FUNC(sub_8285F5A0) {
 	ctx.r9.s64 = 0;
 	// bl 0x82a131b0
 	ctx.lr = 0x8285F5DC;
-	CreateFileA(ctx, base);
+	guest_CreateFileA(ctx, base);
 	// addi r1,r1,352
 	ctx.r1.s64 = ctx.r1.s64 + 352;
 	// lwz r12,-8(r1)
@@ -53175,7 +53175,7 @@ DEFINE_REX_FUNC(sub_8285F5F0) {
 	// li r5,0
 	ctx.r5.s64 = 0;
 	// b 0x82a127e0
-	SetFilePointer(ctx, base);
+	guest_SetFilePointer(ctx, base);
 	return;
 }
 
@@ -53204,7 +53204,7 @@ DEFINE_REX_FUNC(sub_8285F600) {
 	ctx.r6.s64 = ctx.r1.s64 + 80;
 	// bl 0x82a13618
 	ctx.lr = 0x8285F624;
-	WriteFile(ctx, base);
+	guest_WriteFile(ctx, base);
 	// cmpwi cr6,r3,0
 	cr6.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// lwz r3,80(r1)
@@ -53263,7 +53263,7 @@ DEFINE_REX_FUNC(sub_8285F648) {
 	r28.s64 = 10;
 	// bl 0x82a12958
 	ctx.lr = 0x8285F67C;
-	ReadFile(ctx, base);
+	guest_ReadFile(ctx, base);
 	// cmpwi cr6,r3,0
 	cr6.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// bne cr6,0x8285f6d8
@@ -53311,7 +53311,7 @@ loc_8285F6B8:
 	ctx.r3.u64 = r31.u64;
 	// bl 0x82a12958
 	ctx.lr = 0x8285F6D0;
-	ReadFile(ctx, base);
+	guest_ReadFile(ctx, base);
 	// cmpwi cr6,r3,0
 	cr6.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// beq cr6,0x8285f688
@@ -53392,7 +53392,7 @@ DEFINE_REX_FUNC(sub_8285F6E8) {
 	REX_STORE_U32(ctx.r1.u32 + 112, ctx.r11.u32);
 	// bl 0x82a12958
 	ctx.lr = 0x8285F754;
-	ReadFile(ctx, base);
+	guest_ReadFile(ctx, base);
 	// cmpwi cr6,r3,0
 	cr6.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// bne cr6,0x8285f7b0
@@ -53440,7 +53440,7 @@ loc_8285F790:
 	ctx.r3.u64 = r31.u64;
 	// bl 0x82a12958
 	ctx.lr = 0x8285F7A8;
-	ReadFile(ctx, base);
+	guest_ReadFile(ctx, base);
 	// cmpwi cr6,r3,0
 	cr6.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// beq cr6,0x8285f760
@@ -53507,7 +53507,7 @@ DEFINE_REX_FUNC(sub_8285F7C0) {
 	REX_STORE_U32(ctx.r1.u32 + 112, ctx.r11.u32);
 	// bl 0x82a13618
 	ctx.lr = 0x8285F81C;
-	WriteFile(ctx, base);
+	guest_WriteFile(ctx, base);
 	// cmpwi cr6,r3,0
 	cr6.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// bne cr6,0x8285f83c
@@ -53553,7 +53553,7 @@ DEFINE_REX_FUNC(sub_8285F850) {
 	ctx.r3.u64 = ctx.r4.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x8285F864;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// cntlzw r11,r3
 	ctx.r11.u64 = ctx.r3.u32 == 0 ? 32 : __builtin_clz(ctx.r3.u32);
 	// rlwinm r11,r11,27,31,31
@@ -53611,7 +53611,7 @@ DEFINE_REX_FUNC(sub_8285F880) {
 	ctx.r9.s64 = 0;
 	// bl 0x82a131b0
 	ctx.lr = 0x8285F8C0;
-	CreateFileA(ctx, base);
+	guest_CreateFileA(ctx, base);
 	// mr r31,r3
 	r31.u64 = ctx.r3.u64;
 	// cmpwi cr6,r31,-1
@@ -53637,12 +53637,12 @@ loc_8285F8E4:
 	ctx.r3.u64 = r31.u64;
 	// bl 0x82a14918
 	ctx.lr = 0x8285F8F0;
-	GetFileSizeEx(ctx, base);
+	guest_GetFileSizeEx(ctx, base);
 	// mr r3,r31
 	ctx.r3.u64 = r31.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x8285F8F8;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// ld r3,80(r1)
 	ctx.r3.u64 = REX_LOAD_U64(ctx.r1.u32 + 80);
 	// addi r1,r1,368
@@ -53685,7 +53685,7 @@ DEFINE_REX_FUNC(sub_8285F910) {
 	ctx.r4.u64 = ctx.r7.u64;
 	// bl 0x82a14988
 	ctx.lr = 0x8285F938;
-	FindFirstFileA(ctx, base);
+	guest_FindFirstFileA(ctx, base);
 	// cmpwi cr6,r3,-1
 	cr6.compare<int32_t>(ctx.r3.s32, -1, xer);
 	// bne cr6,0x8285f954
@@ -53703,7 +53703,7 @@ DEFINE_REX_FUNC(sub_8285F910) {
 loc_8285F954:
 	// bl 0x82a11f68
 	ctx.lr = 0x8285F958;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// lwz r11,100(r1)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 100);
 	// lwz r10,104(r1)
@@ -53768,7 +53768,7 @@ DEFINE_REX_FUNC(sub_8285F978) {
 	ctx.r9.s64 = 0;
 	// bl 0x82a131b0
 	ctx.lr = 0x8285F9C0;
-	CreateFileA(ctx, base);
+	guest_CreateFileA(ctx, base);
 	// mr r31,r3
 	r31.u64 = ctx.r3.u64;
 	// cmpwi cr6,r31,-1
@@ -53796,7 +53796,7 @@ loc_8285F9D4:
 	REX_STORE_U32(ctx.r1.u32 + 80, ctx.r11.u32);
 	// bl 0x82a14a18
 	ctx.lr = 0x8285F9F4;
-	SetFileTime(ctx, base);
+	guest_SetFileTime(ctx, base);
 	// mr r11,r3
 	ctx.r11.u64 = ctx.r3.u64;
 	// mr r3,r31
@@ -53809,7 +53809,7 @@ loc_8285F9D4:
 	r31.u64 = ctx.r11.u64 ^ 1;
 	// bl 0x82a11f68
 	ctx.lr = 0x8285FA0C;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// mr r3,r31
 	ctx.r3.u64 = r31.u64;
 loc_8285FA10:
@@ -53849,7 +53849,7 @@ DEFINE_REX_FUNC(sub_8285FA28) {
 	sub_8285F440(ctx, base);
 	// bl 0x82a14ac8
 	ctx.lr = 0x8285FA48;
-	GetFileAttributesA(ctx, base);
+	guest_GetFileAttributesA(ctx, base);
 	// addi r1,r1,352
 	ctx.r1.s64 = ctx.r1.s64 + 352;
 	// lwz r12,-8(r1)
@@ -53886,7 +53886,7 @@ DEFINE_REX_FUNC(sub_8285FA58) {
 	ctx.r4.u64 = ctx.r7.u64;
 	// bl 0x82a14b30
 	ctx.lr = 0x8285FA80;
-	SetFileAttributesA(ctx, base);
+	guest_SetFileAttributesA(ctx, base);
 	// cntlzw r11,r3
 	ctx.r11.u64 = ctx.r3.u32 == 0 ? 32 : __builtin_clz(ctx.r3.u32);
 	// rlwinm r11,r11,27,31,31
@@ -54003,7 +54003,7 @@ DEFINE_REX_FUNC(sub_8285FB30) {
 	ctx.r3.u64 = ctx.r4.u64;
 	// bl 0x82a14c68
 	ctx.lr = 0x8285FB44;
-	SetEndOfFile(ctx, base);
+	guest_SetEndOfFile(ctx, base);
 	// cntlzw r11,r3
 	ctx.r11.u64 = ctx.r3.u32 == 0 ? 32 : __builtin_clz(ctx.r3.u32);
 	// rlwinm r11,r11,27,31,31
@@ -54042,7 +54042,7 @@ DEFINE_REX_FUNC(sub_8285FB60) {
 	sub_8285F440(ctx, base);
 	// bl 0x82a14d10
 	ctx.lr = 0x8285FB80;
-	DeleteFileA(ctx, base);
+	guest_DeleteFileA(ctx, base);
 	// cntlzw r11,r3
 	ctx.r11.u64 = ctx.r3.u32 == 0 ? 32 : __builtin_clz(ctx.r3.u32);
 	// rlwinm r11,r11,27,31,31
@@ -54092,7 +54092,7 @@ DEFINE_REX_FUNC(sub_8285FBA0) {
 	ctx.r4.u64 = ctx.r6.u64;
 	// bl 0x82a14dc8
 	ctx.lr = 0x8285FBD4;
-	MoveFileA(ctx, base);
+	guest_MoveFileA(ctx, base);
 	// cntlzw r11,r3
 	ctx.r11.u64 = ctx.r3.u32 == 0 ? 32 : __builtin_clz(ctx.r3.u32);
 	// rlwinm r11,r11,27,31,31
@@ -54133,7 +54133,7 @@ DEFINE_REX_FUNC(sub_8285FBF0) {
 	ctx.r4.s64 = 0;
 	// bl 0x82a14e98
 	ctx.lr = 0x8285FC14;
-	CreateDirectoryA(ctx, base);
+	guest_CreateDirectoryA(ctx, base);
 	// cntlzw r11,r3
 	ctx.r11.u64 = ctx.r3.u32 == 0 ? 32 : __builtin_clz(ctx.r3.u32);
 	// rlwinm r11,r11,27,31,31
@@ -54233,7 +54233,7 @@ DEFINE_REX_FUNC(sub_8285FC70) {
 	ctx.r9.s64 = 0;
 	// bl 0x82a131b0
 	ctx.lr = 0x8285FCB4;
-	CreateFileA(ctx, base);
+	guest_CreateFileA(ctx, base);
 	// mr r30,r3
 	r30.u64 = ctx.r3.u64;
 	// cmpwi cr6,r30,-1
@@ -54273,7 +54273,7 @@ loc_8285FCF0:
 	ctx.r3.u64 = r30.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x8285FCF8;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// mr r3,r31
 	ctx.r3.u64 = r31.u64;
 loc_8285FCFC:
@@ -54397,7 +54397,7 @@ loc_8285FDA0:
 	ctx.r3.s64 = ctx.r1.s64 + 400;
 	// bl 0x82a14988
 	ctx.lr = 0x8285FDCC;
-	FindFirstFileA(ctx, base);
+	guest_FindFirstFileA(ctx, base);
 	// mr r7,r3
 	ctx.r7.u64 = ctx.r3.u64;
 	// cmpwi cr6,r7,-1

@@ -2083,7 +2083,7 @@ loc_82A0F480:
 	sub_82A0F208(ctx, base);
 	// bl 0x82a188e0
 	ctx.lr = 0x82A0F4D4;
-	FlushFileBuffers(ctx, base);
+	guest_FlushFileBuffers(ctx, base);
 	// cmpwi r3,0
 	cr0.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// bne 0x82a0f4e8
@@ -4864,7 +4864,7 @@ loc_82A10770:
 	ctx.r3.u64 = REX_LOAD_U32(r28.u32 + ctx.r11.u32);
 	// bl 0x82a12958
 	ctx.lr = 0x82A10788;
-	ReadFile(ctx, base);
+	guest_ReadFile(ctx, base);
 	// cmpwi r3,0
 	cr0.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// beq 0x82a10ad8
@@ -4994,7 +4994,7 @@ loc_82A10858:
 	ctx.r3.u64 = REX_LOAD_U32(r28.u32 + ctx.r11.u32);
 	// bl 0x82a12958
 	ctx.lr = 0x82A10878;
-	ReadFile(ctx, base);
+	guest_ReadFile(ctx, base);
 	// cmpwi r3,0
 	cr0.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// bne 0x82a1088c
@@ -8667,7 +8667,7 @@ DEFINE_REX_FUNC(sub_82A11F50) {
 	return;
 }
 
-DEFINE_REX_FUNC(CloseHandle) {
+DEFINE_REX_FUNC(guest_CloseHandle) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister ctr{};
 	PPCXERRegister xer{};
@@ -10077,7 +10077,7 @@ DEFINE_REX_FUNC(sub_82A127A0) {
 	return;
 }
 
-DEFINE_REX_FUNC(SetFilePointer) {
+DEFINE_REX_FUNC(guest_SetFilePointer) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister ctr{};
 	PPCXERRegister xer{};
@@ -10307,7 +10307,7 @@ DEFINE_REX_FUNC(sub_82A12950) {
 	return;
 }
 
-DEFINE_REX_FUNC(ReadFile) {
+DEFINE_REX_FUNC(guest_ReadFile) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister ctr{};
 	PPCXERRegister xer{};
@@ -11667,7 +11667,7 @@ DEFINE_REX_FUNC(sub_82A131A0) {
 	return;
 }
 
-DEFINE_REX_FUNC(CreateFileA) {
+DEFINE_REX_FUNC(guest_CreateFileA) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister ctr{};
 	PPCXERRegister xer{};
@@ -12301,7 +12301,7 @@ loc_82A135A4:
 	return;
 }
 
-DEFINE_REX_FUNC(GetFileSize) {
+DEFINE_REX_FUNC(guest_GetFileSize) {
 	REX_FUNC_PROLOGUE();
 	PPCXERRegister xer{};
 	PPCCRRegister cr0{};
@@ -12324,7 +12324,7 @@ DEFINE_REX_FUNC(GetFileSize) {
 	ctx.r4.s64 = ctx.r1.s64 + 80;
 	// bl 0x82a14918
 	ctx.lr = 0x82A135CC;
-	GetFileSizeEx(ctx, base);
+	guest_GetFileSizeEx(ctx, base);
 	// cmpwi r3,0
 	cr0.compare<int32_t>(ctx.r3.s32, 0, xer);
 	// beq 0x82a13600
@@ -12369,7 +12369,7 @@ loc_82A13604:
 	return;
 }
 
-DEFINE_REX_FUNC(WriteFile) {
+DEFINE_REX_FUNC(guest_WriteFile) {
 	REX_FUNC_PROLOGUE();
 	PPCXERRegister xer{};
 	PPCCRRegister cr0{};
@@ -15261,7 +15261,7 @@ loc_82A14904:
 	return;
 }
 
-DEFINE_REX_FUNC(GetFileSizeEx) {
+DEFINE_REX_FUNC(guest_GetFileSizeEx) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister ctr{};
 	PPCXERRegister xer{};
@@ -15330,7 +15330,7 @@ loc_82A14970:
 	return;
 }
 
-DEFINE_REX_FUNC(FindFirstFileA) {
+DEFINE_REX_FUNC(guest_FindFirstFileA) {
 	REX_FUNC_PROLOGUE();
 	PPCXERRegister xer{};
 	PPCCRRegister cr0{};
@@ -15416,7 +15416,7 @@ loc_82A14A00:
 	return;
 }
 
-DEFINE_REX_FUNC(SetFileTime) {
+DEFINE_REX_FUNC(guest_SetFileTime) {
 	REX_FUNC_PROLOGUE();
 	PPCXERRegister xer{};
 	PPCCRRegister cr0{};
@@ -15519,7 +15519,7 @@ loc_82A14AB4:
 	return;
 }
 
-DEFINE_REX_FUNC(GetFileAttributesA) {
+DEFINE_REX_FUNC(guest_GetFileAttributesA) {
 	REX_FUNC_PROLOGUE();
 	PPCXERRegister xer{};
 	PPCCRRegister cr0{};
@@ -15583,7 +15583,7 @@ loc_82A14B1C:
 	return;
 }
 
-DEFINE_REX_FUNC(SetFileAttributesA) {
+DEFINE_REX_FUNC(guest_SetFileAttributesA) {
 	REX_FUNC_PROLOGUE();
 	PPCXERRegister xer{};
 	PPCCRRegister cr0{};
@@ -15772,7 +15772,7 @@ loc_82A14C54:
 	return;
 }
 
-DEFINE_REX_FUNC(SetEndOfFile) {
+DEFINE_REX_FUNC(guest_SetEndOfFile) {
 	REX_FUNC_PROLOGUE();
 	PPCXERRegister xer{};
 	PPCCRRegister cr0{};
@@ -15870,7 +15870,7 @@ loc_82A14CF8:
 	return;
 }
 
-DEFINE_REX_FUNC(DeleteFileA) {
+DEFINE_REX_FUNC(guest_DeleteFileA) {
 	REX_FUNC_PROLOGUE();
 	PPCXERRegister xer{};
 	PPCCRRegister cr0{};
@@ -15979,7 +15979,7 @@ loc_82A14DB0:
 	return;
 }
 
-DEFINE_REX_FUNC(MoveFileA) {
+DEFINE_REX_FUNC(guest_MoveFileA) {
 	REX_FUNC_PROLOGUE();
 	PPCXERRegister xer{};
 	PPCCRRegister cr0{};
@@ -16104,7 +16104,7 @@ loc_82A14E80:
 	return;
 }
 
-DEFINE_REX_FUNC(CreateDirectoryA) {
+DEFINE_REX_FUNC(guest_CreateDirectoryA) {
 	REX_FUNC_PROLOGUE();
 	PPCXERRegister xer{};
 	PPCCRRegister cr0{};
@@ -24768,7 +24768,7 @@ loc_82A188C8:
 	return;
 }
 
-DEFINE_REX_FUNC(FlushFileBuffers) {
+DEFINE_REX_FUNC(guest_FlushFileBuffers) {
 	REX_FUNC_PROLOGUE();
 	PPCXERRegister xer{};
 	PPCCRRegister cr0{};
@@ -59575,7 +59575,7 @@ DEFINE_REX_FUNC(sub_82A265F8) {
 	REX_STORE_U32(r31.u32 + 1300, r28.u32);
 	// bl 0x82a11f68
 	ctx.lr = 0x82A26654;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// stw r30,1264(r31)
 	REX_STORE_U32(r31.u32 + 1264, r30.u32);
 loc_82A26658:
@@ -59591,7 +59591,7 @@ loc_82A26658:
 	if (cr6.eq) goto loc_82A26674;
 	// bl 0x82a11f68
 	ctx.lr = 0x82A26670;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// stw r30,1304(r31)
 	REX_STORE_U32(r31.u32 + 1304, r30.u32);
 loc_82A26674:
@@ -59607,7 +59607,7 @@ loc_82A26674:
 	if (cr6.eq) goto loc_82A26690;
 	// bl 0x82a11f68
 	ctx.lr = 0x82A2668C;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// stw r30,1312(r31)
 	REX_STORE_U32(r31.u32 + 1312, r30.u32);
 loc_82A26690:
@@ -61057,7 +61057,7 @@ loc_82A26EF4:
 	ctx.r3.u64 = r31.u64;
 	// bl 0x82a11f68
 	ctx.lr = 0x82A26F10;
-	CloseHandle(ctx, base);
+	guest_CloseHandle(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// bl 0x82a13408
