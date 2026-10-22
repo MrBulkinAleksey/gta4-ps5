@@ -5,7 +5,15 @@ name: Windows
 on:
   push:
     branches: [main, windows-port]
+    # (the live MCP tool and docs are not part of the app: a change to them
+    # alone would only cancel a build in progress)
+    paths-ignore:
+      - "tools/gta4-live-mcp/**"
+      - "**/*.md"
   pull_request:
+    paths-ignore:
+      - "tools/gta4-live-mcp/**"
+      - "**/*.md"
   workflow_dispatch:
 
 concurrency:
