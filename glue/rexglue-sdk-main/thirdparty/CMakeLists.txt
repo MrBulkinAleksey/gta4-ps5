@@ -251,9 +251,13 @@ target_compile_options(imgui PRIVATE -w)
 # SDL3 - Cross-platform media layer
 #=============================================================================
 set(SDL_INSTALL ON CACHE BOOL "" FORCE)
-if(ANDROID)
+if(ANDROID OR WIN32)
     # The runtime, the GPU plugins and libmain.so are separate shared objects
     # on Android; one libSDL3.so keeps a single SDL state and JNI binding.
+    # [windows port] The same on Windows, where a static SDL would be one
+    # copy in the exe and another in rexruntime.dll (DLLs don't share
+    # symbols as ELF objects do): the exe would set up one, the runtime use
+    # the other.
     set(SDL_SHARED ON CACHE BOOL "" FORCE)
     set(SDL_STATIC OFF CACHE BOOL "" FORCE)
 else()
