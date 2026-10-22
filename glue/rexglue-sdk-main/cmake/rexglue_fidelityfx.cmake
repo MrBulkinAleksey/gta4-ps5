@@ -187,15 +187,18 @@ set(FFX_API_ENABLE_FRAMEGEN_PROVIDER ${REXGLUE_FIDELITYFX_FRAME_GENERATION} CACH
 set(FFX_API_AUTO_COMPILE_SHADERS ON CACHE BOOL "" FORCE)
 add_subdirectory("${fidelityfx_SOURCE_DIR}/ffx-api" "${fidelityfx_BINARY_DIR}/ffx-api" EXCLUDE_FROM_ALL)
 
-if(TARGET amd_fidelityfx_vk AND REXGLUE_FIDELITYFX_FRAME_GENERATION AND NOT WIN32)
+if(TARGET amd_fidelityfx_vk AND REXGLUE_FIDELITYFX_FRAME_GENERATION)
     # The SDK's Vulkan proxy swapchain is Win32-only. Direct interpolation is
     # portable and uses NO_SWAPCHAIN_CONTEXT_NOTIFY. Build the real interpolation
     # provider while excluding only the unsupported proxy from the registry.
     # Generate an overlay rather than modifying the pinned dependency checkout.
+    # [windows port] Left out on Windows too: the renderer interpolates directly
+    # everywhere (fsr_vulkan.cpp), and the proxy's MSVC-only code (temporaries
+    # bound to non-const references) does not build with clang.
     set(_rexglue_ffx_provider "${fidelityfx_SOURCE_DIR}/ffx-api/src/ffx_provider.cpp")
     file(READ "${_rexglue_ffx_provider}" _rexglue_ffx_provider_source)
     string(REPLACE "#ifdef FFX_BACKEND_VK"
-        "#if defined(FFX_BACKEND_VK) && defined(_WIN32)"
+        "#if defined(FFX_BACKEND_VK) && defined(REXGLUE_FFX_VK_PROXY_SWAPCHAIN)"
         _rexglue_ffx_provider_source "${_rexglue_ffx_provider_source}")
     set(_rexglue_ffx_provider_overlay "${fidelityfx_BINARY_DIR}/ffx_provider_direct_vk.cpp")
     _rexglue_ffx_write_if_changed("${_rexglue_ffx_provider_overlay}" "${_rexglue_ffx_provider_source}")
@@ -205,9 +208,16 @@ if(TARGET amd_fidelityfx_vk AND REXGLUE_FIDELITYFX_FRAME_GENERATION AND NOT WIN3
     list(APPEND _rexglue_ffx_sources "${_rexglue_ffx_provider_overlay}")
     set_property(TARGET amd_fidelityfx_vk PROPERTY SOURCES "${_rexglue_ffx_sources}")
     target_include_directories(amd_fidelityfx_vk PRIVATE "${fidelityfx_SOURCE_DIR}/ffx-api/src")
+    if(TARGET ffx_backend_vk_x64)
+        # (the backend adds the proxy's sources on Win32 only)
+        get_target_property(_rexglue_ffx_backend_sources ffx_backend_vk_x64 SOURCES)
+        list(FILTER _rexglue_ffx_backend_sources EXCLUDE REGEX "/FrameInterpolationSwapchain/")
+        set_property(TARGET ffx_backend_vk_x64 PROPERTY SOURCES "${_rexglue_ffx_backend_sources}")
+    endif()
 endif()
 
-if(TARGET ffx_backend_vk_x64 AND NOT WIN32)
+# [windows port] On Windows too: the same clang emits the same aligned stores.
+if(TARGET ffx_backend_vk_x64)
     # The Vulkan backend carves its scratch buffer into arrays at 4-byte
     # offsets, but EffectContext is alignas(32): clang may store to it with
     # aligned vector moves, which fault (the PS5 crashed this way creating the
