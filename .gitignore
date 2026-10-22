@@ -743,6 +743,7 @@ scripts/
 
 # Repository setup and validation are maintained source, not local scripts.
 !/tools/setup_repo.py
+!/tools/gta4-live-mcp/server.py
 !/tools/test_setup_repo.py
 !/update_submodules.sh
 /CMakeFiles/
