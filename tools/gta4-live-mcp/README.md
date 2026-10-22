@@ -69,7 +69,25 @@ claude mcp add gtaiv-pc-live -e GTA4_LIVE_PORT=5051 -e GTA4_LIVE_TARGET=pc -- py
 | `modules` (PC) | Loaded modules with base and size |
 | `find_signature` (PC) | A signature with wildcards, as FusionFix's hooks write them |
 | `ini_get` / `ini_set` (PC) | The FusionFix ini; `ini_set` has it read again at the next frame |
+| `screenshot` | The frame the game shows, as an image (both games) |
+| `scene` / `teleport` / `set_time` / `set_weather` (PC) | Player, camera, time and weather through script natives (not while paused or in a menu) |
+| `shader_manifest` (recomp) | Find shader override entries by hash or source |
+| `shader_override_push` (recomp) | Compile entries here and send them as live overrides |
+| `shader_override_list` / `shader_override_remove` (recomp) | The live overrides the game holds |
+| `restart_game` (recomp) | Restart the game; live overrides and restart-only settings apply |
 
 Recomp addresses are guest addresses, as in the generated code and the hooks
 (`0x82000000` and up is the executable image); PC addresses are the game
 process's own.
+
+## Live shader overrides (recomp)
+
+`shader_override_push` compiles manifest entries with
+`glue/rexglue-sdk-main/tools/gta4_shader_override_compiler.py --binary-dir`,
+using DXC 1.9, `spirv-val` and `glslangValidator` from
+`~/.cache/gta4-shader-tools` (or `GTA4_SHADER_TOOLS`): `dxc/bin/dxc`,
+`dxc/lib/libdxcompiler.so`, `spirv-val`, `glslangValidator`. The game keeps
+them in `shader_overrides_live/` next to the exe and uses them from its next
+start, in place of the built-in entries of the same stage and hash: edit the
+HLSL, push, `restart_game`, `screenshot`. A rebuild is needed only to make a
+change permanent for everyone.
