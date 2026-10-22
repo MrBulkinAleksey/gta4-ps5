@@ -18,12 +18,16 @@ chains and dumps happens here, so tools can grow without rebuilding the game.
 No dependencies beyond the standard library.
 """
 
+import base64
 import json
 import os
+import subprocess
+import tempfile
 import socket
 import struct
 import sys
 import threading
+from pathlib import Path
 
 PROTOCOL_VERSION = "2025-06-18"
 HOST = os.environ.get("GTA4_LIVE_HOST", "127.0.0.1")
@@ -254,6 +258,62 @@ def tool_screenshot(args):
             {"type": "text", "text": note}]
 
 
+# ---- live shader overrides (recomp): compiled here, applied by the game at its next start
+
+REPO = Path(__file__).resolve().parents[2]
+SHADER_TOOLS = Path(os.environ.get("GTA4_SHADER_TOOLS", Path.home() / ".cache/gta4-shader-tools"))
+OVERRIDES = REPO / "LibertyRecompLib/shader_overrides"
+COMPILER = REPO / "glue/rexglue-sdk-main/tools/gta4_shader_override_compiler.py"
+
+
+def tool_shader_manifest(args):
+    needle = str(args.get("filter", "")).lower().removeprefix("0x")
+    entries = json.loads((OVERRIDES / "manifest.json").read_text())["overrides"]
+    rows = [f"{e['stage']:<6} {e['hash']}  {e['source']}" for e in entries
+            if needle in e["hash"].lower() or needle in e["source"].lower()]
+    return f"{len(rows)} of {len(entries)} entries\n" + "\n".join(rows[:200])
+
+
+def tool_shader_override_push(args):
+    wanted = args["only"] if isinstance(args["only"], list) else [args["only"]]
+    with tempfile.TemporaryDirectory(prefix="gta4-live-ovr-") as out:
+        command = [sys.executable, "-I", str(COMPILER),
+                   "--manifest", str(OVERRIDES / "manifest.json"), "--source-root", str(OVERRIDES),
+                   "--binary-dir", out,
+                   "--dxc", str(SHADER_TOOLS / "dxc/bin/dxc"), "--dxc-library-path", str(SHADER_TOOLS / "dxc/lib"),
+                   "--glslang-validator", str(SHADER_TOOLS / "glslangValidator"),
+                   "--spirv-val", str(SHADER_TOOLS / "spirv-val")]
+        for item in wanted:
+            command += ["--only", str(item)]
+        compiled = subprocess.run(command, capture_output=True, text=True)
+        if compiled.returncode:
+            raise GameError("compile failed:\n" + (compiled.stderr or compiled.stdout)[-4000:])
+        sent = []
+        for file in sorted(Path(out).glob("*.ovr")):
+            GAME.call("shader_override_put", name=file.name, data=base64.b64encode(file.read_bytes()).decode())
+            sent.append(f"{file.name} ({file.stat().st_size} bytes)")
+    return ("sent:\n" + "\n".join(sent) +
+            "\napplied at the game's next start (restart_game)")
+
+
+def tool_shader_override_list(_):
+    reply = GAME.call("shader_override_list")
+    rows = [f"{o['name']}  {o['bytes']} bytes" for o in reply["overrides"]]
+    return f"{reply['dir']}\n" + ("\n".join(rows) or "none")
+
+
+def tool_shader_override_remove(args):
+    reply = GAME.call("shader_override_remove", name=args.get("name", "all"))
+    return f"removed {reply['removed']} (applied at the next start)"
+
+
+def tool_restart_game(_):
+    reply = GAME.call("restart")
+    GAME._close()
+    return (f"restarting: the next instance is pid {reply['next_pid']}; the debug server is back "
+            "once it has loaded (call game_info until it answers)")
+
+
 def tool_modules(args):
     modules = GAME.call("modules")["modules"]
     needle = args.get("filter", "").lower()
@@ -321,6 +381,18 @@ TOOLS = [
 ]
 if TARGET == "recomp":
     TOOLS += [
+        ("shader_manifest", tool_shader_manifest,
+         "Entries of the shader override manifest (LibertyRecompLib/shader_overrides) whose hash or source "
+         "contains filter.", {"filter": {"type": "string"}}, []),
+        ("shader_override_push", tool_shader_override_push,
+         "Compile manifest entries (by hash or source file, as in the repository now) and send them to the "
+         "game as live overrides, used from its next start (restart_game).",
+         {"only": {"type": ["string", "array"], "items": {"type": "string"}}}, ["only"]),
+        ("shader_override_list", tool_shader_override_list, "The live overrides the game holds.", {}, []),
+        ("shader_override_remove", tool_shader_override_remove,
+         "Remove one live override by file name, or all (the default).", {"name": {"type": "string"}}, []),
+        ("restart_game", tool_restart_game,
+         "Restart the game (same command line); live overrides and restart-only settings take effect.", {}, []),
         ("cvar_list", tool_cvar_list, "List the game's cvars (settings) whose name contains filter.",
          {"filter": {"type": "string"}, "verbose": {"type": "boolean"}}, []),
         ("cvar_get", tool_cvar_get, "One cvar: value, default, category, description.",
