@@ -7,11 +7,24 @@
 #include <cstdint>
 #include <string_view>
 
+#if defined(_WIN32)
+#include <rex/thread.h>
+#else
 #include <pthread.h>
+#endif
 
 #include <rex/chrono/clock.h>
 
 namespace rex::frame_stats {
+
+// The calling thread, as g_title_thread and g_game_main_thread hold it.
+inline uintptr_t CurrentThreadKey() {
+#if defined(_WIN32)
+  return uintptr_t(rex::thread::current_thread_system_id());  // [windows port] no pthreads
+#else
+  return reinterpret_cast<uintptr_t>(pthread_self());
+#endif
+}
 
 inline std::atomic<uint64_t> g_presents{0};
 // Images sent to the TV (more than the game's frames with frame generation).
@@ -66,12 +79,12 @@ inline std::atomic<uintptr_t> g_game_main_thread{0};
 inline std::atomic<uint64_t> g_main_guest_wait_ticks{0};
 inline bool IsTitleThread() {
   const uintptr_t title = g_title_thread.load(std::memory_order_relaxed);
-  return title && title == reinterpret_cast<uintptr_t>(pthread_self());
+  return title && title == CurrentThreadKey();
 }
 class TitleWaitScope {
  public:
   TitleWaitScope() {
-    const uintptr_t self = reinterpret_cast<uintptr_t>(pthread_self());
+    const uintptr_t self = CurrentThreadKey();
     if (self == g_title_thread.load(std::memory_order_relaxed)) {
       main_ = false;
     } else if (self == g_game_main_thread.load(std::memory_order_relaxed)) {

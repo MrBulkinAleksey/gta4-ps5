@@ -20,6 +20,13 @@
 #include <rex/platform.h>
 #if REX_PLATFORM_PS5
 #include <rex/filesystem/direct_io.h>
+#elif defined(_WIN32)
+// [windows port] Only the PS5 reads the image through a Reader, and
+// direct_io.h has none on Windows; MSVC's unique_ptr still wants the type
+// complete to destroy reader_.
+namespace rex::filesystem::direct {
+class Reader {};
+}  // namespace rex::filesystem::direct
 #endif
 
 #include <rex/literals.h>
