@@ -313,6 +313,111 @@ if(APPLE AND LIBERTY_RECOMP_TARGET_PLATFORM STREQUAL "desktop")
             "$<TARGET_BUNDLE_DIR:LibertyRecomp>" --arch "${CMAKE_OSX_ARCHITECTURES}"
         COMMENT "Verifying macOS runtime closure, architecture, minimum OS, and signature..."
         VERBATIM)
+elseif(WIN32)
+    # [windows port] The desktop app: LibertyRecomp.exe with the runtime, SDL3
+    # and the GPU plugin DLLs next to it, and the title resources in
+    # Resources/ beside them (rex::filesystem::GetResourcesFolder()). The
+    # services the macOS host writes in Objective-C++ and the curl/OpenSSL
+    # community backend take the Android stubs, as on the PS5.
+    set(GTA4_WINDOWS_SOURCES ${GTA4_APP_SOURCES})
+    list(REMOVE_ITEM GTA4_WINDOWS_SOURCES src/network/community_multiplayer.cpp)
+
+    add_executable(LibertyRecomp
+        ${GTA4_WINDOWS_SOURCES}
+        src/android/android_platform_stubs.cpp
+        ${GENERATED_SOURCES}
+    )
+
+    set_property(SOURCE generated/gta4_register.cpp APPEND PROPERTY COMPILE_OPTIONS
+        "$<$<CONFIG:Release,RelWithDebInfo>:-O0>")
+
+    target_include_directories(LibertyRecomp PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/generated
+        ${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/crypto
+        ${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/imgui
+        ${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/inja/third_party/include
+    )
+    set_property(SOURCE src/gta4_native_hooks.cpp APPEND PROPERTY INCLUDE_DIRECTORIES
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+
+    set_source_files_properties(src/gta4_sony_feedback.cpp src/gta4_sony_event_hooks.cpp
+        PROPERTIES COMPILE_DEFINITIONS GTA4_SONY_PRIMARY_PLAYER_ALIAS)
+
+    # The asset paths are build-machine fallbacks; the packaged app finds
+    # every resource in Resources/ first.
+    set(LIBERTY_BUTTON_PROMPT_SOURCE
+        "${LIBERTY_RECOMP_WORKSPACE_ROOT}/LibertyRecompLib/private/button_prompts")
+    set(LIBERTY_RPF_AES_KEY_SOURCE
+        "${LIBERTY_RECOMP_WORKSPACE_ROOT}/LibertyRecompLib/aes_key.bin")
+    target_compile_definitions(LibertyRecomp PRIVATE
+        GTA4_TOUCH_PRIMARY_PLAYER_ALIAS=1
+        GTA4_RECOMP_ASSET_XEX="${CMAKE_CURRENT_SOURCE_DIR}/assets/default_v8.xex"
+        GTA4_BUTTON_PROMPT_ASSET_ROOT="${LIBERTY_BUTTON_PROMPT_SOURCE}"
+        GTA4_RPF_AES_KEY_SOURCE="${LIBERTY_RPF_AES_KEY_SOURCE}"
+    )
+
+    # zlib for the installer's RPF extraction (no system zlib on Windows).
+    if(NOT TARGET zlibstatic)
+        include(FetchContent)
+        set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(liberty_zlib
+            URL https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+            URL_HASH SHA256=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23)
+        FetchContent_MakeAvailable(liberty_zlib)
+        # (only the static library is linked)
+        set_target_properties(zlib PROPERTIES EXCLUDE_FROM_ALL ON)
+    endif()
+
+    target_link_libraries(LibertyRecomp PRIVATE
+        rex::runtime
+        xxHash::xxhash
+        SDL3::SDL3
+        utf8cpp
+        zlibstatic
+    )
+
+    rexglue_configure_target(LibertyRecomp GPU_PLUGINS xenos gta4-native)
+
+    set_target_properties(LibertyRecomp PROPERTIES
+        OUTPUT_NAME "LibertyRecomp"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/LibertyRecomp"
+    )
+
+    # Resources/: the button prompts, the vector font atlases and the RPF key,
+    # the same files the macOS bundle carries.
+    set(_liberty_resources "$<TARGET_FILE_DIR:LibertyRecomp>/Resources")
+    set(_liberty_font_source "${LIBERTY_RECOMP_WORKSPACE_ROOT}/LibertyRecompLib/font_atlases")
+    set(_liberty_resource_commands)
+    foreach(_variant xbox360 xbox_one xbox_series_x ps3 ps4 ps5 switch steam_controller steam_deck)
+        list(APPEND _liberty_resource_commands
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_liberty_resources}/button_prompts/${_variant}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${LIBERTY_BUTTON_PROMPT_SOURCE}/${_variant}/buttons_360.xtd"
+                "${_liberty_resources}/button_prompts/${_variant}")
+    endforeach()
+    foreach(_set "" tlad tbogt)
+        set(_dir "${_liberty_resources}/font_atlases")
+        set(_src "${_liberty_font_source}")
+        if(_set)
+            string(APPEND _dir "/${_set}")
+            string(APPEND _src "/${_set}")
+        endif()
+        list(APPEND _liberty_resource_commands
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_dir}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_src}/font1.png" "${_src}/font2.png" "${_src}/font3.png" "${_src}/manifest.json"
+                "${_dir}")
+    endforeach()
+    if(EXISTS "${LIBERTY_RPF_AES_KEY_SOURCE}")
+        list(APPEND _liberty_resource_commands
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${LIBERTY_RPF_AES_KEY_SOURCE}" "${_liberty_resources}")
+    endif()
+    add_custom_command(TARGET LibertyRecomp POST_BUILD
+        ${_liberty_resource_commands}
+        COMMENT "Staging the title resources..."
+        VERBATIM)
 elseif(ANDROID)
     # SDL3's SDLActivity loads libmain.so and calls its SDL_main. The runtime,
     # SDL3 and the GPU plugins are unpacked next to it in nativeLibraryDir;

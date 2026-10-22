@@ -89,7 +89,7 @@ namespace LibertyRecomp::Network {
 
 rex::system::xam::LiveBackendServices CreateCommunityMultiplayerBackend(
     const rex::system::xam::LiveConfig&, const rex::system::xam::LiveIdentity&) {
-  REXLOG_WARN("Community multiplayer is not available on Android");
+  REXLOG_WARN("Community multiplayer is not available on this platform");
   return {};
 }
 

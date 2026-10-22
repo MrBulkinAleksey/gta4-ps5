@@ -37,6 +37,9 @@ std::filesystem::path GetResourcesFolder() {
 #if REX_PLATFORM_PS5
   return std::filesystem::path("/app0/Resources");  // [ps5 port] in the app package
 #endif
+#if REX_PLATFORM_WIN32
+  return GetExecutableFolder() / "Resources";  // [windows port] next to the exe
+#endif
   return GetExecutableFolder().parent_path() / "Resources";
 }
 
