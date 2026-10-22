@@ -286,13 +286,11 @@ set(SDL_FILESYSTEM OFF CACHE BOOL "" FORCE)
 set(SDL_LOCALE OFF CACHE BOOL "" FORCE)
 set(SDL_FILE OFF CACHE BOOL "" FORCE)
 set(SDL_MISC OFF CACHE BOOL "" FORCE)
-# File dialogs: Linux consumers rely on SDL's xdg-desktop-portal/zenity
-# backends; Windows apps use IFileOpenDialog directly, so keep it off there.
-if(WIN32)
-    set(SDL_DIALOG OFF CACHE BOOL "" FORCE)
-else()
-    set(SDL_DIALOG ON CACHE BOOL "" FORCE)
-endif()
+# File dialogs: SDL's xdg-desktop-portal/zenity backends on Linux, its
+# IFileDialog backend on Windows. [windows port] The GTA IV installer's
+# Select File / Select Folder go through SDL on every desktop platform
+# (gta4_install_dialog.cpp), Windows included.
+set(SDL_DIALOG ON CACHE BOOL "" FORCE)
 set(SDL_TRAY OFF CACHE BOOL "" FORCE)
 set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
 
