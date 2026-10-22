@@ -9073,6 +9073,99 @@ VkFormat Gta4NativeGraphicsSystem::GetDefaultVertexFormat(NativeVertexNumericTyp
   return VK_FORMAT_UNDEFINED;
 }
 
+namespace {
+
+// [windows port] Overrides compiled after the build (tools/gta4_shader_override_compiler.py
+// --binary-dir, one <stage>_<hash>.ovr each) and put in shader_overrides_live/ next to the exe,
+// for trying a shader without rebuilding the game: read at the first shader registration, each
+// takes the place of the built-in entry of its stage and hash and then goes through the same
+// SPIR-V processing.
+struct LiveShaderOverride {
+  ShaderOverrideCacheEntry entry{};
+  std::vector<uint64_t> counterparts;
+  std::vector<uint32_t> spirv;
+  std::vector<uint32_t> late_spirv;
+  std::string filename;
+};
+
+std::unique_ptr<LiveShaderOverride> ParseLiveShaderOverride(const std::vector<uint8_t>& bytes) {
+  size_t at = 0;
+  auto take = [&](void* out, size_t size) {
+    if (bytes.size() - at < size) return false;
+    std::memcpy(out, bytes.data() + at, size);
+    at += size;
+    return true;
+  };
+  char magic[8];
+  uint64_t hash = 0;
+  uint32_t fields[11] = {};  // stage .. name length, as the compiler packs them
+  if (!take(magic, sizeof(magic)) || std::memcmp(magic, "GTA4OVR1", 8) || !take(&hash, sizeof(hash)) ||
+      !take(fields, sizeof(fields))) {
+    return nullptr;
+  }
+  auto live = std::make_unique<LiveShaderOverride>();
+  live->counterparts.resize(fields[7]);
+  live->spirv.resize(fields[8]);
+  live->late_spirv.resize(fields[9]);
+  live->filename.resize(fields[10]);
+  if (live->spirv.empty() || fields[0] > kShaderOverrideStageVertex ||
+      !take(live->counterparts.data(), live->counterparts.size() * sizeof(uint64_t)) ||
+      !take(live->spirv.data(), live->spirv.size() * sizeof(uint32_t)) ||
+      !take(live->late_spirv.data(), live->late_spirv.size() * sizeof(uint32_t)) ||
+      !take(live->filename.data(), live->filename.size()) || at != bytes.size()) {
+    return nullptr;
+  }
+  ShaderOverrideCacheEntry& entry = live->entry;
+  entry.hash = hash;
+  entry.stage = fields[0];
+  entry.specialization_constants_mask = fields[1];
+  entry.activation = fields[2];
+  entry.pipeline_pair_id = fields[3];
+  entry.used_texture_mask = fields[4];
+  entry.support_radius_bits = fields[5];
+  entry.supported_sample_count_mask = fields[6];
+  entry.counterpart_hashes = live->counterparts.empty() ? nullptr : live->counterparts.data();
+  entry.counterpart_hash_count = live->counterparts.size();
+  entry.spirv = live->spirv.data();
+  entry.spirv_size = live->spirv.size() * sizeof(uint32_t);  // (bytes, as the built-in table's)
+  entry.late_spirv = live->late_spirv.empty() ? nullptr : live->late_spirv.data();
+  entry.late_spirv_size = live->late_spirv.size() * sizeof(uint32_t);
+  entry.filename = live->filename.c_str();
+  return live;
+}
+
+using LiveShaderOverrideMap =
+    std::map<std::pair<uint32_t, uint64_t>, std::unique_ptr<LiveShaderOverride>>;
+
+const LiveShaderOverrideMap& LiveShaderOverrides() {
+  static const LiveShaderOverrideMap overrides = [] {
+    LiveShaderOverrideMap loaded;
+    const auto directory = rex::filesystem::GetExecutableFolder() / "shader_overrides_live";
+    std::error_code error;
+    for (const auto& file : std::filesystem::directory_iterator(directory, error)) {
+      if (file.path().extension() != ".ovr") continue;
+      std::ifstream stream(file.path(), std::ios::binary);
+      std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(stream)),
+                                 std::istreambuf_iterator<char>());
+      auto live = ParseLiveShaderOverride(bytes);
+      if (!live) {
+        REXLOG_ERROR("gta4-native: live shader override {} is malformed; skipped",
+                     file.path().filename().string());
+        continue;
+      }
+      REXLOG_INFO("gta4-native: live shader override {} {:016X} from {} ({})",
+                  live->entry.stage == kShaderOverrideStageVertex ? "vertex" : "pixel",
+                  live->entry.hash, file.path().filename().string(), live->filename);
+      const auto key = std::pair{live->entry.stage, live->entry.hash};
+      loaded[key] = std::move(live);
+    }
+    return loaded;
+  }();
+  return overrides;
+}
+
+}  // namespace
+
 void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& command) {
   static_assert(uint32_t(ShaderStage::kPixel) == kShaderOverrideStagePixel);
   static_assert(uint32_t(ShaderStage::kVertex) == kShaderOverrideStageVertex);
@@ -9091,6 +9184,9 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
   if (override_entry == override_end || override_entry->stage != override_stage ||
       override_entry->hash != command.hash) {
     override_entry = nullptr;
+  }
+  if (const auto& live = LiveShaderOverrides(); live.contains(override_key)) {
+    override_entry = &live.at(override_key)->entry;  // [windows port] a live override wins
   }
 
   if (!InitializeShaderCache()) {

@@ -732,6 +732,42 @@ def generate_cpp(compiled_entries: Sequence[dict[str, Any]]) -> str:
     return "\n".join(output)
 
 
+LIVE_OVERRIDE_MAGIC = b"GTA4OVR1"
+
+
+def generate_live_override(entry: dict[str, Any]) -> bytes:
+    """One compiled entry as the renderer loads it from shader_overrides_live/ at startup
+    (graphics_system.cpp, LoadLiveShaderOverrides): the ShaderOverrideCacheEntry fields, then the
+    counterparts, the SPIR-V words and the source name, little-endian."""
+    late_words = entry.get("late_words") or []
+    name = entry["source_name"].encode("utf-8")
+    blob = bytearray(LIVE_OVERRIDE_MAGIC)
+    blob += struct.pack(
+        "<QIIIIIIIIIII",
+        entry["hash"],
+        entry["stage"],
+        entry["specialization_constants_mask"],
+        entry["activation"],
+        entry["pipeline_pair_id"],
+        entry["used_texture_mask"],
+        entry["support_radius_bits"],
+        entry["supported_sample_count_mask"],
+        len(entry["counterpart_hashes"]),
+        len(entry["words"]),
+        len(late_words),
+        len(name),
+    )
+    blob += struct.pack(f"<{len(entry['counterpart_hashes'])}Q", *entry["counterpart_hashes"])
+    blob += struct.pack(f"<{len(entry['words'])}I", *entry["words"])
+    blob += struct.pack(f"<{len(late_words)}I", *late_words)
+    blob += name
+    return bytes(blob)
+
+
+def live_override_name(entry: dict[str, Any]) -> str:
+    return f"{entry['stage_name']}_{entry['hash']:016X}.ovr"
+
+
 def _write_if_changed(path: Path, content: str) -> None:
     encoded = content.encode("utf-8")
     if path.is_file() and path.read_bytes() == encoded:
@@ -760,7 +796,18 @@ def parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespac
     )
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--source-root", required=True, type=Path)
-    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--output", type=Path, help="the C++ table (the build's output)")
+    parser.add_argument(
+        "--binary-dir",
+        type=Path,
+        help="also (or instead) write each entry as <stage>_<hash>.ovr, the renderer's live overrides",
+    )
+    parser.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        help="compile only the entry with this hash (hex; repeatable), or whose source is this file",
+    )
     parser.add_argument("--depfile", type=Path)
     parser.add_argument("--dxc")
     parser.add_argument("--dxc-library-path")
@@ -772,7 +819,20 @@ def parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespac
 def main(arguments: Sequence[str] | None = None) -> int:
     options = parse_arguments(arguments)
     try:
+        if not options.output and not options.binary_dir:
+            raise ManifestError("give --output, --binary-dir, or both")
         entries = load_manifest(options.manifest, options.source_root)
+        if options.only:
+            wanted = {value.lower().removeprefix("0x") for value in options.only}
+            entries = [
+                entry
+                for entry in entries
+                if f"{entry['hash']:016x}" in wanted
+                or entry["source_name"].lower() in wanted
+                or Path(entry["source_name"]).name.lower() in wanted
+            ]
+            if not entries:
+                raise ManifestError(f"no manifest entry matches {', '.join(options.only)}")
         if entries and not options.spirv_val:
             raise ManifestError("spirv-val is required when the override manifest is not empty")
 
@@ -847,6 +907,15 @@ def main(arguments: Sequence[str] | None = None) -> int:
                         )
                 compiled_entries.append(compiled_entry)
 
+        if options.binary_dir:
+            options.binary_dir.mkdir(parents=True, exist_ok=True)
+            for entry in compiled_entries:
+                (options.binary_dir / live_override_name(entry)).write_bytes(
+                    generate_live_override(entry)
+                )
+                print(f"{live_override_name(entry)}  {entry['source_name']}")
+        if not options.output:
+            return 0
         _write_if_changed(options.output, generate_cpp(compiled_entries))
         if options.depfile:
             dependencies = [options.manifest, Path(__file__)]

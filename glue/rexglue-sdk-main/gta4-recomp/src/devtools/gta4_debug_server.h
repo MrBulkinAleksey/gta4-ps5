@@ -5,11 +5,16 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 
 namespace gta4::debug_server {
 
 // Starts listening when gta4_debug_server_port is set (once; later calls do
 // nothing). `logs_dir` is where the app writes its log files.
 void Start(const std::filesystem::path& logs_dir);
+
+// How the restart command ends this instance once it has started the next one (the app's
+// quit, run from the server's thread).
+void SetQuitRequest(std::function<void()> quit);
 
 }  // namespace gta4::debug_server

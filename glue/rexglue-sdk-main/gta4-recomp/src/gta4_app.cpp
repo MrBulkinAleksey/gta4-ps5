@@ -1097,6 +1097,9 @@ void GTA4App::OnPostSetup() {
   gta4::frontend_menu::SetConfigPath(native_config_path_);
 #if REX_PLATFORM_WIN32
   // (off unless gta4_debug_server_port is set; tools/gta4-live-mcp talks to it)
+  gta4::debug_server::SetQuitRequest([this]() {
+    app_context().CallInUIThread([this]() { app_context().QuitFromUIThread(); });
+  });
   gta4::debug_server::Start(rex::filesystem::GetExecutableFolder() / "logs");
 #endif
   // (asked from the game's thread: the quit itself runs on the UI thread)

@@ -19,6 +19,8 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <functional>
+#include <regex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -27,6 +29,7 @@
 #include <zlib.h>
 
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/logging.h>
 #include <rex/runtime.h>
 #include <rex/system/interfaces/graphics.h>
@@ -39,6 +42,9 @@ REXCVAR_DEFINE_UINT32(gta4_debug_server_port, 0, "GTA IV/Debug",
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_BOOL(gta4_debug_server_allow_write, false, "GTA IV/Debug",
                     "Let the debug server write to guest memory");
+REXCVAR_DEFINE_UINT32(gta4_restart_wait_pid, 0, "GTA IV/Debug",
+                      "Set by the debug server's restart: the instance being replaced, which the "
+                      "server waits for before it takes the port");
 
 namespace gta4::debug_server {
 namespace {
@@ -67,6 +73,7 @@ constexpr size_t kMaxFindResults = 1000;
 constexpr size_t kMaxLogLines = 5000;
 
 std::filesystem::path g_logs_dir;
+std::function<void()> g_quit;
 
 rex::memory::Memory* GuestMemory() {
   auto* runtime = rex::Runtime::instance();
@@ -286,6 +293,113 @@ json Screenshot(const json& request) {
           {"data", Base64(png.data(), png.size())}};
 }
 
+std::vector<uint8_t> FromBase64(const std::string& text) {
+  std::vector<uint8_t> out;
+  uint32_t buffer = 0;
+  int bits = 0;
+  for (char c : text) {
+    int value;
+    if (c >= 'A' && c <= 'Z') value = c - 'A';
+    else if (c >= 'a' && c <= 'z') value = c - 'a' + 26;
+    else if (c >= '0' && c <= '9') value = c - '0' + 52;
+    else if (c == '+') value = 62;
+    else if (c == '/') value = 63;
+    else if (c == '=') break;
+    else throw std::runtime_error("not base64");
+    buffer = buffer << 6 | uint32_t(value);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push_back(uint8_t(buffer >> bits));
+    }
+  }
+  return out;
+}
+
+// ---- live shader overrides: <stage>_<hash>.ovr files the renderer reads at startup
+// (gta4_native/graphics_system.cpp, LiveShaderOverrides), so a restart applies them
+
+std::filesystem::path LiveOverridesDir() {
+  return rex::filesystem::GetExecutableFolder() / "shader_overrides_live";
+}
+
+void CheckOverrideName(const std::string& name) {
+  static const std::regex pattern("(pixel|vertex)_[0-9A-F]{16}\\.ovr");
+  if (!std::regex_match(name, pattern)) {
+    throw std::runtime_error("a live override is named <pixel|vertex>_<16 hex digits>.ovr");
+  }
+}
+
+json OverridePut(const json& request) {
+  const std::string name = request.at("name").get<std::string>();
+  CheckOverrideName(name);
+  const std::vector<uint8_t> bytes = FromBase64(request.at("data").get<std::string>());
+  if (bytes.size() < 8 || std::memcmp(bytes.data(), "GTA4OVR1", 8)) {
+    throw std::runtime_error("not a live override (GTA4OVR1)");
+  }
+  std::filesystem::create_directories(LiveOverridesDir());
+  const auto path = LiveOverridesDir() / name;
+  std::ofstream(path, std::ios::binary)
+      .write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+  REXLOG_INFO("gta4-debug-server: live shader override {} ({} bytes), applied at the next start",
+              name, bytes.size());
+  return {{"file", path.string()}, {"bytes", bytes.size()}};
+}
+
+json OverrideList() {
+  json files = json::array();
+  std::error_code error;
+  for (const auto& file : std::filesystem::directory_iterator(LiveOverridesDir(), error)) {
+    if (file.path().extension() == ".ovr") {
+      files.push_back({{"name", file.path().filename().string()}, {"bytes", file.file_size(error)}});
+    }
+  }
+  return {{"dir", LiveOverridesDir().string()}, {"overrides", files}};
+}
+
+json OverrideRemove(const json& request) {
+  const std::string name = request.at("name").get<std::string>();
+  size_t removed = 0;
+  std::error_code error;
+  if (name == "all") {
+    for (const auto& file : std::filesystem::directory_iterator(LiveOverridesDir(), error)) {
+      if (file.path().extension() == ".ovr") removed += std::filesystem::remove(file.path(), error);
+    }
+  } else {
+    CheckOverrideName(name);
+    removed = std::filesystem::remove(LiveOverridesDir() / name, error);
+  }
+  return {{"removed", removed}};
+}
+
+// Starts the game again with the same command line (and the wait for this instance), then
+// quits this one once the answer is on its way.
+json Restart() {
+#if defined(_WIN32)
+  if (!g_quit) throw std::runtime_error("the app gave no way to quit");
+  std::wstring command_line = GetCommandLineW();
+  command_line += L" --gta4_restart_wait_pid=" + std::to_wstring(GetCurrentProcessId());
+  STARTUPINFOW startup{sizeof(startup)};
+  PROCESS_INFORMATION process{};
+  const std::wstring exe = rex::filesystem::GetExecutablePath().wstring();
+  if (!CreateProcessW(exe.c_str(), command_line.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                      nullptr, &startup, &process)) {
+    throw std::runtime_error(fmt::format("CreateProcess failed ({})", GetLastError()));
+  }
+  const uint32_t next_pid = process.dwProcessId;
+  CloseHandle(process.hThread);
+  CloseHandle(process.hProcess);
+  REXLOG_INFO("gta4-debug-server: restarting (next instance {})", next_pid);
+  std::thread([] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    g_quit();
+  }).detach();
+  return {{"restarting", true}, {"next_pid", next_pid}};
+#else
+  throw std::runtime_error("restart is Windows-only");
+#endif
+}
+
 json CvarDescription(const std::string& name) {
   json entry = {{"name", name}, {"value", rex::cvar::GetFlagByName(name)}};
   if (const auto* info = rex::cvar::GetFlagInfo(name)) {
@@ -358,6 +472,10 @@ json Handle(const json& request) {
   if (command == "cvar_set") return CvarSet(request);
   if (command == "log_tail") return LogTail(request);
   if (command == "screenshot") return Screenshot(request);
+  if (command == "shader_override_put") return OverridePut(request);
+  if (command == "shader_override_list") return OverrideList();
+  if (command == "shader_override_remove") return OverrideRemove(request);
+  if (command == "restart") return Restart();
   auto* memory = GuestMemory();
   if (!memory) throw std::runtime_error("the runtime is not up yet");
   if (command == "info") return Info(memory);
@@ -405,40 +523,54 @@ void Serve(Socket client) {
 
 }  // namespace
 
+void SetQuitRequest(std::function<void()> quit) {
+  g_quit = std::move(quit);
+}
+
 void Start(const std::filesystem::path& logs_dir) {
   static std::atomic<bool> started{false};
   const uint32_t port = REXCVAR_GET(gta4_debug_server_port);
   if (!port || started.exchange(true)) return;
   g_logs_dir = logs_dir;
+  const uint32_t wait_pid = REXCVAR_GET(gta4_restart_wait_pid);
+  std::thread([port, wait_pid] {
 #if defined(_WIN32)
-  WSADATA wsa_data;
-  if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
-    REXLOG_ERROR("gta4-debug-server: WSAStartup failed");
-    return;
-  }
+    // (after a restart: the instance being replaced still holds the port while it quits)
+    if (wait_pid) {
+      if (HANDLE previous = OpenProcess(SYNCHRONIZE, FALSE, wait_pid)) {
+        WaitForSingleObject(previous, 30000);
+        CloseHandle(previous);
+      }
+    }
+    WSADATA wsa_data;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
+      REXLOG_ERROR("gta4-debug-server: WSAStartup failed");
+      return;
+    }
+#else
+    (void)wait_pid;
 #endif
-  const Socket listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  if (listener == kNoSocket) {
-    REXLOG_ERROR("gta4-debug-server: no socket");
-    return;
-  }
-  const int reuse = 1;
-  setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse),
-             sizeof(reuse));
-  sockaddr_in address{};
-  address.sin_family = AF_INET;
-  address.sin_port = htons(uint16_t(port));
-  // Loopback only: the tool reaches it through an SSH tunnel, never the network.
-  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (bind(listener, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0 ||
-      listen(listener, 1) != 0) {
-    REXLOG_ERROR("gta4-debug-server: cannot listen on 127.0.0.1:{}", port);
-    CloseSocket(listener);
-    return;
-  }
-  REXLOG_INFO("gta4-debug-server: listening on 127.0.0.1:{} (writes {})", port,
-              REXCVAR_GET(gta4_debug_server_allow_write) ? "on" : "off");
-  std::thread([listener] {
+    const Socket listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listener == kNoSocket) {
+      REXLOG_ERROR("gta4-debug-server: no socket");
+      return;
+    }
+    const int reuse = 1;
+    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse),
+               sizeof(reuse));
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(uint16_t(port));
+    // Loopback only: the tool reaches it through an SSH tunnel, never the network.
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(listener, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0 ||
+        listen(listener, 1) != 0) {
+      REXLOG_ERROR("gta4-debug-server: cannot listen on 127.0.0.1:{}", port);
+      CloseSocket(listener);
+      return;
+    }
+    REXLOG_INFO("gta4-debug-server: listening on 127.0.0.1:{} (writes {})", port,
+                REXCVAR_GET(gta4_debug_server_allow_write) ? "on" : "off");
     for (;;) {
       const Socket client = accept(listener, nullptr, nullptr);
       if (client == kNoSocket) continue;
