@@ -16,6 +16,7 @@ env:
   VULKAN_SDK_VERSION: 1.3.296.0
   DXC_RELEASE: v1.8.2505.1
   DXC_ASSET: dxc_2025_07_14.zip
+  ZSTD_VERSION: 1.5.6
   SCCACHE_GHA_ENABLED: "true"
 
 jobs:
@@ -68,6 +69,24 @@ jobs:
           Expand-Archive "$env:RUNNER_TEMP\dxc.zip" -DestinationPath "$env:RUNNER_TEMP\dxc"
           "DXC_BIN=$("$env:RUNNER_TEMP\dxc\bin\x64".Replace('\', '/'))" >> $env:GITHUB_ENV
 
+      # A shared zstd for the FSR 3 shader archive builder (Python loads it).
+      - name: zstd
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://github.com/facebook/zstd/releases/download/v$env:ZSTD_VERSION/zstd-v$env:ZSTD_VERSION-win64.zip" -OutFile "$env:RUNNER_TEMP\zstd.zip"
+          Expand-Archive "$env:RUNNER_TEMP\zstd.zip" -DestinationPath "$env:RUNNER_TEMP\zstd"
+          "ZSTD_DLL=$("$env:RUNNER_TEMP\zstd\zstd-v$env:ZSTD_VERSION-win64\dll\libzstd.dll".Replace('\', '/'))" >> $env:GITHUB_ENV
+
+      # The FSR 3 motion-vector shader variants (about 2,700) are compiled into
+      # a content-addressed work folder: kept between runs, only changed
+      # shaders compile again.
+      - name: Temporal shader cache
+        uses: actions/cache@v4
+        with:
+          path: out/windows/glue/rexglue-sdk/src/graphics/generated/gta4_native/temporal/work
+          key: temporal-${{ hashFiles('LibertyRecompLib/shader_overrides/**', 'LibertyRecompLib/shader/shader_cache.cpp', 'tools/vulkan/**') }}
+          restore-keys: temporal-
+
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -93,7 +112,9 @@ jobs:
             "-DCMAKE_C_COMPILER_LAUNCHER=sccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache" `
             "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" `
             "-DREXGLUE_ENABLE_TRACY=OFF" `
-            "-DGTA4_NATIVE_DXC_LIBRARY_PATH=$env:DXC_BIN"
+            "-DGTA4_NATIVE_DXC_LIBRARY_PATH=$env:DXC_BIN" `
+            "-DREXGLUE_ENABLE_FIDELITYFX=ON" `
+            "-DGTA4_TEMPORAL_ZSTD_LIBRARY=$env:ZSTD_DLL"
 
       # -k 0: every failing file in one run.
       - name: Build

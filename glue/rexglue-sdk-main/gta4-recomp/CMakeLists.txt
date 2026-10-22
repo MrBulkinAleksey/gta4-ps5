@@ -378,6 +378,10 @@ elseif(WIN32)
     )
 
     rexglue_configure_target(LibertyRecomp GPU_PLUGINS xenos gta4-native)
+    # FSR 3 / DLSS (REXGLUE_ENABLE_FIDELITYFX / REXGLUE_ENABLE_DLSS): the
+    # motion-vector shader archive in shaders/ next to the exe, and the menus'
+    # entries for them. Without either it does nothing.
+    liberty_stage_vulkan_temporal_archive(LibertyRecomp)
 
     set_target_properties(LibertyRecomp PROPERTIES
         OUTPUT_NAME "LibertyRecomp"
