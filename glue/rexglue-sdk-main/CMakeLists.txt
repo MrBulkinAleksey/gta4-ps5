@@ -264,7 +264,19 @@ include("${REXGLUE_ROOT}/cmake/rexglue_dlss.cmake")
 add_compile_options(
     -Wall
     -Wextra
+    # The noisiest groups (nine warnings in ten, none of them bugs): handler
+    # signatures that ignore arguments, partly initialized guest structures,
+    # and memcpy/memset over raw guest data.
+    -Wno-unused-parameter
+    -Wno-missing-field-initializers
+    -Wno-missing-designated-field-initializers
+    -Wno-nontrivial-memcall
 )
+if(WIN32)
+    # MSVC's CRT marks getenv, fopen, strerror, ... deprecated in favour of
+    # its _s variants.
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+endif()
 
 include_directories(${REXGLUE_ROOT}/include)
 
