@@ -1581,6 +1581,8 @@ void SwitchDisplayPage(PPCContext& ctx, uint8_t* base, gta4::frontend_menu::poli
               selected_row);
 }
 
+void SaveGraphicsSettings();
+
 void ChangeSetting(const Setting& source, int32_t delta) {
   const Setting setting = ResolveSetting(source);
   if (delta == 0 || setting.binding == SettingBinding::kTouchLayoutEditor) {
@@ -1712,6 +1714,10 @@ void ChangeSetting(const Setting& source, int32_t delta) {
       "direction={} apply={}",
       ++g_menu_trace_sequence, setting.key, setting.cvar, old_value, applied_value, delta,
       restart_required ? "restart" : "live");
+  // [windows port] Saved at once: a change kept only until the Save row was
+  // chosen was lost on quitting, so a restart setting (resolution, upscaler)
+  // never took effect.
+  SaveGraphicsSettings();
 }
 
 void SaveGraphicsSettings() {
