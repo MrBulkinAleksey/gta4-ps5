@@ -34,6 +34,11 @@
 
 #include "achievement_bridge_gc.h"
 #include "gta4_frontend_hooks.h"
+#if REX_PLATFORM_WIN32
+#include <rex/filesystem.h>
+
+#include "devtools/gta4_debug_server.h"
+#endif
 #include "gta4_presentation_options.h"
 #include "gta4_keyboard_controller.h"
 #include "gta4_touch_coordinator.h"
@@ -1090,6 +1095,10 @@ void GTA4App::OnPostSetup() {
         runtime()->kernel_state()->live_compatibility());
   }
   gta4::frontend_menu::SetConfigPath(native_config_path_);
+#if REX_PLATFORM_WIN32
+  // (off unless gta4_debug_server_port is set; tools/gta4-live-mcp talks to it)
+  gta4::debug_server::Start(rex::filesystem::GetExecutableFolder() / "logs");
+#endif
   // (asked from the game's thread: the quit itself runs on the UI thread)
   gta4::frontend_menu::SetExitRequest([this]() {
     app_context().CallInUIThread([this]() { app_context().QuitFromUIThread(); });

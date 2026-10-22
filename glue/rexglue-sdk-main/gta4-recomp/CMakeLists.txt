@@ -325,6 +325,7 @@ elseif(WIN32)
     add_executable(LibertyRecomp
         ${GTA4_WINDOWS_SOURCES}
         src/android/android_platform_stubs.cpp
+        src/devtools/gta4_debug_server.cpp
         ${GENERATED_SOURCES}
     )
 
@@ -375,6 +376,7 @@ elseif(WIN32)
         SDL3::SDL3
         utf8cpp
         zlibstatic
+        ws2_32  # (the debug server, src/devtools/)
     )
 
     rexglue_configure_target(LibertyRecomp GPU_PLUGINS xenos gta4-native)
