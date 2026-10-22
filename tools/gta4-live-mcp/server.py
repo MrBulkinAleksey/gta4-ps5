@@ -8,11 +8,14 @@ from the Windows PC
 
     ssh -R 5050:127.0.0.1:5050 user@this-machine
 
-Environment: GTA4_LIVE_HOST (default 127.0.0.1), GTA4_LIVE_PORT (default 5050).
+Environment: GTA4_LIVE_HOST (default 127.0.0.1), GTA4_LIVE_PORT (default 5050),
+GTA4_LIVE_TARGET: "recomp" (default) or "pc" for the PC game with FusionFix's
+debug server (source/debugserver.ixx in FusionFix: [DEBUG] DebugServerPort).
 
-The game sends raw bytes in guest order (big-endian, as on the Xbox 360); the
-decoding of values, pointer chains and dumps happens here, so tools can grow
-without rebuilding the game. No dependencies beyond the standard library.
+The game sends raw bytes in memory order (big-endian guest memory in the recomp,
+as on the Xbox 360; little-endian on the PC); the decoding of values, pointer
+chains and dumps happens here, so tools can grow without rebuilding the game.
+No dependencies beyond the standard library.
 """
 
 import json
@@ -26,15 +29,22 @@ PROTOCOL_VERSION = "2025-06-18"
 HOST = os.environ.get("GTA4_LIVE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("GTA4_LIVE_PORT", "5050"))
 TIMEOUT = float(os.environ.get("GTA4_LIVE_TIMEOUT", "60"))
+TARGET = os.environ.get("GTA4_LIVE_TARGET", "recomp")
+if TARGET not in ("recomp", "pc"):
+    sys.exit("GTA4_LIVE_TARGET is recomp or pc")
+ENDIAN = "<" if TARGET == "pc" else ">"
+GAME_NAME = "the PC game (FusionFix)" if TARGET == "pc" else "the recomp"
+ENABLE_HINT = ("[DEBUG] DebugServerPort = {port} in GTAIV.EFLC.FusionFix.ini" if TARGET == "pc"
+               else "gta4_debug_server_port = {port} in native.toml")
 
-# Value formats: struct code (big-endian) and size.
-FORMATS = {
+# Value formats: struct code (in the target's byte order) and size.
+FORMATS = {name: (ENDIAN + code, size) for name, (code, size) in {
     "u8": ("B", 1), "s8": ("b", 1),
-    "u16": (">H", 2), "s16": (">h", 2),
-    "u32": (">I", 4), "s32": (">i", 4),
-    "u64": (">Q", 8), "s64": (">q", 8),
-    "f32": (">f", 4), "f64": (">d", 8),
-}
+    "u16": ("H", 2), "s16": ("h", 2),
+    "u32": ("I", 4), "s32": ("i", 4),
+    "u64": ("Q", 8), "s64": ("q", 8),
+    "f32": ("f", 4), "f64": ("d", 8),
+}.items()}
 
 
 class GameError(Exception):
@@ -55,8 +65,8 @@ class Game:
             self.sock = socket.create_connection((HOST, PORT), timeout=TIMEOUT)
         except OSError as error:
             raise GameError(
-                f"cannot reach the game at {HOST}:{PORT} ({error}). Is the game running with "
-                f"gta4_debug_server_port = {PORT} in native.toml, and the SSH tunnel up?")
+                f"cannot reach {GAME_NAME} at {HOST}:{PORT} ({error}). Is it running with "
+                f"{ENABLE_HINT.format(port=PORT)}, and the SSH tunnel up?")
         self.file = self.sock.makefile("rb")
 
     def _close(self):
@@ -153,7 +163,7 @@ def tool_follow_pointers(args):
     addr = parse_int(args["base"])
     steps = [f"start {addr:08X}"]
     for offset in [parse_int(o) for o in args.get("offsets", [])]:
-        pointer = struct.unpack(">I", read_bytes(addr, 4))[0]
+        pointer = struct.unpack(ENDIAN + "I", read_bytes(addr, 4))[0]
         steps.append(f"[{addr:08X}] = {pointer:08X}, + 0x{offset:X} = {pointer + offset:08X}")
         if not pointer:
             steps.append("null pointer: stopped")
@@ -200,7 +210,8 @@ def tool_write_memory(args):
         data = b"".join(struct.pack(code, float(v) if fmt.startswith("f") else parse_int(v))
                         for v in values)
     before = read_bytes(addr, len(data))
-    GAME.call("write", addr=f"0x{addr:X}", hex=data.hex())
+    extra = {"force": True} if args.get("force") else {}
+    GAME.call("write", addr=f"0x{addr:X}", hex=data.hex(), **extra)
     return f"wrote {len(data)} bytes at {addr:08X}\nbefore: {before.hex()}\nafter:  {data.hex()}"
 
 
@@ -227,7 +238,8 @@ def tool_log_tail(args):
     lines = parse_int(args.get("lines", 200))
     grep = args.get("grep")
     # Fetch more when filtering, so the filter still has lines to choose from.
-    reply = GAME.call("log_tail", lines=5000 if grep else lines)
+    extra = {"feature": args["feature"]} if args.get("feature") else {}
+    reply = GAME.call("log_tail", lines=5000 if grep else lines, **extra)
     found = reply["lines"]
     if grep:
         needle = grep.lower()
@@ -235,38 +247,94 @@ def tool_log_tail(args):
     return f"{reply['file']}\n" + "\n".join(found)
 
 
-ADDR = {"type": ["integer", "string"], "description": "Guest address, e.g. \"0x82000000\""}
+def tool_modules(args):
+    modules = GAME.call("modules")["modules"]
+    needle = args.get("filter", "").lower()
+    return "\n".join(f"{m['base']}  {int(m['size']):>10}  {m['name']}"
+                     for m in modules if needle in m["name"].lower()) or "no module matches"
+
+
+def tool_find_signature(args):
+    request = {"pattern": args["pattern"], "max_results": parse_int(args.get("max_results", 20))}
+    if args.get("module"):
+        request["module"] = args["module"]
+    reply = GAME.call("pattern", **request)
+    return "\n".join([f"{reply['total']} match(es)"] + reply["matches"])
+
+
+def tool_ini_get(args):
+    reply = GAME.call("ini_get", section=args["section"], key=args["key"])
+    return f"[{reply['section']}] {reply['key']} = {reply['value']}"
+
+
+def tool_ini_set(args):
+    reply = GAME.call("ini_set", section=args["section"], key=args["key"], value=str(args["value"]))
+    return f"[{reply['section']}] {reply['key']} = {reply['value']} ({reply['note']})"
+
+
+ADDR = {"type": ["integer", "string"], "description": (
+    "Address in the game process, e.g. \"0x00C64CB0\"" if TARGET == "pc"
+    else "Guest address, e.g. \"0x82000000\"")}
+ORDER = "little-endian" if TARGET == "pc" else "big-endian"
+MEMORY = "memory" if TARGET == "pc" else "guest memory"
+WRITE_SWITCH = ("[DEBUG] DebugServerAllowWrite = 1 in the ini" if TARGET == "pc"
+                else "gta4_debug_server_allow_write = true in native.toml")
 TOOLS = [
-    ("game_info", tool_game_info, "Whether the game is reachable, and where guest memory is mapped in the process.", {}, []),
+    ("game_info", tool_game_info, f"Whether {GAME_NAME} is reachable, and where its memory is.", {}, []),
     ("read_memory", tool_read_memory,
-     "Read guest memory. format: dump (hexdump, default), ascii, utf16be, or a big-endian value type "
+     f"Read {MEMORY}. format: dump (hexdump, default), ascii, utf16be, or a {ORDER} value type "
      "u8/s8/u16/s16/u32/s32/u64/s64/f32/f64 with count.",
      {"addr": ADDR, "size": {"type": "integer", "description": "Bytes for dump/ascii/utf16be (default 256)"},
       "format": {"type": "string"}, "count": {"type": "integer", "description": "Values to read (default 1)"}},
      ["addr"]),
     ("follow_pointers", tool_follow_pointers,
-     "Follow a chain of 32-bit big-endian guest pointers: read the pointer at base, add the first offset, "
+     f"Follow a chain of 32-bit {ORDER} pointers: read the pointer at base, add the first offset, "
      "read there, and so on; dump size bytes at the end.",
      {"base": ADDR, "offsets": {"type": "array", "items": {"type": ["integer", "string"]}},
       "size": {"type": "integer"}}, ["base"]),
     ("find_bytes", tool_find_bytes,
-     "Search mapped guest memory for a pattern given as hex, text, or a big-endian u32/s32/f32/u16 value.",
+     f"Search readable {MEMORY} for a pattern given as hex, text, or a {ORDER} u32/s32/f32/u16 value.",
      {"hex": {"type": "string"}, "text": {"type": "string"}, "u32": {"type": ["integer", "string"]},
       "s32": {"type": "integer"}, "f32": {"type": "number"}, "u16": {"type": ["integer", "string"]},
       "start": ADDR, "end": ADDR, "max_results": {"type": "integer"}}, []),
     ("write_memory", tool_write_memory,
-     "Write guest memory (needs gta4_debug_server_allow_write = true in the game): hex bytes, or value(s) "
-     "in a big-endian format. Shows the bytes before and after.",
+     f"Write {MEMORY} (needs {WRITE_SWITCH}): hex bytes, or value(s) in a {ORDER} format. Shows the bytes "
+     "before and after." + (" force: true also writes read-only pages (code)." if TARGET == "pc" else ""),
      {"addr": ADDR, "hex": {"type": "string"}, "format": {"type": "string"},
-      "value": {"type": ["number", "string"]}, "values": {"type": "array"}}, ["addr"]),
-    ("cvar_list", tool_cvar_list, "List the game's cvars (settings) whose name contains filter.",
-     {"filter": {"type": "string"}, "verbose": {"type": "boolean"}}, []),
-    ("cvar_get", tool_cvar_get, "One cvar: value, default, category, description.", {"name": {"type": "string"}}, ["name"]),
-    ("cvar_set", tool_cvar_set, "Set a cvar in the running game (not saved to native.toml).",
-     {"name": {"type": "string"}, "value": {"type": ["string", "number", "boolean"]}}, ["name", "value"]),
-    ("log_tail", tool_log_tail, "The last lines of the game's newest log, optionally only those containing grep.",
-     {"lines": {"type": "integer"}, "grep": {"type": "string"}}, []),
+      "value": {"type": ["number", "string"]}, "values": {"type": "array"},
+      **({"force": {"type": "boolean"}} if TARGET == "pc" else {})}, ["addr"]),
+    ("log_tail", tool_log_tail,
+     "The last lines of the newest log, optionally only those containing grep."
+     + (" feature picks GTAIV.EFLC.FusionFix.<feature>.log." if TARGET == "pc" else ""),
+     {"lines": {"type": "integer"}, "grep": {"type": "string"},
+      **({"feature": {"type": "string"}} if TARGET == "pc" else {})}, []),
 ]
+if TARGET == "recomp":
+    TOOLS += [
+        ("cvar_list", tool_cvar_list, "List the game's cvars (settings) whose name contains filter.",
+         {"filter": {"type": "string"}, "verbose": {"type": "boolean"}}, []),
+        ("cvar_get", tool_cvar_get, "One cvar: value, default, category, description.",
+         {"name": {"type": "string"}}, ["name"]),
+        ("cvar_set", tool_cvar_set, "Set a cvar in the running game (not saved to native.toml).",
+         {"name": {"type": "string"}, "value": {"type": ["string", "number", "boolean"]}}, ["name", "value"]),
+    ]
+else:
+    TOOLS += [
+        ("modules", tool_modules, "The modules loaded in the game process (exe, plugins, DLLs): base and size.",
+         {"filter": {"type": "string"}}, []),
+        ("find_signature", tool_find_signature,
+         "Find a byte signature with wildcards, as FusionFix's hooks write them (\"8B 0D ? ? ? ? 85 C9\"), "
+         "in a module (the game's exe unless module is given).",
+         {"pattern": {"type": "string"}, "module": {"type": "string"}, "max_results": {"type": "integer"}},
+         ["pattern"]),
+        ("ini_get", tool_ini_get, "A value from GTAIV.EFLC.FusionFix.ini.",
+         {"section": {"type": "string"}, "key": {"type": "string"}}, ["section", "key"]),
+        ("ini_set", tool_ini_set,
+         "Write a value to GTAIV.EFLC.FusionFix.ini and have FusionFix read the ini again at the next frame "
+         "(as Ctrl+Shift+F10); what is set up at startup needs a restart.",
+         {"section": {"type": "string"}, "key": {"type": "string"}, "value": {"type": ["string", "number"]}},
+         ["section", "key", "value"]),
+    ]
 HANDLERS = {name: handler for name, handler, *_ in TOOLS}
 
 
@@ -285,7 +353,7 @@ def handle(message):
         version = message.get("params", {}).get("protocolVersion", PROTOCOL_VERSION)
         return {"protocolVersion": version,
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "gta4-live", "version": "1.0.0"}}
+                "serverInfo": {"name": f"gta4-live-{TARGET}", "version": "1.1.0"}}
     if method == "ping":
         return {}
     if method == "tools/list":
