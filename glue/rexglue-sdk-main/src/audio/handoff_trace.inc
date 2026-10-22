@@ -15,6 +15,9 @@
 
 namespace rex::audio::handoff {
 std::atomic<bool> enabled{false};
+#if defined(_WIN32)
+bool Enabled() noexcept { return enabled.load(std::memory_order_acquire); }
+#endif
 namespace {
 struct Event {
   const char* point=nullptr;

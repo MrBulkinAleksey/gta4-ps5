@@ -13,7 +13,13 @@
 
 namespace rex::audio::handoff {
 extern std::atomic<bool> enabled;
+#if defined(_WIN32)
+// [windows port] rexruntime.dll exports its functions but not its variables,
+// so the game asks through a call (handoff_trace.inc).
+bool Enabled() noexcept;
+#else
 inline bool Enabled() noexcept { return enabled.load(std::memory_order_acquire); }
+#endif
 inline uint64_t Clock() noexcept {
   return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count());

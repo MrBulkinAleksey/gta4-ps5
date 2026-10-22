@@ -383,6 +383,10 @@ elseif(WIN32)
         OUTPUT_NAME "LibertyRecomp"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/LibertyRecomp"
     )
+    # The SDK's Windows entry point is wWinMain (windowed_app_main_sdl.cpp);
+    # the console subsystem is kept for now so the log shows while the port
+    # is brought up.
+    target_link_options(LibertyRecomp PRIVATE "LINKER:/entry:wWinMainCRTStartup")
 
     # Resources/: the button prompts, the vector font atlases and the RPF key,
     # the same files the macOS bundle carries.
