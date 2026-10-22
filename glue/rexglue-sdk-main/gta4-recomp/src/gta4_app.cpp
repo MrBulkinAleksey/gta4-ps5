@@ -1090,6 +1090,10 @@ void GTA4App::OnPostSetup() {
         runtime()->kernel_state()->live_compatibility());
   }
   gta4::frontend_menu::SetConfigPath(native_config_path_);
+  // (asked from the game's thread: the quit itself runs on the UI thread)
+  gta4::frontend_menu::SetExitRequest([this]() {
+    app_context().CallInUIThread([this]() { app_context().QuitFromUIThread(); });
+  });
   auto* kernel_state = runtime()->kernel_state();
   auto* live = kernel_state->live_compatibility();
   kernel_state->content_manager()->SetMarketplacePackageAllowlist(std::nullopt);

@@ -126,6 +126,7 @@ enum class TextId : uint8_t {
   kSkipIntroLabel,
   kFilmGrainLabel,
   kAdvancedLabel,
+  kExitGameLabel,
   kSaveLabel,
   kBackLabel,
   kPreviousPageLabel,
@@ -480,6 +481,11 @@ constexpr std::array kSettings = {
 };
 
 constexpr std::string_view kAdvancedKey = "LR_ADVANCED";
+// [windows port] Exit Game, under Advanced on the Display page: the console
+// game has no way out of itself. Desktop only (the PS5 and Android have the
+// system's own).
+constexpr bool kHasExitRow = !REX_PLATFORM_PS5 && !REX_PLATFORM_ANDROID && !REX_PLATFORM_IOS;
+constexpr std::string_view kExitKey = "LR_EXIT";
 constexpr std::string_view kSaveKey = "LR_SAVE";
 constexpr std::string_view kBackKey = "LR_BACK";
 constexpr std::string_view kPreviousPageKey = "LR_PREV";
@@ -518,6 +524,7 @@ constexpr std::array<std::string_view, static_cast<size_t>(TextId::kCount)> kStr
     "Skip Intro",
     "Film Grain",
     "Advanced",
+    "Exit Game",
     "Save",
     "Back",
     "Previous Page",
@@ -642,6 +649,7 @@ struct DisplayMenuState {
 DisplayMenuState g_display_menu;
 uint32_t g_last_frontend_channel = 0;
 std::filesystem::path g_config_path;
+std::function<void()> g_exit_request;
 uint64_t g_menu_trace_sequence = 0;
 uint32_t g_menu_trace_label_calls = 0;
 uint32_t g_menu_trace_value_calls = 0;
@@ -1052,6 +1060,11 @@ bool FindOwnedLabelText(uint8_t* base, uint32_t key_address, TextId& text) {
     text = TextId::kAdvancedLabel;
     return true;
   }
+  if (kHasExitRow && IsOwnedPrimaryPage(base) &&
+      GuestStringEquals(base, key_address, kExitKey, kOptionLabelCapacity)) {
+    text = TextId::kExitGameLabel;
+    return true;
+  }
   if (!IsOwnedAdvancedPage(base)) {
     return false;
   }
@@ -1243,7 +1256,7 @@ bool ValidateNativeMenuKeys() {
     }
   }
   for (const std::string_view key :
-       {kAdvancedKey, kSaveKey, kBackKey, kPreviousPageKey, kNextPageKey}) {
+       {kAdvancedKey, kExitKey, kSaveKey, kBackKey, kPreviousPageKey, kNextPageKey}) {
     if (!gta4::frontend_menu::policy::FitsInlineKey(key.size())) {
       REXLOG_ERROR("GTA IV native menu disabled: key '{}' exceeds the {}-byte retail field", key,
                    kOptionLabelCapacity);
@@ -1423,7 +1436,11 @@ void InstallDisplayExtension(PPCContext& ctx, uint8_t* base) {
       .capacity = stock_capacity,
       .sentinel_index = sentinel_index,
   };
-  if (!gta4::frontend_menu::policy::CanInstallPrimary(stock_layout)) {
+  // (Advanced, and Exit Game on the desktop, past the stock rows)
+  constexpr std::size_t kPrimaryExtraRows = kHasExitRow ? 2 : 1;
+  if (!gta4::frontend_menu::policy::CanInstallPrimary(stock_layout) ||
+      static_cast<std::size_t>(stock_count) + kPrimaryExtraRows >
+          gta4::frontend_menu::policy::kRetailListSlotCapacity) {
     REXLOG_ERROR(
         "GTA IV Advanced Graphics disabled: incompatible Display vector rows={:08X} "
         "count={} capacity={} sentinel={}",
@@ -1457,7 +1474,7 @@ void InstallDisplayExtension(PPCContext& ctx, uint8_t* base) {
     return;
   }
 
-  const std::size_t primary_row_count = static_cast<std::size_t>(stock_count) + 1;
+  const std::size_t primary_row_count = static_cast<std::size_t>(stock_count) + kPrimaryExtraRows;
   const size_t primary_rows_bytes = primary_row_count * kOptionRecordSize;
   const size_t native_rows_bytes = total_row_count * kOptionRecordSize;
   const size_t rows_bytes = primary_rows_bytes + native_rows_bytes;
@@ -1501,7 +1518,15 @@ void InstallDisplayExtension(PPCContext& ctx, uint8_t* base) {
     InvokeGuest(ctx, base, sub_821B3560, allocation);
     return;
   }
-  WriteSentinelRow(base, primary_extension + kOptionRecordSize);
+  uint32_t primary_end = primary_extension + kOptionRecordSize;
+  if (kHasExitRow) {
+    if (!WriteJumpRow(base, primary_end, kExitKey)) {
+      InvokeGuest(ctx, base, sub_821B3560, allocation);
+      return;
+    }
+    primary_end += kOptionRecordSize;
+  }
+  WriteSentinelRow(base, primary_end);
 
   uint32_t destination = allocation + static_cast<uint32_t>(primary_rows_bytes);
   for (const auto& slice : page_slices) {
@@ -1758,6 +1783,10 @@ namespace gta4::frontend_menu {
 
 void SetConfigPath(std::filesystem::path path) {
   g_config_path = std::move(path);
+}
+
+void SetExitRequest(std::function<void()> request) {
+  g_exit_request = std::move(request);
 }
 
 bool SwitchPauseTab(PPCContext& parent, uint8_t* base, policy::PauseTabDirection direction,
@@ -2266,6 +2295,15 @@ extern "C" void sub_82258388(PPCContext& ctx, uint8_t* base) {
     }
     g_display_menu.last_frontend_channel = frontend_channel;
     SwitchDisplayPage(ctx, base, gta4::frontend_menu::policy::Page::kAdvanced, 0);
+    ctx.r3.u64 = 1;
+    return;
+  }
+  if (kHasExitRow && IsDisplayScreen(base) && IsOwnedPrimaryPage(base) &&
+      IsOwnedJumpRow(base, selected_row, kExitKey)) {
+    REXLOG_INFO("GTA IV: Exit Game chosen on the Display page");
+    if (g_exit_request) {
+      g_exit_request();
+    }
     ctx.r3.u64 = 1;
     return;
   }
