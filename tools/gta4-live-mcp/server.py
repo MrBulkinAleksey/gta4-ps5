@@ -383,6 +383,193 @@ def tool_ini_set(args):
     return f"[{reply['section']}] {reply['key']} = {reply['value']} ({reply['note']})"
 
 
+# ---- over time (PC): watches sample values each frame, traces record the hits of code or memory ----------
+
+REGISTERS = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"]
+
+
+def item_size(item):
+    fmt = item.get("type", "u32")
+    if fmt == "hex":
+        return parse_int(item.get("size", 4))
+    if fmt not in FORMATS:
+        raise GameError(f"type is hex or one of {', '.join(FORMATS)}")
+    return FORMATS[fmt][1] * parse_int(item.get("count", 1))
+
+
+def item_spec(item, registers):
+    """A spec for the game: base[,offset...]:size (see source/debugserver.ixx)."""
+    if "reg" in item:
+        if not registers:
+            raise GameError("a watch reads memory only: give addr, not reg")
+        base = str(item["reg"]).lower()
+        if base not in REGISTERS:
+            raise GameError(f"reg is one of {', '.join(REGISTERS)}")
+        offsets = [parse_int(o) for o in item.get("offsets", [])]
+    elif "addr" in item:
+        base = f"0x{parse_int(item['addr']):X}"
+        # (an address alone means the bytes there, as offset 0)
+        offsets = [parse_int(o) for o in item.get("offsets", [])] or [0]
+    else:
+        raise GameError("each item needs reg or addr")
+    size = item_size(item)
+    if not offsets and size > 4:
+        raise GameError("a register's own value is at most 4 bytes: give offsets to read memory it points to")
+    return ",".join([base] + [f"0x{o:X}" for o in offsets]) + f":{size}"
+
+
+def item_label(item):
+    if item.get("label"):
+        return item["label"]
+    base = item.get("reg") or f"0x{parse_int(item['addr']):X}"
+    offsets = [parse_int(o) for o in item.get("offsets", [])]
+    return base + "".join(f"+0x{o:X}" if i == 0 else f">+0x{o:X}" for i, o in enumerate(offsets))
+
+
+def item_meta(item):
+    return {"label": item_label(item), "type": item.get("type", "u32"), "count": parse_int(item.get("count", 1))}
+
+
+def decode(hex_text, meta):
+    if hex_text is None:
+        return "?"
+    data = bytes.fromhex(hex_text)
+    fmt = meta.get("type", "u32")
+    if fmt not in FORMATS:
+        return data.hex()
+    code, width = FORMATS[fmt]
+    values = [struct.unpack_from(code, data, i * width)[0] for i in range(len(data) // width)]
+    shown = [f"{v:.4g}" if fmt.startswith("f") else f"0x{v:X}" if fmt.startswith("u") and width >= 4 else str(v)
+             for v in values]
+    return shown[0] if len(shown) == 1 else "(" + " ".join(shown) + ")"
+
+
+def tool_watch(args):
+    items = args["items"]
+    request = {"name": args["name"], "items": ";".join(item_spec(i, False) for i in items),
+               "meta": json.dumps([item_meta(i) for i in items]),
+               "every": parse_int(args.get("every", 1)), "count": parse_int(args.get("count", 600)),
+               "keep": args.get("keep", "last"), "on": args.get("on", "present"),
+               "changes": "true" if args.get("changes_only") else "false"}
+    GAME.call("watch_start", **request)
+    return (f"watching {args['name']}: {len(items)} item(s) every {request['every']} {request['on']} frame(s), "
+            f"{request['count']} records kept ({request['keep']}); trace_read to see them, trace_stop to end")
+
+
+def tool_trace(args):
+    reads = args.get("reads", [])
+    request = {"name": args["name"], "addr": f"0x{parse_int(args['addr']):X}", "mode": args.get("mode", "hook"),
+               "reads": ";".join(item_spec(i, True) for i in reads),
+               "count": parse_int(args.get("count", 1000)), "keep": args.get("keep", "first"),
+               "stack": parse_int(args.get("stack", 4)), "xmm": "true" if args.get("xmm") else "false"}
+    meta = {"reads": [item_meta(i) for i in reads]}
+    if args.get("mode") in ("write", "access"):
+        request["length"] = parse_int(args.get("length", 4))
+        meta["length_type"] = {1: "u8", 2: "u16", 4: "u32"}.get(request["length"], "u32")
+        if args.get("value_type"):
+            meta["length_type"] = args["value_type"]
+    if "func" in args:
+        request["func"] = f"0x{parse_int(args['func']):X}"
+    if args.get("force"):
+        request["force"] = "true"
+    when = args.get("when")
+    if when:
+        request["when"] = item_spec(when, True)
+        fmt = when.get("type", "u32")
+        if fmt not in FORMATS:
+            raise GameError(f"when's type is one of {', '.join(FORMATS)}")
+        negate = "not_equals" in when
+        value = when["not_equals" if negate else "equals"]
+        request["equals"] = struct.pack(FORMATS[fmt][0], float(value) if fmt.startswith("f") else parse_int(value)).hex()
+        request["op"] = "ne" if negate else "eq"
+        meta["when"] = f"{item_label(when)} {'!=' if negate else '=='} {value}"
+    request["meta"] = json.dumps(meta)
+    GAME.call("trace_start", **request)
+    return (f"tracing {args['name']}: {request['mode']} at {request['addr']}, {len(reads)} read(s), "
+            f"{request['count']} records kept ({request['keep']}); trace_read to see them, trace_stop to end")
+
+
+def summarize(label, texts, meta):
+    """min/max/changes of a watched item's first value."""
+    fmt = meta.get("type", "u32")
+    if fmt not in FORMATS:
+        return f"  {label}: {len(set(texts))} distinct"
+    code, _ = FORMATS[fmt]
+    values = [struct.unpack_from(code, bytes.fromhex(t))[0] for t in texts if t is not None]
+    if not values:
+        return f"  {label}: never read"
+    changes = sum(1 for a, b in zip(texts, texts[1:]) if a != b)
+    one = {"type": fmt, "count": 1}
+    pack = lambda v: struct.pack(code, v).hex()
+    return (f"  {label}: first {decode(pack(values[0]), one)}, last {decode(pack(values[-1]), one)}, "
+            f"min {decode(pack(min(values)), one)}, max {decode(pack(max(values)), one)}, {changes} change(s)")
+
+
+def tool_trace_read(args):
+    request = {"name": args["name"], "from": parse_int(args.get("from", 0)), "max": parse_int(args.get("max", 200))}
+    reply = GAME.call("trace_read", **request)
+    records = reply["records"]
+    try:
+        meta = json.loads(reply.get("meta") or "null")
+    except ValueError:
+        meta = None
+    lines = []
+    if reply["kind"] == "watch":
+        items = meta if isinstance(meta, list) else [{"label": f"item{i}", "type": "hex"} for i in range(len(records[0]["values"]) if records else 0)]
+        lines.append(f"watch {reply['name']}: {reply['samples']} samples, {reply['written']} recorded (keeps {reply['capacity']}, "
+                     f"{reply['keep']}), over {reply['seconds']} s / {reply['frames']} frames")
+        for i, item in enumerate(items):
+            lines.append(summarize(item["label"], [r["values"][i] for r in records], item))
+        lines.append("n  frame  ms  " + "  ".join(i["label"] for i in items))
+        for r in records:
+            lines.append(f"{r['n']}  {r['f']}  {int(r['t']) / 1000:.1f}  " +
+                         "  ".join(decode(v, items[i]) for i, v in enumerate(r["values"])))
+        return "\n".join(lines)
+
+    meta = meta if isinstance(meta, dict) else {}
+    reads = meta.get("reads", [])
+    shown = args.get("regs", REGISTERS)
+    lines.append(f"trace {reply['name']}: {reply['mode']} at {reply['addr']}, {reply['hits']} hits"
+                 + (f" ({reply['matched']} with {meta['when']})" if meta.get("when") else "")
+                 + f", {reply['written']} recorded (keeps {reply['capacity']}, {reply['keep']}), "
+                   f"over {reply['seconds']} s / {reply['frames']} frames")
+    if reply["callers"]:
+        lines.append("callers (first code address on the stack, all hits): " +
+                     ", ".join(f"{c['addr']} x{c['hits']}" for c in reply["callers"][:16]) +
+                     (f", other {reply['callers_other']}" if int(reply["callers_other"]) else ""))
+    if reply["mode"] in ("write", "access"):
+        lines.append("eip is the instruction after the access")
+    for r in records:
+        regs = struct.unpack("<10I", bytes.fromhex(r["regs"]))
+        parts = [f"#{r['n']} f{r['f']} {int(r['t']) / 1000:.1f}ms tid {r['tid']} eip {regs[9]:08X}"]
+        parts.append(" ".join(f"{name}={regs[i]:08X}" for i, name in enumerate(REGISTERS) if name in shown))
+        if "before" in r:
+            t = {"type": meta.get("length_type", "u32"), "count": 1}
+            parts.append(f"{decode(r['before'], t)} -> {decode(r['after'], t)}")
+        if reads:
+            parts.append(" ".join(f"{m['label']}={decode(v, m)}" for m, v in zip(reads, r["reads"])))
+        if r["stack"]:
+            parts.append("stack " + " ".join(a[2:] for a in r["stack"]))
+        if "xmm" in r:
+            data = bytes.fromhex(r["xmm"])
+            parts.append("xmm " + " ".join(f"{i}:(" + " ".join(f"{v:.4g}" for v in struct.unpack_from('<4f', data, i * 16)) + ")"
+                                           for i in range(8)))
+        lines.append(" | ".join(p for p in parts if p))
+    return "\n".join(lines)
+
+
+def tool_trace_stop(args):
+    return f"stopped {GAME.call('trace_stop', name=args.get('name', 'all'))['stopped']}"
+
+
+def tool_trace_list(_):
+    sessions = GAME.call("trace_list")["sessions"]
+    return "\n".join(
+        f"{s['name']}: trace {s['mode']} at {s['addr']}, {s['hits']} hits, {s['written']}/{s['capacity']} recorded"
+        if s["kind"] == "trace" else f"{s['name']}: watch, {s['samples']} samples, {s['written']}/{s['capacity']} recorded"
+        for s in sessions) or "none"
+
+
 ADDR = {"type": ["integer", "string"], "description": (
     "Address in the game process, e.g. \"0x00C64CB0\"" if TARGET == "pc"
     else "Guest address, e.g. \"0x82000000\"")}
@@ -473,6 +660,42 @@ else:
          {"on": {"type": "boolean"}, "x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"},
           "rx": {"type": "number"}, "ry": {"type": "number"}, "rz": {"type": "number"}, "fov": {"type": "number"}},
          []),
+        ("watch", tool_watch,
+         "Sample values each frame into a buffer in the game, to see how they change over time. items: "
+         "[{addr, offsets?, type (u8..f64 or hex with size), count?, label?}]; offsets as in follow_pointers but "
+         "from the address itself: the bytes at addr + offsets[0], each further offset reading a pointer there and "
+         "adding to it. every: each Nth frame; count: records kept (default 600), keep: last (default) or first; "
+         "on: present (each frame shown, also in menus) or game (the game's own frames); changes_only: record only "
+         "when a value changes. Read with trace_read, end with trace_stop.",
+         {"name": {"type": "string"}, "items": {"type": "array", "items": {"type": "object"}},
+          "every": {"type": "integer"}, "count": {"type": "integer"}, "keep": {"type": "string"},
+          "on": {"type": "string"}, "changes_only": {"type": "boolean"}}, ["name", "items"]),
+        ("trace", tool_trace,
+         "Record each hit of an instruction or of a piece of memory (needs DebugServerAllowWrite): registers, the "
+         "code addresses on the stack (callers; the first one is the return address at a function's start), and "
+         "reads. mode: hook (a mid-hook at addr, which must start an instruction: checked by decoding from the "
+         "padding before the function, or from func; force skips the check), execute (a debug register, no code "
+         "patched), write or access (a data breakpoint on length 1/2/4 aligned bytes: records before -> after and "
+         "eip after the accessing instruction; value_type decodes them); at most 8 hooks and 4 debug registers. "
+         "reads: [{reg or addr, offsets?, type, count?, label?}] at the hit (reg alone = its value; reg with offsets "
+         "= memory it points to, e.g. {reg: ecx, offsets: [0x24], type: f32, count: 4}; esp offset 4 = the first "
+         "stack argument at a function's start). when: {reg or addr, offsets?, type, equals | not_equals} records "
+         "only matching hits. count: records kept (default 1000), keep: first (default) or last; stack: code "
+         "addresses to keep (0..16, default 4); xmm: also xmm0..7. Read with trace_read, end with trace_stop.",
+         {"name": {"type": "string"}, "addr": ADDR, "mode": {"type": "string"}, "length": {"type": "integer"},
+          "value_type": {"type": "string"}, "func": ADDR, "force": {"type": "boolean"},
+          "reads": {"type": "array", "items": {"type": "object"}}, "when": {"type": "object"},
+          "count": {"type": "integer"}, "keep": {"type": "string"}, "stack": {"type": "integer"},
+          "xmm": {"type": "boolean"}}, ["name", "addr"]),
+        ("trace_read", tool_trace_read,
+         "The records of a watch (a summary per item, then a table) or a trace (hits, callers by count, then one "
+         "line per hit), from record number from (default the oldest kept), at most max (default 200, up to 5000). "
+         "regs: which registers to show in trace lines (default all).",
+         {"name": {"type": "string"}, "from": {"type": "integer"}, "max": {"type": "integer"},
+          "regs": {"type": "array", "items": {"type": "string"}}}, ["name"]),
+        ("trace_stop", tool_trace_stop, "End a watch or trace by name (unhooks, frees debug registers), or all.",
+         {"name": {"type": "string"}}, []),
+        ("trace_list", tool_trace_list, "The watches and traces running in the game.", {}, []),
         ("ini_get", tool_ini_get, "A value from GTAIV.EFLC.FusionFix.ini.",
          {"section": {"type": "string"}, "key": {"type": "string"}}, ["section", "key"]),
         ("ini_set", tool_ini_set,

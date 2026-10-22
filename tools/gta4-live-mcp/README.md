@@ -72,10 +72,20 @@ claude mcp add gtaiv-pc-live -e GTA4_LIVE_PORT=5051 -e GTA4_LIVE_TARGET=pc -- py
 | `screenshot` | The frame the game shows, as an image (both games) |
 | `scene` / `teleport` / `set_time` / `set_weather` (PC) | Player, camera, time and weather through script natives (not while paused or in a menu) |
 | `freeze` (PC) | A still scene for comparing frames: script camera at the game camera (or a given place), player frozen, clock stopped; `on: false` releases |
+| `watch` (PC) | Samples values (addresses or pointer chains) each frame into a buffer in the game: how they change over time; `changes_only`, `every`, `on: game` |
+| `trace` (PC, allow-write) | Records each hit of an instruction (`mode: hook`, a mid-hook, or `execute`, a debug register) or of memory (`write` / `access`, data breakpoints): registers, callers on the stack, reads through registers, a `when` filter |
+| `trace_read` / `trace_stop` / `trace_list` (PC) | A watch's summary and table, a trace's hits, callers by count and records; ending them; what runs |
 | `shader_manifest` (recomp) | Find shader override entries by hash or source |
 | `shader_override_push` (recomp) | Compile entries here and send them as live overrides |
 | `shader_override_list` / `shader_override_remove` (recomp) | The live overrides the game holds |
 | `restart_game` (recomp) | Restart the game; live overrides and restart-only settings apply |
+
+Traces patch code (hooks) or set the debug registers of every thread, so they
+need `DebugServerAllowWrite`. A hook's address must start an instruction: the
+game checks it by decoding from the padding before the function (or from
+`func`, the function's start). Up to 8 hooks and 4 debug registers at once.
+Hooks and data breakpoints don't stop the game; each hit costs a few
+microseconds, so `when` and `count` keep hot places cheap.
 
 Recomp addresses are guest addresses, as in the generated code and the hooks
 (`0x82000000` and up is the executable image); PC addresses are the game
