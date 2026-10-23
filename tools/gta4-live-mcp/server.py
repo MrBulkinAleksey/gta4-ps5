@@ -336,6 +336,16 @@ def tool_freeze(args):
     return f"frozen: camera {reply['camera']} rotation {reply['camera_rotation']} fov {reply['fov']}"
 
 
+def tool_profiler(args):
+    extra = {"timeout": str(int(args["timeout"]))} if "timeout" in args else {}
+    reply = GAME.call("profiler", **extra)
+    lines = [f"GPU milliseconds per frame, averaged over {reply['frames']} frames"]
+    for row in reply["rows"]:
+        depth = int(row["depth"])
+        lines.append(f"{'  ' * (depth + 1)}{row['name']:<{36 - 2 * (depth + 1)}} {float(row['ms']):6.2f}")
+    return "\n".join(lines)
+
+
 def tool_set_weather(args):
     weather = str(args["weather"])
     if weather.lower() in WEATHERS:
@@ -694,6 +704,12 @@ else:
          {"on": {"type": "boolean"}, "x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"},
           "rx": {"type": "number"}, "ry": {"type": "number"}, "rz": {"type": "number"}, "fov": {"type": "number"}},
          []),
+        ("profiler", tool_profiler,
+         "GPU time of a frame by pass (FusionFix's PostFxProfiler): turned on for the request whatever the ini says, "
+         "a block of 120 frames started afresh and returned as a tree of milliseconds per frame (FusionFix's own "
+         "passes, then the game's by the render target it drew into), then as the ini had it. Hold the scene still "
+         "(freeze) to compare two settings; timeout in seconds (default 30).",
+         {"timeout": {"type": "integer"}}, []),
         ("watch", tool_watch,
          "Sample values each frame into a buffer in the game, to see how they change over time. items: "
          "[{addr, offsets?, type (u8..f64 or hex with size), count?, label?}]; offsets as in follow_pointers but "

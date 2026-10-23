@@ -72,6 +72,7 @@ claude mcp add gtaiv-pc-live -e GTA4_LIVE_PORT=5051 -e GTA4_LIVE_TARGET=pc -- py
 | `screenshot` | The frame the game shows, as an image (both games) |
 | `scene` / `teleport` / `set_time` / `set_weather` (PC) | Player, camera, time and weather through script natives (not while paused or in a menu) |
 | `freeze` (PC) | A still scene for comparing frames: script camera at the game camera (or a given place), player frozen, clock stopped; `on: false` releases |
+| `profiler` (PC) | GPU time per pass over the next 120 frames (FusionFix's PostFxProfiler, on for the request): FusionFix's passes, then the game's by render target |
 | `watch` (PC) | Samples values (addresses or pointer chains) each frame into a buffer in the game: how they change over time; `changes_only`, `every`, `on: game` |
 | `trace` (PC, allow-write) | Records each hit of an instruction (`mode: hook`, a mid-hook, or `execute`, a debug register) or of memory (`write` / `access`, data breakpoints): registers, callers on the stack, reads through registers, a `when` filter |
 | `trace_read` / `trace_stop` / `trace_list` (PC) | A watch's summary and table, a trace's hits, callers by count and records; ending them; what runs |
