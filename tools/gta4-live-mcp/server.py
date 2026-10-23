@@ -356,6 +356,23 @@ def tool_cpu_profile(args):
     return f"{reply['report']}\n(every stack of the run, for flame graphs: {reply['folded']})"
 
 
+FILES_DIR = os.environ.get("GTA4_LIVE_FILES", str(Path.home() / "gta4-live-files"))
+
+
+def tool_files(args):
+    """FusionFix's files next to the plugin; with name, that file copied here (FILES_DIR or to)."""
+    if "name" not in args:
+        reply = GAME.call("files", filter=str(args.get("filter", "")))
+        lines = [f"{f['name']}  {int(f['size']):,} bytes" for f in reply["files"]]
+        return "\n".join(lines) if lines else "no files match"
+    reply = GAME.call("file", wait=120, name=str(args["name"]))
+    folder = Path(args.get("to", FILES_DIR))
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / Path(reply["name"]).name
+    path.write_bytes(base64.b64decode(reply["data"]))
+    return f"{reply['name']}: {int(reply['size']):,} bytes saved to {path}"
+
+
 def tool_set_weather(args):
     weather = str(args["weather"])
     if weather.lower() in WEATHERS:
@@ -720,6 +737,11 @@ else:
          "passes, then the game's by the render target it drew into), then as the ini had it. Hold the scene still "
          "(freeze) to compare two settings; timeout in seconds (default 30).",
          {"timeout": {"type": "integer"}}, []),
+        ("files", tool_files,
+         "FusionFix's own files next to the plugin (GTAIV.EFLC.FusionFix.*: logs, capture pictures, Profiler.folded), "
+         "newest first, names containing filter; with name, that file (up to 16 MB) copied to this machine (to, or "
+         "GTA4_LIVE_FILES, default ~/gta4-live-files) and its path given, so pictures can be looked at with Read.",
+         {"filter": {"type": "string"}, "name": {"type": "string"}, "to": {"type": "string"}}, []),
         ("cpu_profile", tool_cpu_profile,
          "Where the game's threads spend their CPU time (FusionFix's sampling profiler, run for the request even "
          "with the ini's Profiler off): for seconds (default 10, up to 300) it stops the busiest threads rate times "
