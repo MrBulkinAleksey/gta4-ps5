@@ -63,10 +63,12 @@ class Game:
         self.lock = threading.Lock()
         self.next_id = 0
 
-    def call(self, cmd, **args):
+    def call(self, cmd, wait=None, **args):
+        """wait: seconds this request may take, if longer than TIMEOUT (a profile of a given length)"""
+        timeout = max(TIMEOUT, wait or 0)
         with self.lock:
             try:
-                sock = socket.create_connection((HOST, PORT), timeout=TIMEOUT)
+                sock = socket.create_connection((HOST, PORT), timeout=timeout)
             except OSError as error:
                 raise GameError(
                     f"cannot reach {GAME_NAME} at {HOST}:{PORT} ({error}). Is it running with "
@@ -79,7 +81,7 @@ class Game:
                     line = file.readline()
             except socket.timeout:
                 raise GameError(
-                    f"no reply from {GAME_NAME} in {TIMEOUT:g} s (another session's long request, "
+                    f"no reply from {GAME_NAME} in {timeout:g} s (another session's long request, "
                     "such as a teleport, is served first)")
             except OSError as error:
                 raise GameError(f"lost the game connection: {error}")
@@ -338,12 +340,20 @@ def tool_freeze(args):
 
 def tool_profiler(args):
     extra = {"timeout": str(int(args["timeout"]))} if "timeout" in args else {}
-    reply = GAME.call("profiler", **extra)
+    reply = GAME.call("profiler", wait=int(args.get("timeout", 30)) + 15, **extra)
     lines = [f"GPU milliseconds per frame, averaged over {reply['frames']} frames"]
     for row in reply["rows"]:
         depth = int(row["depth"])
         lines.append(f"{'  ' * (depth + 1)}{row['name']:<{36 - 2 * (depth + 1)}} {float(row['ms']):6.2f}")
     return "\n".join(lines)
+
+
+def tool_cpu_profile(args):
+    keys = ("seconds", "rate", "threads", "spike_ms", "functions", "stacks", "spikes")
+    extra = {k: str(int(args[k])) for k in keys if k in args}
+    seconds = int(args.get("seconds", 10))
+    reply = GAME.call("cpu_profile", wait=seconds + 45, **extra)
+    return f"{reply['report']}\n(every stack of the run, for flame graphs: {reply['folded']})"
 
 
 def tool_set_weather(args):
@@ -710,6 +720,18 @@ else:
          "passes, then the game's by the render target it drew into), then as the ini had it. Hold the scene still "
          "(freeze) to compare two settings; timeout in seconds (default 30).",
          {"timeout": {"type": "integer"}}, []),
+        ("cpu_profile", tool_cpu_profile,
+         "Where the game's threads spend their CPU time (FusionFix's sampling profiler, run for the request even "
+         "with the ini's Profiler off): for seconds (default 10, up to 300) it stops the busiest threads rate times "
+         "a second (default 1000, up to 4000) for an instant each and reads their stacks. The report: CPU time of "
+         "every thread, for the sampled ones (threads, default 8; the main thread always) the busiest functions "
+         "in (self) and on the stack (total), functions of each (default 40), the stacks most seen (stacks, default "
+         "40) and the longest frames over spike_ms (default 50) with what the main thread and the two busiest others "
+         "did in them (spikes, default 10). Game functions are named by their Complete Edition address. Sampling "
+         "slows the game a little: don't read FPS from that time.",
+         {"seconds": {"type": "integer"}, "rate": {"type": "integer"}, "threads": {"type": "integer"},
+          "spike_ms": {"type": "integer"}, "functions": {"type": "integer"}, "stacks": {"type": "integer"},
+          "spikes": {"type": "integer"}}, []),
         ("watch", tool_watch,
          "Sample values each frame into a buffer in the game, to see how they change over time. items: "
          "[{addr, offsets?, type (u8..f64 or hex with size), count?, label?}]; offsets as in follow_pointers but "
