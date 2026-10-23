@@ -629,15 +629,39 @@ def tool_nearby(args):
         x, y, z = float(args["x"]), float(args["y"]), float(args["z"])
     else:
         x, y, z = (float(v) for v in GAME.call("scene")["player"])
-    reply = GAME.call("nearby", x=str(x), y=str(y), z=str(z), radius=str(args.get("radius", 10)),
-                      max=parse_int(args.get("max", 60)))
-    lines = [f"{reply['total']} within {args.get('radius', 10)} m of ({x:.1f}, {y:.1f}, {z:.1f})"]
+    radius = args.get("radius", 10)
+    request = dict(x=str(x), y=str(y), z=str(z), radius=str(radius), max=parse_int(args.get("max", 60)))
+    for key in ("kind", "shader", "texture"):
+        if args.get(key):
+            request[key] = str(args[key])
+    if args.get("model") not in (None, ""):
+        model = str(args["model"])
+        request["model"] = model if model.lower().startswith("0x") or model.isdigit() else f"0x{joaat(model):08X}"
+    for key in ("min_top", "max_top"):
+        if args.get(key) is not None:
+            request[key] = str(args[key])
+    request["group"] = "true" if args.get("group") else "false"
+    request["shaders"] = "false" if args.get("shaders") is False else "true"
+    reply = GAME.call("nearby", **request)
+    grouped = args.get("group")
+    head = f"{reply['total']} within {radius} m of ({x:.1f}, {y:.1f}, {z:.1f})"
+    lines = [head + (f", {reply.get('models', '?')} models" if grouped else "")]
     for e in reply["entities"]:
         size = " x ".join(f"{v:.1f}" for v in e["size"])
         name = model_name(e["hash"])
-        lines.append(f"{e['distance']:>6.1f} m  {e['kind']:<8} model {e['model']:>5} {e['hash']}{' ' + name if name else ''}  "
-                     f"size {size}  at ({', '.join(f'{v:.1f}' for v in e['pos'])})  up {e['up']:.2f}  "
-                     f"+0x210 {e['flags210']}  entity {e['entity']} info {e['info']}")
+        where = f"({', '.join(f'{v:.1f}' for v in e['pos'])})"
+        if grouped:
+            line = (f"{e['distance']:>6.1f} m  {e['count']:>4} x {e['kind']:<8} model {e['model']:>5} {e['hash']}"
+                    f"{' ' + name if name else ''}  size {size}, top {e.get('top', 0):.2f}  nearest at {where} entity {e['entity']}")
+        else:
+            line = (f"{e['distance']:>6.1f} m  {e['kind']:<8} model {e['model']:>5} {e['hash']}{' ' + name if name else ''}  "
+                    f"size {size}, top {e.get('top', 0):.2f}  at {where} (origin {e.get('origin_distance', 0):.1f} m)  up {e['up']:.2f}  "
+                    f"alpha {e.get('alpha', 0)}  +0x210 {e['flags210']}"
+                    f"{'  lod parent ' + e['lod_parent'] if e.get('lod_parent', '0x00000000') != '0x00000000' else ''}  "
+                    f"entity {e['entity']} info {e['info']}")
+        lines.append(line)
+        for shader in e.get("shaders", []):
+            lines.append(f"            {shader}")
     return "\n".join(lines)
 
 
@@ -792,10 +816,17 @@ else:
         ("trace_list", tool_trace_list, "The watches and traces running in the game.", {}, []),
         ("nearby", tool_nearby,
          "The buildings (map models, procedural props) and objects within radius (default 10 m) of x, y, z or of the "
-         "player, nearest first: model index and hash (named from model_names.txt next to the server, one name or "
-         ".ide line each), size from the model's bounds, position, uprightness, entity and model info addresses.",
+         "player, nearest first. Distance is to the model's bounding box in the world (0 = inside it), so big models "
+         "whose origin is far off (a row of bushes, a map section) are found by their nearest part. Each: model index "
+         "and hash (named from model_names.txt next to the server, one name or .ide line each), size and top above the "
+         "origin from the model's bounds, position, origin distance, uprightness, fade alpha, LOD parent, entity and "
+         "model info, and, when its drawable is loaded, its shaders as \"preset.sps: texture, texture\". Filters: kind "
+         "(building/object), model (index, 0x hash or a name), shader and texture (parts of names, any case), min_top / "
+         "max_top (m above the origin). group: one row per model with the count. shaders: false leaves them out.",
          {"x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"}, "radius": {"type": "number"},
-          "max": {"type": "integer"}}, []),
+          "max": {"type": "integer"}, "kind": {"type": "string"}, "model": {"type": ["string", "integer"]},
+          "shader": {"type": "string"}, "texture": {"type": "string"}, "min_top": {"type": "number"},
+          "max_top": {"type": "number"}, "group": {"type": "boolean"}, "shaders": {"type": "boolean"}}, []),
         ("ini_get", tool_ini_get, "A value from GTAIV.EFLC.FusionFix.ini.",
          {"section": {"type": "string"}, "key": {"type": "string"}}, ["section", "key"]),
         ("ini_set", tool_ini_set,
