@@ -56,53 +56,39 @@ class GameError(Exception):
 
 
 class Game:
-    """One connection to the debug server, reopened when it drops."""
+    """A connection to the debug server for each request, closed after its reply: the server serves one
+    client at a time, so a connection kept open would shut every other session out."""
 
     def __init__(self):
         self.lock = threading.Lock()
-        self.sock = None
-        self.file = None
         self.next_id = 0
-
-    def _connect(self):
-        try:
-            self.sock = socket.create_connection((HOST, PORT), timeout=TIMEOUT)
-        except OSError as error:
-            raise GameError(
-                f"cannot reach {GAME_NAME} at {HOST}:{PORT} ({error}). Is it running with "
-                f"{ENABLE_HINT.format(port=PORT)}, and the SSH tunnel up?")
-        self.file = self.sock.makefile("rb")
-
-    def _close(self):
-        for thing in (self.file, self.sock):
-            try:
-                if thing:
-                    thing.close()
-            except OSError:
-                pass
-        self.sock = self.file = None
 
     def call(self, cmd, **args):
         with self.lock:
-            for attempt in (0, 1):
-                if not self.sock:
-                    self._connect()
-                self.next_id += 1
-                request = dict(args, cmd=cmd, id=self.next_id)
-                try:
-                    self.sock.sendall((json.dumps(request) + "\n").encode())
-                    line = self.file.readline()
-                    if not line:
-                        raise OSError("connection closed")
-                except OSError as error:
-                    self._close()
-                    if attempt:
-                        raise GameError(f"lost the game connection: {error}")
-                    continue
-                reply = json.loads(line)
-                if not reply.get("ok"):
-                    raise GameError(reply.get("error", "unknown error"))
-                return reply
+            try:
+                sock = socket.create_connection((HOST, PORT), timeout=TIMEOUT)
+            except OSError as error:
+                raise GameError(
+                    f"cannot reach {GAME_NAME} at {HOST}:{PORT} ({error}). Is it running with "
+                    f"{ENABLE_HINT.format(port=PORT)}, and the SSH tunnel up?")
+            self.next_id += 1
+            request = dict(args, cmd=cmd, id=self.next_id)
+            try:
+                with sock, sock.makefile("rb") as file:
+                    sock.sendall((json.dumps(request) + "\n").encode())
+                    line = file.readline()
+            except socket.timeout:
+                raise GameError(
+                    f"no reply from {GAME_NAME} in {TIMEOUT:g} s (another session's long request, "
+                    "such as a teleport, is served first)")
+            except OSError as error:
+                raise GameError(f"lost the game connection: {error}")
+            if not line:
+                raise GameError("lost the game connection: connection closed")
+            reply = json.loads(line)
+            if not reply.get("ok"):
+                raise GameError(reply.get("error", "unknown error"))
+            return reply
 
 
 GAME = Game()
@@ -309,7 +295,6 @@ def tool_shader_override_remove(args):
 
 def tool_restart_game(_):
     reply = GAME.call("restart")
-    GAME._close()
     return (f"restarting: the next instance is pid {reply['next_pid']}; the debug server is back "
             "once it has loaded (call game_info until it answers)")
 
