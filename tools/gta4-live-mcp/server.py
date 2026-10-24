@@ -393,7 +393,7 @@ def bmp_to_png(data):
 
 def tool_frame_capture(args):
     keys = ("kinds", "model", "ps", "vs", "target", "lines", "pictures", "draw_pictures", "constants",
-            "stretch_pictures", "probes", "raw", "timeout")
+            "stretch_pictures", "probes", "raw", "raw_ps", "timeout")
     extra = {k: str(args[k]) for k in keys if k in args}
     if isinstance(args.get("stretch_pictures"), bool):
         extra["stretch_pictures"] = "1" if args["stretch_pictures"] else "0"
@@ -809,7 +809,7 @@ else:
          {"timeout": {"type": "integer"}}, []),
         ("files", tool_files,
          "FusionFix's own files next to the plugin (GTAIV.EFLC.FusionFix.*: logs, capture pictures, Profiler.folded), "
-         "newest first, names containing filter; with name, that file (up to 16 MB) copied to this machine (to, or "
+         "newest first, names containing filter; with name, that file (up to 64 MB) copied to this machine (to, or "
          "GTA4_LIVE_FILES, default ~/gta4-live-files) and its path given, so pictures can be looked at with Read.",
          {"filter": {"type": "string"}, "name": {"type": "string"}, "to": {"type": "string"}}, []),
         ("frame_capture", tool_frame_capture,
@@ -831,7 +831,7 @@ else:
           "vs": {"type": "string"}, "target": {"type": "string"}, "lines": {"type": "integer"},
           "pictures": {"type": "integer"}, "draw_pictures": {"type": "integer"},
           "constants": {"type": "integer"}, "stretch_pictures": {"type": "boolean"},
-          "probes": {"type": "string"}, "raw": {"type": "string"}, "timeout": {"type": "integer"}, "fetch": {"type": "boolean"},
+          "probes": {"type": "string"}, "raw": {"type": "string"}, "raw_ps": {"type": "string"}, "timeout": {"type": "integer"}, "fetch": {"type": "boolean"},
           "to": {"type": "string"}}, []),
         ("cpu_profile", tool_cpu_profile,
          "Where the game's threads spend their CPU time (FusionFix's sampling profiler, run for the request even "
