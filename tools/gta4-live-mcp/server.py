@@ -27,6 +27,7 @@ import socket
 import struct
 import sys
 import threading
+import zlib
 from pathlib import Path
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -371,6 +372,47 @@ def tool_files(args):
     path = folder / Path(reply["name"]).name
     path.write_bytes(base64.b64decode(reply["data"]))
     return f"{reply['name']}: {int(reply['size']):,} bytes saved to {path}"
+
+
+def bmp_to_png(data):
+    """A 24-bit bottom-up BMP (FusionFix's capture pictures) as PNG bytes, so Read can show it."""
+    width, height = struct.unpack_from("<ii", data, 18)
+    offset = struct.unpack_from("<I", data, 10)[0]
+    row = (width * 3 + 3) & ~3
+    raw = bytearray()
+    for y in range(abs(height)):
+        line = data[offset + row * (abs(height) - 1 - y if height > 0 else y):][:width * 3]
+        raw.append(0)
+        raw += bytes(b for i in range(0, width * 3, 3) for b in (line[i + 2], line[i + 1], line[i]))
+
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, abs(height), 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(bytes(raw), 6)) + chunk(b"IEND", b""))
+
+
+def tool_frame_capture(args):
+    keys = ("kinds", "model", "ps", "vs", "target", "lines", "pictures", "draw_pictures", "constants",
+            "stretch_pictures", "probes", "timeout")
+    extra = {k: str(args[k]) for k in keys if k in args}
+    if isinstance(args.get("stretch_pictures"), bool):
+        extra["stretch_pictures"] = "1" if args["stretch_pictures"] else "0"
+    reply = GAME.call("frame_capture", wait=int(args.get("timeout", 30)) + 30, **extra)
+    lines = [f"capture {reply['capture']}, the whole log: {reply['log']} (files name=GTAIV.EFLC.FusionFix.FrameCapture.log)",
+             reply["summary"].rstrip()]
+    pictures = reply.get("pictures", [])
+    if args.get("fetch", True) and pictures:
+        folder = Path(args.get("to", FILES_DIR)) / f"capture-{reply['capture']}"
+        folder.mkdir(parents=True, exist_ok=True)
+        lines.append(f"pictures as PNG in {folder}:")
+        for name in pictures:
+            data = base64.b64decode(GAME.call("file", wait=120, name=name)["data"])
+            path = folder / (Path(name).stem + ".png")
+            path.write_bytes(bmp_to_png(data))
+            lines.append(f"  {path}")
+    else:
+        lines += [f"  {name}" for name in pictures]
+    return "\n".join(lines)
 
 
 def tool_set_weather(args):
@@ -766,6 +808,25 @@ else:
          "newest first, names containing filter; with name, that file (up to 16 MB) copied to this machine (to, or "
          "GTA4_LIVE_FILES, default ~/gta4-live-files) and its path given, so pictures can be looked at with Read.",
          {"filter": {"type": "string"}, "name": {"type": "string"}, "to": {"type": "string"}}, []),
+        ("frame_capture", tool_frame_capture,
+         "Capture the next whole scene frame (FusionFix's Frame Capture): every stretch of draws into one set of "
+         "colour targets (target name, rt0-rt3 and depth formats, draws by pixel shader) with pictures of its "
+         "targets as the frame leaves them (G-buffer albedo/normals/material ID/depth, light, fog, post), and every "
+         "draw matching the filters (entity kind, model hash, place, states, VS/PS FusionShaders numbers, textures "
+         "s0-s15), rt0 pictured after the first draw_pictures of them, all non-zero shader constants (ps c0-c223, "
+         "b, i; vs c0-c255, b) of the first constants of them. Filters: kinds (all, or a comma list of none, "
+         "unmarked, buildings, props, vehicles, peds), model (hash, hex), ps / vs (numbers as the log gives them, "
+         "hex), target (part of the target name, also picks the stretches pictured). lines (3000), pictures "
+         "(128), draw_pictures (24), constants (4), stretch_pictures (true). probes: points x,y as shares of the "
+         "target (0-1) apart by '/', whose raw values (all four channels) are read in every picture taken. "
+         "Returns the stretches in short; the pictures are fetched as PNG (fetch false: names only) to read with "
+         "Read; the full log via files.",
+         {"kinds": {"type": "string"}, "model": {"type": "string"}, "ps": {"type": "string"},
+          "vs": {"type": "string"}, "target": {"type": "string"}, "lines": {"type": "integer"},
+          "pictures": {"type": "integer"}, "draw_pictures": {"type": "integer"},
+          "constants": {"type": "integer"}, "stretch_pictures": {"type": "boolean"},
+          "probes": {"type": "string"}, "timeout": {"type": "integer"}, "fetch": {"type": "boolean"},
+          "to": {"type": "string"}}, []),
         ("cpu_profile", tool_cpu_profile,
          "Where the game's threads spend their CPU time (FusionFix's sampling profiler, run for the request even "
          "with the ini's Profiler off): for seconds (default 10, up to 300) it stops the busiest threads rate times "
