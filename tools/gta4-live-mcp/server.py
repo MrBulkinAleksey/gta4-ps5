@@ -393,7 +393,7 @@ def bmp_to_png(data):
 
 def tool_frame_capture(args):
     keys = ("kinds", "model", "ps", "vs", "target", "lines", "pictures", "draw_pictures", "constants",
-            "stretch_pictures", "probes", "timeout")
+            "stretch_pictures", "probes", "raw", "timeout")
     extra = {k: str(args[k]) for k in keys if k in args}
     if isinstance(args.get("stretch_pictures"), bool):
         extra["stretch_pictures"] = "1" if args["stretch_pictures"] else "0"
@@ -407,8 +407,12 @@ def tool_frame_capture(args):
         lines.append(f"pictures as PNG in {folder}:")
         for name in pictures:
             data = base64.b64decode(GAME.call("file", wait=120, name=name)["data"])
-            path = folder / (Path(name).stem + ".png")
-            path.write_bytes(bmp_to_png(data))
+            if name.endswith(".bmp"):
+                path = folder / (Path(name).stem + ".png")
+                data = bmp_to_png(data)
+            else:
+                path = folder / Path(name).name
+            path.write_bytes(data)
             lines.append(f"  {path}")
     else:
         lines += [f"  {name}" for name in pictures]
@@ -818,14 +822,16 @@ else:
          "unmarked, buildings, props, vehicles, peds), model (hash, hex), ps / vs (numbers as the log gives them, "
          "hex), target (part of the target name, also picks the stretches pictured). lines (3000), pictures "
          "(128), draw_pictures (24), constants (4), stretch_pictures (true). probes: points x,y as shares of the "
-         "target (0-1) apart by '/', whose raw values (all four channels) are read in every picture taken. "
+         "target (0-1) apart by '/', whose raw values (all four channels) are read in every picture taken. raw: part "
+         "of a target name whose stretches' targets are also saved whole in their own format (.raw: 'FFRAW1', "
+         "uint32 width, height, D3DFORMAT, bytes per pixel, rows top down), for exact values at any pixel. "
          "Returns the stretches in short; the pictures are fetched as PNG (fetch false: names only) to read with "
          "Read; the full log via files.",
          {"kinds": {"type": "string"}, "model": {"type": "string"}, "ps": {"type": "string"},
           "vs": {"type": "string"}, "target": {"type": "string"}, "lines": {"type": "integer"},
           "pictures": {"type": "integer"}, "draw_pictures": {"type": "integer"},
           "constants": {"type": "integer"}, "stretch_pictures": {"type": "boolean"},
-          "probes": {"type": "string"}, "timeout": {"type": "integer"}, "fetch": {"type": "boolean"},
+          "probes": {"type": "string"}, "raw": {"type": "string"}, "timeout": {"type": "integer"}, "fetch": {"type": "boolean"},
           "to": {"type": "string"}}, []),
         ("cpu_profile", tool_cpu_profile,
          "Where the game's threads spend their CPU time (FusionFix's sampling profiler, run for the request even "
