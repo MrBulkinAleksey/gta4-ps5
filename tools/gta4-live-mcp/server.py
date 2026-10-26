@@ -599,7 +599,9 @@ def tool_shadow_probe(args):
         if "stored" in f:
             stored = f["stored"]
             own = f["dist"] / f["radius"]
-            shadowed = stored < own - 0.002
+            # The shader moves the point 5 cm out along its normal first (c77.z * 17.07), which this leaves out:
+            # within that of the surface the map holds the point's own surface, not a shadow
+            shadowed = stored < own - 0.07 / f["radius"]
             out.append(f"  map holds {stored:.4f} (= {stored * f['radius']:.2f} m), the point is at {own:.4f}: "
                        + ("SHADOWED" if shadowed else "lit"))
             if shadowed:
