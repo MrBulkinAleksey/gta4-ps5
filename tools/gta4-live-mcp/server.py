@@ -419,6 +419,214 @@ def tool_frame_capture(args):
     return "\n".join(lines)
 
 
+# ---- shadow_probe (PC): which lamp's shadow map darkens a point of the screen, and with what -------------------
+
+CAPTURE_LOG = "GTAIV.EFLC.FusionFix.FrameCapture.log"
+SLOT_RECORDS = 0x119F100  # the night shadow slots' records, 0x110 apart (CE)
+
+
+def capture_section(**extra):
+    """Run a frame capture (no pictures fetched) and give its number and its part of the capture log."""
+    reply = GAME.call("frame_capture", wait=90, **{k: str(v) for k, v in extra.items()})
+    number = int(reply["capture"])
+    text = base64.b64decode(GAME.call("file", wait=120, name=CAPTURE_LOG)["data"]).decode("utf-8", "replace")
+    start = text.rfind(f"capture {number} (files")
+    if start < 0:
+        raise GameError(f"capture {number} is not in {CAPTURE_LOG}")
+    end = text.find(f"capture {number + 1} (files", start)
+    return number, text[start:end if end > 0 else len(text)]
+
+
+def probe_values(line):
+    """The probes of a picture line: [(r, g, b, a), ...] in the order asked."""
+    out = []
+    for part in line.split("| at ")[1:]:
+        fields = part.split()
+        out.append(tuple(float(v) for v in fields[2:6]))
+    return out
+
+
+def constants_of(line):
+    """'c12 (a b c d) c13 (...)' as {12: (a, b, c, d)}."""
+    out = {}
+    for chunk in line.split(")"):
+        if "(" not in chunk:
+            continue
+        name, values = chunk.split("(", 1)
+        name = name.strip().split()[-1] if name.strip() else ""
+        if name.startswith("c") and name[1:].isdigit():
+            out[int(name[1:])] = tuple(float(v) for v in values.split())
+    return out
+
+
+def parse_draws(section):
+    """Draws of a capture log section: number, kind, model, place, ps, ps constants, probes after it."""
+    draws, current = {}, None
+    for line in section.splitlines():
+        body = line.split("] ", 2)[-1] if "] [FrameCapture" in line else line
+        stripped = body.strip()
+        head = stripped.split(" ", 1)
+        if head[0].isdigit() and " prim " in stripped:
+            number = int(head[0])
+            words = stripped.split()
+            current = {"draw": number, "kind": words[1], "line": stripped}
+            if len(words) > 6 and words[3] == "at":
+                current["model"] = words[2]
+                current["at"] = tuple(float(v) for v in words[4:7])
+            if " ps " in stripped:
+                current["ps"] = stripped.split(" ps ", 1)[1].split()[0]
+            draws[number] = current
+        elif stripped.startswith("ps: ") and current is not None:
+            current["c"] = constants_of(stripped[4:])
+        elif stripped.startswith("rt0-after-draw-"):
+            number = int(stripped[len("rt0-after-draw-"):].split(":", 1)[0])
+            if number in draws:
+                draws[number]["probes"] = probe_values(stripped)
+    return draws
+
+
+def parse_stretch_pictures(section):
+    """Stretch pictures of a capture log section: [(stretch, name, target, width, height, format, probes)]."""
+    out, stretch, name = [], None, ""
+    for line in section.splitlines():
+        stripped = line.split("] ", 2)[-1].strip() if "] [FrameCapture" in line else line.strip()
+        if stripped.startswith("-- stretch "):
+            words = stripped.split()
+            stretch, name = int(words[2]), stripped.split("'")[1]
+        elif stretch is not None and stripped[:4] in ("rt0:", "rt1:", "rt2:", "rt3:") and "| at " in stripped:
+            words = stripped.split()
+            width, height = (int(v) for v in words[1].split("x"))
+            out.append((stretch, name, words[0][:-1], width, height, int(words[3]), probe_values(stripped)))
+    return out
+
+
+def slot_records():
+    """The 8 slot records: position, radius, cache index, key, mode."""
+    data = read_bytes(SLOT_RECORDS, 8 * 0x110)
+    slots = []
+    for i in range(8):
+        r = data[i * 0x110:(i + 1) * 0x110]
+        slots.append({"slot": i, "pos": struct.unpack_from("<3f", r, 0xC0), "radius": struct.unpack_from("<f", r, 0xE0)[0],
+                      "cache": struct.unpack_from("<i", r, 0xF0)[0], "key": struct.unpack_from("<I", r, 0xF8)[0],
+                      "mode": struct.unpack_from("<I", r, 0xFC)[0], "active": r[0xED]})
+    return slots
+
+
+def tool_shadow_probe(args):
+    """See the tool's description in TOOLS."""
+    x, y = float(args["x"]), float(args["y"])
+    ps_list = [p.strip() for p in str(args.get("ps", "13,14,16")).split(",") if p.strip()]
+    out = [f"shadow_probe at ({x:.4f}, {y:.4f}) of the screen"]
+
+    # 1. The pixel's view depth: the first full-screen R32F stretch after the G-buffer holds it in metres
+    _, section = capture_section(kinds="none", target="_DEFERRED_GBUFFER_2_", lines=200, pictures=40,
+                                 draw_pictures=0, constants=0, probes=f"{x},{y}", stretch_pictures=1)
+    depth = None
+    for stretch, name, target, width, height, fmt, probes in parse_stretch_pictures(section):
+        if fmt == 114 and width >= 1280 and probes and probes[0][0] > 0.01:
+            depth = probes[0][0]
+            out.append(f"view depth {depth:.3f} m (stretch {stretch} '{name}' {target} {width}x{height} R32F)")
+            break
+    if depth is None:
+        raise GameError("no full-screen R32F depth stretch found after the G-buffer")
+
+    # 2. The lights drawn with a shadow map, their constants and what they gave the pixel
+    lamps = []
+    for ps in ps_list:
+        _, section = capture_section(kinds="all", ps=ps, lines=600, pictures=0, draw_pictures=40, constants=40,
+                                     probes=f"{x},{y}", stretch_pictures=0)
+        lamps += [d for d in parse_draws(section).values() if d.get("ps", "").upper() == ps.upper() and "c" in d]
+    if not lamps:
+        return "\n".join(out + [f"no draws with ps {', '.join(ps_list)} (no lamp with a shadow map lit the frame)"])
+    lamps.sort(key=lambda d: d["draw"])
+    c = lamps[0]["c"]
+    right, up, back, cam = c[12][:3], c[13][:3], c[14][:3], c[15][:3]
+    tan_x, tan_y = c[85][0], c[85][1]
+    nx, ny = 2 * x - 1, 1 - 2 * y
+    ray = [-back[i] + right[i] * nx * tan_x + up[i] * ny * tan_y for i in range(3)]
+    world = [cam[i] + ray[i] * depth for i in range(3)]
+    out.append(f"world point ({world[0]:.2f}, {world[1]:.2f}, {world[2]:.2f}); camera ({cam[0]:.2f}, {cam[1]:.2f}, {cam[2]:.2f})")
+
+    slots = slot_records()
+    previous = 0.0
+    found = []
+    for d in lamps:
+        k = d["c"]
+        light = k[78][:3]
+        radius = (1.0 / k[80][0]) ** 0.5 if k.get(80, (0,))[0] > 0 else 0.0
+        rows = [k.get(i, (0, 0, 0, 0)) for i in (72, 73, 74, 75)]
+        v = [world[0] * rows[0][j] + world[1] * rows[1][j] + world[2] * rows[2][j] + rows[3][j] for j in range(3)]
+        z = v[2] + k[76][2]
+        length = (v[0] ** 2 + v[1] ** 2 + z ** 2) ** 0.5
+        denom = abs(z) + length
+        u = v[0] / denom * 0.5 + 0.5
+        w = -v[1] / denom * 0.5 + 0.5
+        channel = 0 if z <= 0 else 1
+        rect = k[77]
+        atlas = (u * rect[3] + rect[0], w * rect[3] + rect[1])
+        seam_deg = math_degrees_asin(abs(z) / length) if length else 0.0
+        gave = (d["probes"][0][0] - previous) if d.get("probes") else None
+        if d.get("probes"):
+            previous = d["probes"][0][0]
+        slot = next((s for s in slots if all(abs(s["pos"][i] - light[i]) < 0.05 for i in range(3))), None)
+        found.append({"draw": d, "light": light, "radius": radius, "dist": length, "channel": channel, "uv": (u, w),
+                      "atlas": atlas, "seam": seam_deg, "gave": gave, "slot": slot, "inside": length < radius})
+
+    # 3. What the atlas holds there, for the lamps that reach the point
+    reach = [f for f in found if f["inside"]]
+    if reach:
+        probes = "/".join(f"{f['atlas'][0]:.6f},{f['atlas'][1]:.6f}" for f in reach)
+        _, section = capture_section(kinds="none", target="SHADOW_MAP_COLOUR_CACHE", lines=100, pictures=64,
+                                     draw_pictures=0, constants=0, probes=probes, stretch_pictures=1)
+        pictures = [p for p in parse_stretch_pictures(section) if p[2] == "rt0"]
+        if pictures:
+            final = pictures[-1][6]
+            for f, value in zip(reach, final):
+                f["stored"] = value[f["channel"]]
+
+    for f in found:
+        d, s = f["draw"], f["slot"]
+        where = (f"slot {s['slot']} (mode {s['mode']}, cache {s['cache']}, key {s['key']:08X})" if s else "no slot record at its position")
+        line = (f"\nlighting draw {d['draw']} ps {d['ps']}: lamp ({f['light'][0]:.2f}, {f['light'][1]:.2f}, {f['light'][2]:.2f}) "
+                f"radius {f['radius']:.1f}, {where}, atlas tile rect {tuple(round(v, 4) for v in d['c'][77])}")
+        out.append(line)
+        if not f["inside"]:
+            out.append(f"  the point is {f['dist']:.1f} m away, outside its radius")
+            continue
+        gave = "" if f["gave"] is None else f", gave the pixel {f['gave']:+.3f} (with any draws since the last picture)"
+        out.append(f"  {f['dist']:.2f} m from it{gave}; half {'R (behind its axis)' if f['channel'] == 0 else 'G (along its axis)'}, "
+                   f"{f['seam']:.1f} deg from the halves' seam; map uv ({f['uv'][0]:.4f}, {f['uv'][1]:.4f})")
+        if "stored" in f:
+            stored = f["stored"]
+            own = f["dist"] / f["radius"]
+            shadowed = stored < own - 0.002
+            out.append(f"  map holds {stored:.4f} (= {stored * f['radius']:.2f} m), the point is at {own:.4f}: "
+                       + ("SHADOWED" if shadowed else "lit"))
+            if shadowed:
+                dx = [(world[i] - f["light"][i]) / f["dist"] for i in range(3)]
+                hit = [f["light"][i] + dx[i] * stored * f["radius"] for i in range(3)]
+                out.append(f"  the map's occluder lies at ({hit[0]:.2f}, {hit[1]:.2f}, {hit[2]:.2f}), "
+                           f"{(f['dist'] - stored * f['radius']):.2f} m before the point on the way to the lamp")
+                try:
+                    near = GAME.call("nearby", x=str(hit[0]), y=str(hit[1]), z=str(hit[2]), radius="1.0", max=6,
+                                     group="false", shaders="false")
+                    if near["entities"]:
+                        for e in near["entities"]:
+                            out.append(f"    {e.get('kind', '?')} {e['hash']} {model_name(e['hash'])} at "
+                                       f"({', '.join(f'{v:.1f}' for v in e['pos'])}), {e.get('distance', 0):.2f} m from it")
+                    else:
+                        out.append("    nothing within 1 m of it: not a real occluder (a fault of the map, as at the halves' seam)")
+                except GameError as error:
+                    out.append(f"    nearby failed: {error}")
+    return "\n".join(out)
+
+
+def math_degrees_asin(value):
+    import math
+    return math.degrees(math.asin(max(-1.0, min(1.0, value))))
+
+
+
 def tool_set_weather(args):
     weather = str(args["weather"])
     if weather.lower() in WEATHERS:
@@ -812,6 +1020,14 @@ else:
          "newest first, names containing filter; with name, that file (up to 64 MB) copied to this machine (to, or "
          "GTA4_LIVE_FILES, default ~/gta4-live-files) and its path given, so pictures can be looked at with Read.",
          {"filter": {"type": "string"}, "name": {"type": "string"}, "to": {"type": "string"}}, []),
+        ("shadow_probe", tool_shadow_probe,
+         "Which lamp's shadow map darkens a point of the screen (x, y as shares, 0-1), and with what: four frame "
+         "captures of the still scene (freeze first). Gives the pixel's view depth and world point; for each lamp "
+         "drawn with a shadow map (lighting pixel shaders ps, default 13,14,16): its lighting draw, position, radius, "
+         "slot record (mode, cache index, key) and atlas tile, the light it gave the pixel, the paraboloid half and the "
+         "angle from the halves' seam, the map's depth there against the point's (shadowed or lit), and for a shadowed "
+         "point where the map's occluder lies and what stands within 1 m of it (nothing: a fault of the map).",
+         {"x": {"type": "number"}, "y": {"type": "number"}, "ps": {"type": "string"}}, ["x", "y"]),
         ("frame_capture", tool_frame_capture,
          "Capture the next whole scene frame (FusionFix's Frame Capture): every stretch of draws into one set of "
          "colour targets (target name, rt0-rt3 and depth formats, draws by pixel shader) with pictures of its "
