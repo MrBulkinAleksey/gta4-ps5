@@ -643,6 +643,58 @@ def tool_modules(args):
                      for m in modules if needle in m["name"].lower()) or "no module matches"
 
 
+LAST_VMMAP = None
+
+
+def tool_vmmap(args):
+    global LAST_VMMAP
+    mb = 1024 * 1024
+    request = {"min_size": int(float(args.get("min_mb", 1)) * mb), "top": parse_int(args.get("top", 60))}
+    reply = GAME.call("vmmap", **request)
+    kinds = {k["kind"]: k for k in reply["kinds"]}
+    listed = {a["base"]: a for a in reply["listed"]}
+    before = LAST_VMMAP if args.get("compare", True) else None
+
+    def megs(value):
+        return f"{int(value) / mb:8.1f}"
+
+    def delta(now, then):
+        return f" ({(int(now) - int(then)) / mb:+.1f})" if then is not None else ""
+
+    old = before["reply"] if before else {}
+    lines = [f"address space up to {reply['max_address']}: {reply['allocations']} allocations; free"
+             f" {megs(reply['free_total']).strip()} MB{delta(reply['free_total'], old.get('free_total'))} in"
+             f" {reply['free_blocks']} blocks, {megs(reply['free_usable']).strip()} MB in"
+             f" {reply['free_usable_blocks']} blocks of 64 KB or more"]
+    lines.append("largest free blocks (MB): " + ", ".join(
+        f"{int(b['size']) / mb:.1f} at {b['base']}" for b in reply["largest_free"]))
+    lines.append("")
+    lines.append("kind       count   reserved MB  committed MB   (of them under min_mb: count, MB)")
+    for name, k in sorted(kinds.items(), key=lambda kv: -int(kv[1]["reserved"])):
+        then = before["kinds"].get(name) if before else None
+        lines.append(f"{name:<8} {k['count']:>7}  {megs(k['reserved'])}{delta(k['reserved'], then and then['reserved'])}"
+                     f"  {megs(k['committed'])}{delta(k['committed'], then and then['committed'])}"
+                     f"   ({k['small_count']}, {int(k['small_reserved']) / mb:.1f})")
+    lines.append("")
+    lines.append("base          size MB  committed MB  kind     protect  regions  owner")
+    for a in reply["listed"]:
+        mark = ""
+        if before:
+            prev = before["listed"].get(a["base"])
+            mark = "  NEW" if prev is None else (
+                f"  {(int(a['size']) - int(prev['size'])) / mb:+.1f} MB" if prev["size"] != a["size"] else "")
+        lines.append(f"{a['base']}  {megs(a['size'])}  {megs(a['committed'])}     {a['kind']:<8} {a['protect']:<8}"
+                     f" {a['regions']:>7}  {a['owner']}{mark}")
+    if before:
+        gone = [a for base, a in before["listed"].items() if base not in listed]
+        if gone:
+            lines.append("")
+            lines.append("listed last time, now gone or under min_mb: " + ", ".join(
+                f"{a['base']} {int(a['size']) / mb:.1f} MB {a['kind']} {a['owner']}".rstrip() for a in gone))
+    LAST_VMMAP = {"reply": reply, "kinds": kinds, "listed": listed}
+    return "\n".join(lines)
+
+
 def tool_find_signature(args):
     request = {"pattern": args["pattern"], "max_results": parse_int(args.get("max_results", 20))}
     if args.get("module"):
@@ -986,6 +1038,13 @@ else:
     TOOLS += [
         ("modules", tool_modules, "The modules loaded in the game process (exe, plugins, DLLs): base and size.",
          {"filter": {"type": "string"}}, []),
+        ("vmmap", tool_vmmap,
+         "The game's address space (a 32-bit process runs out of addresses before memory): free in all and the "
+         "largest free blocks, reserved and committed by kind (image, mapped, heap, stack, private), and the "
+         "allocations of min_mb (default 1) or more, largest first (top, default 60), with the module or mapped "
+         "file that owns them. Each call is compared with the one before (compare: false to skip): changes in MB, "
+         "NEW allocations, ones gone.",
+         {"min_mb": {"type": "number"}, "top": {"type": "integer"}, "compare": {"type": "boolean"}}, []),
         ("find_signature", tool_find_signature,
          "Find a byte signature with wildcards, as FusionFix's hooks write them (\"8B 0D ? ? ? ? 85 C9\"), "
          "in a module (the game's exe unless module is given).",
