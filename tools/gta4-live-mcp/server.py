@@ -325,6 +325,22 @@ def tool_set_time(args):
     return "time " + GAME.call("set_time", hour=parse_int(args["hour"]), minute=parse_int(args.get("minute", 0)))["time"]
 
 
+def tool_clock_rate(args):
+    request = {}
+    if args.get("reset"):
+        request["reset"] = "true"
+    elif "seconds_per_minute" in args:
+        request["ms_per_minute"] = max(1, round(float(args["seconds_per_minute"]) * 1000))
+    elif "ms_per_minute" in args:
+        request["ms_per_minute"] = parse_int(args["ms_per_minute"])
+    reply = GAME.call("clock_rate", **request)
+    ms = int(reply["ms_per_minute"])
+    day = ms * 24 * 60 / 1000
+    stopped = " (stopped by freeze)" if reply["clock_stopped"] == "true" else ""
+    return (f"clock {ms} ms a game minute (the game's 2000), a game day in {day:.0f} s; "
+            f"time {reply['time']}{stopped}")
+
+
 def tool_freeze(args):
     if args.get("on", True) is False:
         GAME.call("freeze", on="false")
@@ -1063,6 +1079,12 @@ else:
         ("set_weather", tool_set_weather,
          f"Force the weather now: an id or a name ({', '.join(WEATHERS)}), or release for the game's own.",
          {"weather": {"type": ["string", "integer"]}}, ["weather"]),
+        ("clock_rate", tool_clock_rate,
+         "How fast the game clock runs: real ms a game minute (the game's 2000, a day in 48 min) or "
+         "seconds_per_minute; reset gives 2000 back; with neither only reads it. 10 ms runs a day in ~15 s, "
+         "to watch dawn or dusk pass. Saves keep the rate: reset before saving. freeze stops the clock whatever the rate.",
+         {"ms_per_minute": {"type": "integer"}, "seconds_per_minute": {"type": "number"},
+          "reset": {"type": "boolean"}}, []),
         ("freeze", tool_freeze,
          "A still scene for comparing frames: a script camera where the game camera is (or at x, y, z turned "
          "rx, ry, rz in degrees, with fov), the player frozen without control, the clock stopped (set_time keeps "
