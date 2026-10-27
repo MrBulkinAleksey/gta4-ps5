@@ -368,6 +368,8 @@ def tool_profiler(args):
 def tool_cpu_profile(args):
     keys = ("seconds", "rate", "threads", "spike_ms", "functions", "stacks", "spikes")
     extra = {k: str(int(args[k])) for k in keys if k in args}
+    if args.get("waiting"):
+        extra["waiting"] = "1"
     seconds = int(args.get("seconds", 10))
     reply = GAME.call("cpu_profile", wait=seconds + 45, **extra)
     return f"{reply['report']}\n(every stack of the run, for flame graphs: {reply['folded']})"
@@ -1140,10 +1142,11 @@ else:
          "in (self) and on the stack (total), functions of each (default 40), the stacks most seen (stacks, default "
          "40) and the longest frames over spike_ms (default 50) with what the main thread and the two busiest others "
          "did in them (spikes, default 10). Game functions are named by their Complete Edition address. Sampling "
-         "slows the game a little: don't read FPS from that time.",
+         "slows the game a little: don't read FPS from that time. waiting: the threads that wait too (up to "
+         "threads, 64 at most), not only the busiest: where each thread of a hung game stands.",
          {"seconds": {"type": "integer"}, "rate": {"type": "integer"}, "threads": {"type": "integer"},
           "spike_ms": {"type": "integer"}, "functions": {"type": "integer"}, "stacks": {"type": "integer"},
-          "spikes": {"type": "integer"}}, []),
+          "spikes": {"type": "integer"}, "waiting": {"type": "boolean"}}, []),
         ("watch", tool_watch,
          "Sample values each frame into a buffer in the game, to see how they change over time. items: "
          "[{addr, offsets?, type (u8..f64 or hex with size), count?, label?}]; offsets as in follow_pointers but "
