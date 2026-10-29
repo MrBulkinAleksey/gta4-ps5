@@ -71,7 +71,7 @@ claude mcp add gtaiv-pc-live -e GTA4_LIVE_PORT=5051 -e GTA4_LIVE_TARGET=pc -- py
 | `ini_get` / `ini_set` (PC) | The FusionFix ini; `ini_set` has it read again at the next frame |
 | `screenshot` | The frame the game shows, as an image (both games) |
 | `scene` / `teleport` / `set_time` / `set_weather` (PC) | Player, camera, time and weather through script natives (not while paused or in a menu) |
-| `freeze` (PC) | A still scene for comparing frames: script camera at the game camera (or a given place), player frozen, clock stopped; `on: false` releases |
+| `freeze` (PC) | A still scene for comparing frames: script camera at the game camera (or a given place), player frozen, clock stopped, weather held, cloud drift stopped, world slowed by `time_scale` (default 0.01); `on: false` releases |
 | `files` (PC) | FusionFix's own files next to the plugin (logs, capture pictures, .folded); with `name`, copied to this machine (`GTA4_LIVE_FILES`, default ~/gta4-live-files) |
 | `cpu_profile` (PC) | Where the threads spend their CPU time over some seconds (FusionFix's sampling profiler, on for the request): CPU per thread, busiest functions self/total, most common stacks, longest frames |
 | `profiler` (PC) | GPU time per pass over the next 120 frames (FusionFix's PostFxProfiler, on for the request): FusionFix's passes, then the game's by render target |

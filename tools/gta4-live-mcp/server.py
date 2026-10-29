@@ -344,15 +344,18 @@ def tool_clock_rate(args):
 def tool_freeze(args):
     if args.get("on", True) is False:
         GAME.call("freeze", on="false")
-        return "unfrozen: the game camera, the player's control and the clock are back"
+        return "unfrozen: the game camera, the player's control, the clock, the weather, the clouds and the time scale are back"
     extra = {}
     if "x" in args:
         extra.update(x=str(args["x"]), y=str(args["y"]), z=str(args["z"]),
                      rx=str(args.get("rx", 0)), ry=str(args.get("ry", 0)), rz=str(args.get("rz", 0)))
     if "fov" in args:
         extra["fov"] = str(args["fov"])
+    if "time_scale" in args:
+        extra["time_scale"] = str(args["time_scale"])
     reply = GAME.call("freeze", on="true", **extra)
-    return f"frozen: camera {reply['camera']} rotation {reply['camera_rotation']} fov {reply['fov']}"
+    scale = f" time scale {reply['time_scale']}" if "time_scale" in reply else ""
+    return f"frozen: camera {reply['camera']} rotation {reply['camera_rotation']} fov {reply['fov']}{scale}"
 
 
 def tool_profiler(args):
@@ -1090,9 +1093,12 @@ else:
         ("freeze", tool_freeze,
          "A still scene for comparing frames: a script camera where the game camera is (or at x, y, z turned "
          "rx, ry, rz in degrees, with fov), the player frozen without control, the clock stopped (set_time keeps "
-         "it stopped). on: false gives the game camera, control and clock back.",
+         "it stopped), the weather held (unless set_weather forced one), the volumetric clouds' drift stopped, and the "
+         "world slowed by time_scale (default 0.01: people, cars, water next to still; 1 leaves it running). on: false "
+         "gives all back.",
          {"on": {"type": "boolean"}, "x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"},
-          "rx": {"type": "number"}, "ry": {"type": "number"}, "rz": {"type": "number"}, "fov": {"type": "number"}},
+          "rx": {"type": "number"}, "ry": {"type": "number"}, "rz": {"type": "number"}, "fov": {"type": "number"},
+          "time_scale": {"type": "number"}},
          []),
         ("profiler", tool_profiler,
          "GPU time of a frame by pass (FusionFix's PostFxProfiler): turned on for the request whatever the ini says, "
