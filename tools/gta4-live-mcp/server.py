@@ -432,10 +432,10 @@ def measure_once(frames, cpu_seconds):
     path = []
     for row in gpu["rows"]:
         depth = int(row["depth"])
-        path = path[:depth + 1] + [row["name"]] if depth >= 0 else []
+        path = path[:depth] + [row["name"]] if depth >= 0 else []
         key = " / ".join(path) if depth >= 0 else "frame"
         rows[key] = {"ms": float(row["ms"]), "draws": float(row.get("draws", 0)), "depth": depth}
-    busy = thread_cpu(profile["report"], scopes["main_thread"], scopes["render_thread"])
+    busy = thread_cpu(profile["report"], str(scopes["main_thread"]), str(scopes["render_thread"]))
     frame_ms = float(scopes["frame_ms"])
     idle = rows.get("the game's other passes / other", {}).get("ms", 0.0)
     gpu_passes = rows.get("frame", {}).get("ms", 0.0) - idle
