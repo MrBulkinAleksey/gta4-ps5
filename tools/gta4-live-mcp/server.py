@@ -358,13 +358,216 @@ def tool_freeze(args):
     return f"frozen: camera {reply['camera']} rotation {reply['camera_rotation']} fov {reply['fov']}{scale}"
 
 
+# ---- bench: a still scene measured, with an ini key or two compared ------------------------------------------
+
+BENCH_DIR = Path(os.environ.get("GTA4_LIVE_FILES", str(Path.home() / "gta4-live-files"))) / "bench"
+SPOTS_FILE = Path(__file__).with_name("bench_spots.json")
+
+
+def load_spots():
+    try:
+        return json.loads(SPOTS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def numbers(text):
+    return [float(v) for v in str(text).strip("[] ").replace(",", " ").split()]
+
+
+def tool_bench_spot(args):
+    spots = load_spots()
+    if "name" not in args:
+        return "\n".join(f"{name}: player {s['player']}, camera {s['camera']} rot {s['rotation']} fov {s.get('fov', '-')}, "
+                         f"{s['time']}, weather {s['weather']}" for name, s in spots.items()) or "no spots saved"
+    if args.get("delete"):
+        spots.pop(args["name"], None)
+    else:
+        reply = GAME.call("scene")
+        spots[args["name"]] = {"player": numbers(reply["player"]), "camera": numbers(reply["camera"]),
+                               "rotation": numbers(reply["camera_rotation"]), "time": reply["time"],
+                               "weather": int(reply["weather"]), "fov": args.get("fov")}
+    SPOTS_FILE.write_text(json.dumps(spots, indent=1), encoding="utf-8")
+    return tool_bench_spot({})
+
+
+def thread_cpu(report, main_tid, render_tid):
+    """Busy shares (% of a core) of the main, render and DXVK command threads from a cpu_profile report"""
+    import re
+    busy = {}
+    for line in report.splitlines():
+        m = re.match(r"\s+([\d.]+)%\s+tid\s+(\d+)\s+(.*)", line)
+        if not m:
+            if busy and not line.startswith(" "):
+                break
+            continue
+        share, tid, name = float(m.group(1)), m.group(2), m.group(3)
+        if tid == main_tid:
+            busy["main"] = share
+        elif tid == render_tid:
+            busy["render"] = share
+        elif name.startswith("dxvk-cs"):
+            busy["dxvk-cs"] = max(busy.get("dxvk-cs", 0.0), share)
+    return busy
+
+
+def verdict(frame_ms, gpu_ms, busy):
+    """What holds the frame back. A thread busy nearly all the time comes first: the GPU's timestamps span its waits
+    for the CPU too, so its time reads high whenever a thread holds it up. gpu_ms is the GPU profiler's frame less the
+    time no pass accounts for (its waits between passes); waits inside a pass stay in it."""
+    name, share = max(busy.items(), key=lambda kv: kv[1]) if busy else ("?", 0.0)
+    if share >= 85.0:
+        return f"{name} thread-bound ({share:.0f}% busy; GPU passes {gpu_ms:.1f} of {frame_ms:.1f} ms)"
+    if frame_ms > 0 and gpu_ms >= 0.85 * frame_ms:
+        return f"GPU-bound (GPU passes {gpu_ms:.1f} of {frame_ms:.1f} ms; busiest thread {name} {share:.0f}%)"
+    return f"nothing saturated (busiest {name} {share:.0f}%, GPU passes {gpu_ms:.1f} of {frame_ms:.1f} ms): a limiter, vsync or waits"
+
+
+def measure_once(frames, cpu_seconds):
+    gpu = GAME.call("profiler", wait=45, timeout="30")
+    scopes = cpu_scopes(frames)
+    profile = GAME.call("cpu_profile", wait=cpu_seconds + 45, seconds=str(cpu_seconds), rate="100", threads="3",
+                        functions="5", stacks="0", spikes="0")
+    rows = {}
+    path = []
+    for row in gpu["rows"]:
+        depth = int(row["depth"])
+        path = path[:depth + 1] + [row["name"]] if depth >= 0 else []
+        key = " / ".join(path) if depth >= 0 else "frame"
+        rows[key] = {"ms": float(row["ms"]), "draws": float(row.get("draws", 0)), "depth": depth}
+    busy = thread_cpu(profile["report"], scopes["main_thread"], scopes["render_thread"])
+    frame_ms = float(scopes["frame_ms"])
+    idle = rows.get("the game's other passes / other", {}).get("ms", 0.0)
+    gpu_passes = rows.get("frame", {}).get("ms", 0.0) - idle
+    return {"gpu": rows, "scopes": {f"{r['thread']} {r['name']}": float(r["ms"]) for r in scopes["rows"]},
+            "frames": {k: float(scopes[k]) for k in ("frame_ms", "p50_ms", "p95_ms", "p99_ms", "max_ms", "main_frame_ms")},
+            "busy": busy, "verdict": verdict(frame_ms, gpu_passes, busy)}
+
+
+def mean_spread(values):
+    values = [v for v in values if v is not None]
+    if not values:
+        return None, None
+    return sum(values) / len(values), (max(values) - min(values)) / 2 if len(values) > 1 else 0.0
+
+
+def tool_bench(args):
+    import time
+    label = args.get("label") or time.strftime("%Y%m%d-%H%M%S")
+    section, key = args.get("section"), args.get("key")
+    values = [str(v) for v in args.get("values", [])] if key else ["(as is)"]
+    rounds = max(1, int(args.get("rounds", 2 if key else 1)))
+    settle = float(args.get("settle", 3))
+    frames, cpu_seconds = int(args.get("frames", 240)), int(args.get("cpu_seconds", 4))
+    notes = []
+
+    frozen_before = GAME.call("clock_rate").get("clock_stopped") == "true"
+    spot = None
+    if args.get("spot"):
+        spot = load_spots().get(args["spot"])
+        if not spot:
+            raise ValueError(f"no spot {args['spot']} (bench_spot saves one)")
+        if frozen_before:
+            GAME.call("freeze", on="false")
+        p = spot["player"]
+        GAME.call("teleport", wait=45, x=str(p[0]), y=str(p[1]), z=str(p[2]))
+        hour, minute = spot["time"].split(":")
+        GAME.call("set_weather", weather=str(spot["weather"]))
+        c, r = spot["camera"], spot["rotation"]
+        extra = {"fov": str(spot["fov"])} if spot.get("fov") else {}
+        GAME.call("freeze", on="true", x=str(c[0]), y=str(c[1]), z=str(c[2]), rx=str(r[0]), ry=str(r[1]), rz=str(r[2]),
+                  time_scale=str(args.get("time_scale", 0.01)), **extra)
+        GAME.call("set_time", hour=int(hour), minute=int(minute))
+        time.sleep(float(args.get("stream_seconds", 8)))
+        notes.append(f"spot {args['spot']}")
+    elif not frozen_before:
+        GAME.call("freeze", on="true", time_scale=str(args.get("time_scale", 0.01)))
+        notes.append("frozen where the camera was")
+    else:
+        notes.append("already frozen")
+
+    original = None
+    if key:
+        original = GAME.call("ini_get", section=section, key=key).get("value", "")
+    results = {v: [] for v in values}
+    try:
+        for _ in range(rounds):
+            for v in values:
+                if key:
+                    GAME.call("ini_set", section=section, key=key, value=v)
+                time.sleep(settle)
+                results[v].append(measure_once(frames, cpu_seconds))
+    finally:
+        if key and original != "":
+            GAME.call("ini_set", section=section, key=key, value=original)
+        elif key:
+            # (an empty value could read as 0, not as the key's default)
+            GAME.call("ini_set", section=section, key=key, value=values[0])
+            notes.append(f"{key} was not in the ini: left at {values[0]}, the first value")
+        if not frozen_before and not args.get("keep_frozen"):
+            GAME.call("freeze", on="false")
+
+    baseline = None
+    if args.get("baseline"):
+        try:
+            saved = json.loads((BENCH_DIR / f"{args['baseline']}.json").read_text(encoding="utf-8"))
+            baseline = next(iter(saved["results"].values()))
+        except (OSError, ValueError, StopIteration):
+            notes.append(f"no baseline {args['baseline']}")
+    BENCH_DIR.mkdir(parents=True, exist_ok=True)
+    (BENCH_DIR / f"{label}.json").write_text(json.dumps({"label": label, "section": section, "key": key, "notes": notes,
+                                                         "results": results}, indent=1), encoding="utf-8")
+
+    columns = ([("baseline " + args["baseline"], [baseline])] if baseline else []) + [(v, results[v]) for v in values]
+    head = f"bench {label}" + (f": [{section}] {key} = " + " / ".join(values) if key else "") + \
+           f", {rounds} round(s), {'; '.join(notes)}; mean ± half the spread between rounds"
+    out = [head, ""]
+
+    def table(title, getter, keys, fmt="{:7.2f}"):
+        out.append(title)
+        out.append(f"  {'':<52}" + "".join(f"{name[:16]:>18}" for name, _ in columns))
+        for k in keys:
+            cells = []
+            for _, runs in columns:
+                m, sp = mean_spread([getter(run, k) for run in runs])
+                cells.append(f"{'-':>18}" if m is None else f"{fmt.format(m)} ±{sp:5.2f}".rjust(18))
+            out.append(f"  {k[:52]:<52}" + "".join(cells))
+        out.append("")
+
+    def gpu_ms(run, k):
+        row = run["gpu"].get(k)
+        return row["ms"] if row else None
+
+    def gpu_draws(run, k):
+        row = run["gpu"].get(k)
+        return row["draws"] if row else None
+
+    first = results[values[0]][0]
+    max_depth = int(args.get("depth", 1))
+    gpu_keys = [k for k, row in first["gpu"].items() if row["depth"] <= max_depth and (row["ms"] >= 0.05 or k == "frame")]
+    table("GPU ms a frame", gpu_ms, gpu_keys)
+    table("device draws a frame", gpu_draws, [k for k in gpu_keys if (first["gpu"][k]["draws"] or 0) >= 1], "{:7.0f}")
+    table("frames (ms)", lambda run, k: run["frames"].get(k), list(first["frames"].keys()))
+    table("threads busy (% of a core)", lambda run, k: run["busy"].get(k), ["main", "render", "dxvk-cs"], "{:7.1f}")
+    scope_keys = sorted({k for runs in results.values() for run in runs for k in run["scopes"]},
+                        key=lambda k: -max(run["scopes"].get(k, 0.0) for runs in results.values() for run in runs))
+    scope_keys = [k for k in scope_keys if max(run["scopes"].get(k, 0.0) for runs in results.values() for run in runs) >= 0.02]
+    table("FusionFix CPU ms a frame (thread, scope)", lambda run, k: run["scopes"].get(k, 0.0), scope_keys[:int(args.get("scopes", 25))], "{:7.3f}")
+    out.append("verdict:")
+    for name, runs in columns:
+        out.append(f"  {name}: " + "; ".join(sorted({run['verdict'] for run in runs})))
+    out.append(f"\nsaved {BENCH_DIR / (label + '.json')}")
+    return "\n".join(out)
+
+
 def tool_profiler(args):
     extra = {"timeout": str(int(args["timeout"]))} if "timeout" in args else {}
     reply = GAME.call("profiler", wait=int(args.get("timeout", 30)) + 15, **extra)
-    lines = [f"GPU milliseconds per frame, averaged over {reply['frames']} frames"]
+    lines = [f"GPU milliseconds per frame, averaged over {reply['frames']} frames; device draws and primitives a frame"]
     for row in reply["rows"]:
         depth = int(row["depth"])
-        lines.append(f"{'  ' * (depth + 1)}{row['name']:<{36 - 2 * (depth + 1)}} {float(row['ms']):6.2f}")
+        counts = (f" {float(row['draws']):7.0f} {float(row['primitives']):9.0f}" if "draws" in row else "")
+        lines.append(f"{'  ' * (depth + 1)}{row['name']:<{36 - 2 * (depth + 1)}} {float(row['ms']):6.2f}{counts}")
     return "\n".join(lines)
 
 
@@ -375,7 +578,43 @@ def tool_cpu_profile(args):
         extra["waiting"] = "1"
     seconds = int(args.get("seconds", 10))
     reply = GAME.call("cpu_profile", wait=seconds + 45, **extra)
-    return f"{reply['report']}\n(every stack of the run, for flame graphs: {reply['folded']})"
+    return f"{name_game_functions(reply['report'])}\n(every stack of the run, for flame graphs: {reply['folded']})"
+
+
+# Game functions by Complete Edition address (gtaiv_ce_names.tsv next to the server: address, name, source), put
+# after "GTAIV 0x..." in the sampling profiler's reports where the address is a function's start.
+GAME_NAMES = {}
+try:
+    for line in (Path(__file__).with_name("gtaiv_ce_names.tsv")).read_text(encoding="utf-8").splitlines():
+        if line and not line.startswith("#"):
+            address, name, *_ = line.split("\t")
+            GAME_NAMES[int(address, 16)] = name
+except OSError:
+    pass
+
+
+def name_game_functions(text):
+    import re
+    def named(match):
+        name = GAME_NAMES.get(int(match.group(1), 16)) if not match.group(2) else None
+        return f"{match.group(0)} [{name}]" if name else match.group(0)
+    return re.sub(r"GTAIV 0x([0-9a-f]+)(\+0x[0-9a-f]+)?", named, text)
+
+
+def cpu_scopes(frames=240):
+    return GAME.call("cpu_scopes", wait=20 + frames // 10, frames=str(int(frames)))
+
+
+def tool_cpu_scopes(args):
+    reply = cpu_scopes(int(args.get("frames", 240)))
+    lines = [f"{reply['frames']} frames: {float(reply['frame_ms']):.2f} ms a frame (p50 {float(reply['p50_ms']):.2f}, "
+             f"p95 {float(reply['p95_ms']):.2f}, p99 {float(reply['p99_ms']):.2f}, worst {float(reply['max_ms']):.2f}); "
+             f"main thread {float(reply['main_frame_ms']):.2f} ms a frame (worst {float(reply['main_max_ms']):.2f})",
+             "FusionFix's own CPU work, ms a frame (mean, worst frame), calls a frame, by thread:"]
+    for row in reply["rows"][:int(args.get("max", 60))]:
+        lines.append(f"  {float(row['ms']):7.3f} {float(row['max_ms']):7.3f} {float(row['calls']):7.1f}  "
+                     f"{row['thread']:<6} {row['name']}")
+    return "\n".join(lines)
 
 
 FILES_DIR = os.environ.get("GTA4_LIVE_FILES", str(Path.home() / "gta4-live-files"))
@@ -1153,6 +1392,33 @@ else:
          {"seconds": {"type": "integer"}, "rate": {"type": "integer"}, "threads": {"type": "integer"},
           "spike_ms": {"type": "integer"}, "functions": {"type": "integer"}, "stacks": {"type": "integer"},
           "spikes": {"type": "integer"}, "waiting": {"type": "boolean"}}, []),
+        ("cpu_scopes", tool_cpu_scopes,
+         "FusionFix's own CPU work in exact milliseconds a frame (CpuScopes: timed scopes, two counter reads each, "
+         "only while measured): each scope by thread (main, render, other) with its mean, worst frame and calls a "
+         "frame, and the frames' times between presents (mean, p50, p95, p99, worst) and the main thread's. Scopes: "
+         "the GPU profiler's own sections (PostFx.*), box/prop shapes per light, coronas, LOD lights, instancing, GPU "
+         "grass, procedural cone, occlusion, clouds. frames (default 240), max rows (default 60).",
+         {"frames": {"type": "integer"}, "max": {"type": "integer"}}, []),
+        ("bench_spot", tool_bench_spot,
+         "Places to bench at: with name, saves where the player and the camera are now, the time and the weather "
+         "under that name (fov optional; delete: true removes it); without, lists them (bench_spots.json next to the "
+         "server).",
+         {"name": {"type": "string"}, "fov": {"type": "number"}, "delete": {"type": "boolean"}}, []),
+        ("bench", tool_bench,
+         "Measure a still scene, and compare settings: freezes the scene where the camera is (or goes to a saved "
+         "spot first: teleport, weather, camera, time, stream_seconds default 8), then for each round and each of "
+         "values sets [section] key (live ini keys only), waits settle s (default 3, for accumulations), and takes the "
+         "GPU profiler's block (ms and draws by pass), cpu_scopes (frames default 240) and a light CPU sample "
+         "(cpu_seconds default 4) for the threads' load; the key and the freeze are given back. Report: each row's mean "
+         "± half the spread between rounds (rounds default 2 with a key, else 1) per value, GPU passes to depth "
+         "(default 1), frames' times, main/render/DXVK threads busy, FusionFix's CPU scopes, and a verdict of what "
+         "holds the frame back. Saved under label (default the time) in GTA4_LIVE_FILES/bench; baseline: an earlier "
+         "label as an extra column. time_scale for the freeze (default 0.01); keep_frozen leaves it frozen.",
+         {"section": {"type": "string"}, "key": {"type": "string"}, "values": {"type": "array", "items": {"type": "string"}},
+          "rounds": {"type": "integer"}, "settle": {"type": "number"}, "frames": {"type": "integer"},
+          "cpu_seconds": {"type": "integer"}, "spot": {"type": "string"}, "stream_seconds": {"type": "number"},
+          "label": {"type": "string"}, "baseline": {"type": "string"}, "depth": {"type": "integer"},
+          "scopes": {"type": "integer"}, "time_scale": {"type": "number"}, "keep_frozen": {"type": "boolean"}}, []),
         ("watch", tool_watch,
          "Sample values each frame into a buffer in the game, to see how they change over time. items: "
          "[{addr, offsets?, type (u8..f64 or hex with size), count?, label?}]; offsets as in follow_pointers but "
